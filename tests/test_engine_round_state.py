@@ -55,3 +55,52 @@ def test_temporary_furiten_sets_on_ron_pass_and_clears_on_draw(monkeypatch: pyte
     tokenizer._on_draw({"l": 1, "p": "m2"}, is_gangzimo=False)
 
     assert not tokenizer.players[1].temporary_furiten
+
+
+def test_call_options_are_blocked_on_last_draw(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.live_draws_left = 0
+
+    m1 = tile_to_index("m1")
+    m2 = tile_to_index("m2")
+    m3 = tile_to_index("m3")
+
+    tokenizer.players[1].concealed[m1] = 1
+    tokenizer.players[1].concealed[m3] = 1
+    tokenizer.players[2].concealed[m2] = 2
+
+    monkeypatch.setattr(
+        TenhouTokenizer,
+        "_can_win",
+        lambda _self, seat, _tile, is_tsumo: (not is_tsumo) and seat in {1, 2},
+    )
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=m2)
+
+    assert reaction is not None
+    assert reaction.options_by_player == {1: {"ron"}, 2: {"ron"}}
+
+
+def test_riichi_missed_ron_becomes_persistent_furiten(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.players[1].is_riichi = True
+
+    tokenizer.pending_reaction = ReactionDecision(
+        discarder=0,
+        discard_tile=tile_to_index("m1"),
+        options_by_player={1: {"ron"}},
+    )
+    tokenizer._finalize_reaction()
+
+    assert tokenizer.players[1].riichi_furiten
+    assert not tokenizer.players[1].temporary_furiten
+
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: set())
+    tokenizer._on_draw({"l": 1, "p": "m2"}, is_gangzimo=False)
+    assert tokenizer.players[1].riichi_furiten
+
+    monkeypatch.setattr(TenhouTokenizer, "_can_win", lambda *_args, **_kwargs: True)
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=tile_to_index("m1"))
+    assert reaction is None or "ron" not in reaction.options_by_player.get(1, set())

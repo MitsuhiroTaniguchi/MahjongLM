@@ -86,3 +86,77 @@ def test_kakan_generates_reaction_decision_and_rob_kan_take(monkeypatch: pytest.
     assert "opt_react_1_ron" in tokenizer.tokens
     assert "win_ron_1_from_0" in tokenizer.tokens
     assert "take_react_1_ron" in tokenizer.tokens
+
+
+def test_passing_ron_by_taking_other_call_sets_temporary_furiten() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    tokenizer.pending_reaction = ReactionDecision(
+        discarder=0,
+        discard_tile=tile_to_index("m1"),
+        options_by_player={1: {"chi", "ron"}},
+        chosen={1: "chi"},
+    )
+    tokenizer._finalize_reaction()
+
+    assert tokenizer.players[1].temporary_furiten
+    assert "take_react_1_chi" in tokenizer.tokens
+    assert "pass_react_1_ron" in tokenizer.tokens
+
+
+def test_riichi_ankan_requires_waits_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.players[0].is_riichi = True
+    tile = tile_to_index("m1")
+    tokenizer.players[0].concealed[tile] = 4
+
+    def same_waits(_counts: list[int], meld_count: int) -> set[int]:
+        return {tile_to_index("m1"), tile_to_index("m2")} if meld_count in {0, 1} else set()
+
+    monkeypatch.setattr(engine, "_pm_wait_tiles", same_waits)
+    opts = tokenizer._compute_self_options(actor=0, drawn_tile=tile)
+    assert "ankan" in opts
+
+    def changed_waits(_counts: list[int], meld_count: int) -> set[int]:
+        if meld_count == 0:
+            return {tile_to_index("m1"), tile_to_index("m2")}
+        if meld_count == 1:
+            return {tile_to_index("m3")}
+        return set()
+
+    monkeypatch.setattr(engine, "_pm_wait_tiles", changed_waits)
+    opts = tokenizer._compute_self_options(actor=0, drawn_tile=tile)
+    assert "ankan" not in opts
+
+
+def test_riichi_ankan_uses_pre_draw_waits_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    actor = 0
+    draw_tile = tile_to_index("p3")
+    kan_tile = tile_to_index("m1")
+    p = tokenizer.players[actor]
+    p.is_riichi = True
+    p.concealed = [0] * 34
+    p.concealed[kan_tile] = 4
+    p.concealed[draw_tile] = 1
+
+    waits_13 = {tile_to_index("m6"), tile_to_index("p5")}
+    waits_14 = waits_13 | {tile_to_index("p4")}
+
+    def fake_waits(counts: list[int], meld_count: int) -> set[int]:
+        if meld_count == 0:
+            # Distinguish pre-draw(13) from post-draw(14) baseline by drawn tile count.
+            return waits_13 if counts[draw_tile] == 0 else waits_14
+        if meld_count == 1:
+            return waits_13
+        return set()
+
+    monkeypatch.setattr(engine, "_pm_wait_tiles", fake_waits)
+    monkeypatch.setattr(TenhouTokenizer, "_can_win", lambda *_args, **_kwargs: False)
+
+    opts = tokenizer._compute_self_options(actor=actor, drawn_tile=draw_tile)
+    assert "ankan" in opts
