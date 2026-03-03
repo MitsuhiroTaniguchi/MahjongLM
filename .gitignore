@@ -39,3 +39,4 @@ references/legacy_colab/
 
 # Large local datasets
 data/raw/tenhou/
+data/processed/
