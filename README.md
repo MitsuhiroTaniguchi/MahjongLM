@@ -19,13 +19,18 @@ This addresses the key dataset issue where logs only contain chosen actions and 
 ### Run (small test)
 
 ```bash
-python3 -m venv .venv
+./scripts/setup_pymahjong.sh
 source .venv/bin/activate
-pip install "git+https://github.com/MitsuhiroTaniguchi/pymahjong.git"
 python scripts/tokenize_tenhou.py --max-games 200 --progress-every 50
 ```
 
 Default input is `data/raw/tenhou/data2023.zip` and default output is `data/processed/tenhou/tokens_2023.jsonl.gz`.
+
+For all years in `data/raw/tenhou/`:
+
+```bash
+python scripts/tokenize_tenhou.py --all-years --zip-glob "data/raw/tenhou/data*.zip" --output data/processed/tenhou/tokens_all_years.jsonl.gz
+```
 
 ## Important note
 

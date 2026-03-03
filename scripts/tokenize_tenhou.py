@@ -25,7 +25,18 @@ def parse_args() -> argparse.Namespace:
         "--zip-path",
         type=Path,
         default=Path("data/raw/tenhou/data2023.zip"),
-        help="Path to Tenhou ZIP archive.",
+        help="Path to one Tenhou ZIP archive.",
+    )
+    parser.add_argument(
+        "--all-years",
+        action="store_true",
+        help="Process all ZIPs matching --zip-glob.",
+    )
+    parser.add_argument(
+        "--zip-glob",
+        type=str,
+        default="data/raw/tenhou/data*.zip",
+        help="Glob pattern used when --all-years is set.",
     )
     parser.add_argument(
         "--output",
@@ -65,32 +76,57 @@ def main() -> int:
     written = 0
     skipped = 0
 
-    with zipfile.ZipFile(args.zip_path) as zf, open_output(args.output) as out:
-        names = zf.namelist()
-        for idx, name in enumerate(names):
-            if idx < args.start_index:
-                continue
+    if args.all_years:
+        zip_paths = sorted(ROOT.glob(args.zip_glob))
+        if not zip_paths:
+            print(f"no zip matched --zip-glob: {args.zip_glob}", file=sys.stderr)
+            return 2
+    else:
+        zip_paths = [args.zip_path]
+
+    with open_output(args.output) as out:
+        for zip_path in zip_paths:
+            with zipfile.ZipFile(zip_path) as zf:
+                names = zf.namelist()
+                for idx, name in enumerate(names):
+                    if idx < args.start_index:
+                        continue
+                    if args.max_games is not None and written >= args.max_games:
+                        break
+
+                    try:
+                        with zf.open(name) as f:
+                            game = json.load(f)
+                        tokens = tokenizer.tokenize_game(game)
+                    except KeyboardInterrupt:
+                        raise
+                    except (json.JSONDecodeError, KeyError, TokenizeError, ValueError) as exc:
+                        skipped += 1
+                        if skipped <= 10:
+                            print(f"skip: {zip_path.name}:{name} ({exc})", file=sys.stderr)
+                        continue
+
+                    out.write(
+                        json.dumps(
+                            {
+                                "source_zip": str(zip_path),
+                                "game_id": name,
+                                "tokens": tokens,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    out.write("\n")
+                    written += 1
+
+                    if args.progress_every > 0 and written % args.progress_every == 0:
+                        print(
+                            f"tokenized={written} skipped={skipped} zip={zip_path.name} last_index={idx}",
+                            file=sys.stderr,
+                        )
+
             if args.max_games is not None and written >= args.max_games:
                 break
-
-            try:
-                with zf.open(name) as f:
-                    game = json.load(f)
-                tokens = tokenizer.tokenize_game(game)
-            except KeyboardInterrupt:
-                raise
-            except (json.JSONDecodeError, KeyError, TokenizeError, ValueError) as exc:
-                skipped += 1
-                if skipped <= 10:
-                    print(f"skip: {name} ({exc})", file=sys.stderr)
-                continue
-
-            out.write(json.dumps({"game_id": name, "tokens": tokens}, ensure_ascii=False))
-            out.write("\n")
-            written += 1
-
-            if args.progress_every > 0 and written % args.progress_every == 0:
-                print(f"tokenized={written} skipped={skipped} last_index={idx}", file=sys.stderr)
 
     print(f"done: tokenized={written} skipped={skipped} output={args.output}")
     return 0
