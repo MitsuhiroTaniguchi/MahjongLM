@@ -129,3 +129,34 @@ def test_riichi_ankan_requires_waits_unchanged(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(engine, "_pm_wait_tiles", changed_waits)
     opts = tokenizer._compute_self_options(actor=0, drawn_tile=tile)
     assert "ankan" not in opts
+
+
+def test_riichi_ankan_uses_pre_draw_waits_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    actor = 0
+    draw_tile = tile_to_index("p3")
+    kan_tile = tile_to_index("m1")
+    p = tokenizer.players[actor]
+    p.is_riichi = True
+    p.concealed = [0] * 34
+    p.concealed[kan_tile] = 4
+    p.concealed[draw_tile] = 1
+
+    waits_13 = {tile_to_index("m6"), tile_to_index("p5")}
+    waits_14 = waits_13 | {tile_to_index("p4")}
+
+    def fake_waits(counts: list[int], meld_count: int) -> set[int]:
+        if meld_count == 0:
+            # Distinguish pre-draw(13) from post-draw(14) baseline by drawn tile count.
+            return waits_13 if counts[draw_tile] == 0 else waits_14
+        if meld_count == 1:
+            return waits_13
+        return set()
+
+    monkeypatch.setattr(engine, "_pm_wait_tiles", fake_waits)
+    monkeypatch.setattr(TenhouTokenizer, "_can_win", lambda *_args, **_kwargs: False)
+
+    opts = tokenizer._compute_self_options(actor=actor, drawn_tile=draw_tile)
+    assert "ankan" in opts

@@ -353,7 +353,7 @@ class TenhouTokenizer:
         ):
             options.add("riichi")
 
-        if self._can_ankan(actor):
+        if self._can_ankan(actor, drawn_tile):
             options.add("ankan")
 
         if any(p.open_pons.get(i, 0) > 0 and p.concealed[i] > 0 for i in range(34)):
@@ -361,7 +361,7 @@ class TenhouTokenizer:
 
         return options
 
-    def _can_ankan(self, actor: int) -> bool:
+    def _can_ankan(self, actor: int, drawn_tile: Optional[int] = None) -> bool:
         p = self.players[actor]
         candidates = [tile for tile, count in enumerate(p.concealed) if count >= 4]
         if not candidates:
@@ -369,7 +369,15 @@ class TenhouTokenizer:
         if not p.is_riichi:
             return True
 
-        waits_before = _pm_wait_tiles(list(p.concealed), p.meld_count)
+        if drawn_tile is None:
+            return False
+
+        pre_draw_counts = list(p.concealed)
+        if pre_draw_counts[drawn_tile] <= 0:
+            return False
+        pre_draw_counts[drawn_tile] -= 1
+
+        waits_before = _pm_wait_tiles(pre_draw_counts, p.meld_count)
         if not waits_before:
             return False
 
