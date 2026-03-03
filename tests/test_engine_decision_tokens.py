@@ -160,3 +160,39 @@ def test_riichi_ankan_uses_pre_draw_waits_baseline(monkeypatch: pytest.MonkeyPat
 
     opts = tokenizer._compute_self_options(actor=actor, drawn_tile=draw_tile)
     assert "ankan" in opts
+
+
+def test_kyushukyuhai_is_emitted_as_pass_when_not_taken() -> None:
+    kyushu_hand = "m1199p19s19z12345"
+    game = minimal_game(
+        [
+            qipai_event(hands=[kyushu_hand, "m123456789p1234", "m123456789p1234", "m123456789p1234"]),
+            {"zimo": {"l": 0, "p": "m2"}},
+            {"dapai": {"l": 0, "p": "m2_"}},
+        ]
+    )
+
+    tokenizer = TenhouTokenizer()
+    tokens = tokenizer.tokenize_game(game)
+
+    assert "opt_self_0_kyushukyuhai" in tokens
+    assert "pass_self_0_kyushukyuhai" in tokens
+    assert "take_self_0_kyushukyuhai" not in tokens
+
+
+def test_kyushukyuhai_is_emitted_as_take_on_pingju() -> None:
+    kyushu_hand = "m1199p19s19z12345"
+    game = minimal_game(
+        [
+            qipai_event(hands=[kyushu_hand, "m123456789p1234", "m123456789p1234", "m123456789p1234"]),
+            {"zimo": {"l": 0, "p": "m2"}},
+            {"pingju": {"name": "九種九牌", "fenpei": [0, 0, 0, 0], "shoupai": ["m1", "", "", ""]}},
+        ]
+    )
+
+    tokenizer = TenhouTokenizer()
+    tokens = tokenizer.tokenize_game(game)
+
+    assert "opt_self_0_kyushukyuhai" in tokens
+    assert "take_self_0_kyushukyuhai" in tokens
+    assert "pass_self_0_kyushukyuhai" not in tokens
