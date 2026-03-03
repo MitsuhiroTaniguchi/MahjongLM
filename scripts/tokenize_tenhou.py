@@ -5,6 +5,7 @@ import argparse
 import gzip
 import json
 import sys
+from glob import glob
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +53,11 @@ def parse_args() -> argparse.Namespace:
         default=1000,
         help="Print progress every N tokenized games.",
     )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit with non-zero status if any game is skipped.",
+    )
     return parser.parse_args()
 
 
@@ -77,7 +83,12 @@ def main() -> int:
     skipped = 0
 
     if args.all_years:
-        zip_paths = sorted(ROOT.glob(args.zip_glob))
+        pattern_path = Path(args.zip_glob)
+        if pattern_path.is_absolute():
+            pattern = args.zip_glob
+        else:
+            pattern = str(ROOT / args.zip_glob)
+        zip_paths = sorted(Path(p) for p in glob(pattern))
         if not zip_paths:
             print(f"no zip matched --zip-glob: {args.zip_glob}", file=sys.stderr)
             return 2
@@ -129,6 +140,8 @@ def main() -> int:
                 break
 
     print(f"done: tokenized={written} skipped={skipped} output={args.output}")
+    if args.strict and skipped > 0:
+        return 1
     return 0
 
 

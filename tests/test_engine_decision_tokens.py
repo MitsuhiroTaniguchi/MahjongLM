@@ -1,0 +1,88 @@
+from __future__ import annotations
+
+import pytest
+
+pytest.importorskip("pymahjong")
+
+import tenhou_tokenizer.engine as engine
+from tenhou_tokenizer.engine import ReactionDecision, TenhouTokenizer, tile_to_index
+from tests.fixtures.synthetic_logs import minimal_game, qipai_event, qipai_payload
+
+
+def test_permanent_furiten_blocks_ron_for_all_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    offered_tile = tile_to_index("m2")
+    discarded_wait = tile_to_index("m1")
+
+    tokenizer.players[1].furiten_tiles.add(discarded_wait)
+    monkeypatch.setattr(engine, "_pm_wait_tiles", lambda *_args, **_kwargs: {discarded_wait, offered_tile})
+    monkeypatch.setattr(TenhouTokenizer, "_can_win", lambda *_args, **_kwargs: True)
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=offered_tile)
+
+    assert reaction is not None
+    assert "ron" not in reaction.options_by_player.get(1, set())
+
+
+def test_hule_with_baojia_is_classified_as_ron() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    tokenizer._on_hule({"l": 2, "baojia": 0, "fenpei": [0, 0, 0, 0]})
+
+    assert "win_ron_2_from_0" in tokenizer.tokens
+    assert "win_tsumo_2" not in tokenizer.tokens
+
+
+def test_kaigang_does_not_force_self_pass_before_tsumo(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: {"tsumo"})
+
+    game = minimal_game(
+        [
+            qipai_event(),
+            {"gangzimo": {"l": 0, "p": "m1"}},
+            {"kaigang": {"baopai": "p5"}},
+            {"hule": {"l": 0, "fenpei": [0, 0, 0, 0]}},
+        ]
+    )
+
+    tokenizer = TenhouTokenizer()
+    tokens = tokenizer.tokenize_game(game)
+
+    assert "opt_self_0_tsumo" in tokens
+    assert "take_self_0_tsumo" in tokens
+    assert "pass_self_0_tsumo" not in tokens
+    assert tokens.index("take_self_0_tsumo") < tokens.index("win_tsumo_0")
+
+
+def test_kakan_generates_reaction_decision_and_rob_kan_take(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    tile = tile_to_index("m1")
+    actor = 0
+    p = tokenizer.players[actor]
+    p.concealed[tile] = max(p.concealed[tile], 1)
+    p.open_pons[tile] = 1
+    p.melds = [("pon", tile)]
+
+    def fake_kakan_reaction(self: TenhouTokenizer, actor: int, tile_idx: int) -> ReactionDecision:
+        return ReactionDecision(
+            discarder=actor,
+            discard_tile=tile_idx,
+            options_by_player={1: {"ron"}},
+            trigger="kakan",
+        )
+
+    monkeypatch.setattr(TenhouTokenizer, "_compute_kakan_reaction_options", fake_kakan_reaction)
+
+    tokenizer._on_gang({"l": actor, "m": "m1111+"})
+    tokenizer._on_hule({"l": 1, "baojia": actor, "fenpei": [0, 0, 0, 0]})
+    tokenizer._flush_pending()
+
+    assert "kan_kakan_0_m1" in tokenizer.tokens
+    assert "opt_react_1_ron" in tokenizer.tokens
+    assert "win_ron_1_from_0" in tokenizer.tokens
+    assert "take_react_1_ron" in tokenizer.tokens

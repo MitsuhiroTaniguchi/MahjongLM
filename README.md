@@ -32,6 +32,26 @@ For all years in `data/raw/tenhou/`:
 python scripts/tokenize_tenhou.py --all-years --zip-glob "data/raw/tenhou/data*.zip" --output data/processed/tenhou/tokens_all_years.jsonl.gz
 ```
 
+Fail fast when any game is skipped:
+
+```bash
+python scripts/tokenize_tenhou.py --zip-path data/raw/tenhou/data2023.zip --strict
+```
+
+## Tests
+
+```bash
+source .venv/bin/activate
+pip install -U pytest
+pytest -m "not slow" -q
+```
+
+Optional dataset smoke test:
+
+```bash
+pytest -m slow -q
+```
+
 ## Important note
 
 This tokenizer is `pymahjong`-first: shanten and hupai checks are delegated to its C++ implementation.
