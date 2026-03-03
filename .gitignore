@@ -36,3 +36,6 @@ outputs/
 
 # Local reference notebooks/scripts
 references/legacy_colab/
+
+# Large local datasets
+data/raw/tenhou/
