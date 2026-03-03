@@ -180,6 +180,7 @@ class PlayerState:
     melds: List[Tuple[str, int]] = field(default_factory=list)
     furiten_tiles: Set[int] = field(default_factory=set)
     temporary_furiten: bool = False
+    riichi_furiten: bool = False
 
     @property
     def meld_count(self) -> int:
@@ -352,13 +353,33 @@ class TenhouTokenizer:
         ):
             options.add("riichi")
 
-        if any(c >= 4 for c in p.concealed):
+        if self._can_ankan(actor):
             options.add("ankan")
 
         if any(p.open_pons.get(i, 0) > 0 and p.concealed[i] > 0 for i in range(34)):
             options.add("kakan")
 
         return options
+
+    def _can_ankan(self, actor: int) -> bool:
+        p = self.players[actor]
+        candidates = [tile for tile, count in enumerate(p.concealed) if count >= 4]
+        if not candidates:
+            return False
+        if not p.is_riichi:
+            return True
+
+        waits_before = _pm_wait_tiles(list(p.concealed), p.meld_count)
+        if not waits_before:
+            return False
+
+        for tile in candidates:
+            next_counts = list(p.concealed)
+            next_counts[tile] -= 4
+            waits_after = _pm_wait_tiles(next_counts, p.meld_count + 1)
+            if waits_after and waits_after == waits_before:
+                return True
+        return False
 
     def _on_discard(self, d: dict) -> None:
         actor = d["l"]
@@ -402,6 +423,7 @@ class TenhouTokenizer:
             counts_plus[tile_idx] += 1
             if (
                 not p.temporary_furiten
+                and not p.riichi_furiten
                 and not permanent_furiten
             ):
                 saved = p.concealed
@@ -417,12 +439,13 @@ class TenhouTokenizer:
                     options_by_player[seat] = options
                 continue
 
-            if offset == 1 and self._can_chi(p.concealed, tile_idx):
-                options.add("chi")
-            if p.concealed[tile_idx] >= 2:
-                options.add("pon")
-            if p.concealed[tile_idx] >= 3:
-                options.add("minkan")
+            if self.live_draws_left > 0:
+                if offset == 1 and self._can_chi(p.concealed, tile_idx):
+                    options.add("chi")
+                if p.concealed[tile_idx] >= 2:
+                    options.add("pon")
+                if p.concealed[tile_idx] >= 3:
+                    options.add("minkan")
 
             if options:
                 options_by_player[seat] = options
@@ -444,7 +467,7 @@ class TenhouTokenizer:
                 continue
 
             p = self.players[seat]
-            if p.temporary_furiten or self._is_permanent_furiten(seat):
+            if p.temporary_furiten or p.riichi_furiten or self._is_permanent_furiten(seat):
                 continue
 
             counts_plus = list(p.concealed)
@@ -645,7 +668,10 @@ class TenhouTokenizer:
             else:
                 for opt in sorted(opts):
                     self.tokens.append(f"pass_react_{seat}_{opt}")
-                if "ron" in opts:
+            if "ron" in opts and chosen != "ron":
+                if self.players[seat].is_riichi:
+                    self.players[seat].riichi_furiten = True
+                else:
                     self.players[seat].temporary_furiten = True
         self.pending_reaction = None
 
