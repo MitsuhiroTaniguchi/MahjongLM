@@ -5,7 +5,7 @@ import pytest
 pytest.importorskip("pymahjong")
 
 import tenhou_tokenizer.engine as engine
-from tenhou_tokenizer.engine import ReactionDecision, TenhouTokenizer, tile_to_index
+from tenhou_tokenizer.engine import ReactionDecision, TenhouTokenizer, parse_hand_counts, tile_to_index
 from tests.fixtures.synthetic_logs import minimal_game, pingju_event, qipai_event, qipai_payload
 
 
@@ -245,6 +245,27 @@ def test_kakan_ron_option_uses_qianggang_context(monkeypatch: pytest.MonkeyPatch
     reaction = tokenizer._compute_kakan_reaction_options(actor=0, tile_idx=offered)
     assert reaction is not None
     assert "ron" in reaction.options_by_player.get(1, set())
+
+
+def test_ankan_ron_option_requires_kokushi_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    offered = tile_to_index("z7")
+
+    monkeypatch.setattr(engine, "_pm_wait_mask", lambda *_args, **_kwargs: 1 << offered)
+    monkeypatch.setattr(engine, "_pm_has_hupai_multi", lambda cases: [True] * len(cases))
+
+    tokenizer.players[1].concealed = parse_hand_counts("m119p19s19z123456")
+    reaction = tokenizer._compute_ankan_reaction_options(actor=0, tile_idx=offered)
+
+    assert reaction is not None
+    assert reaction.options_by_player == {1: {"ron"}}
+
+    tokenizer.players[1].concealed = parse_hand_counts("m123456789p1234")
+    tokenizer._invalidate_wait_mask(1)
+    reaction = tokenizer._compute_ankan_reaction_options(actor=0, tile_idx=offered)
+
+    assert reaction is None
 
 
 def test_gangzimo_last_tile_draw_eval_uses_lingshang_and_haidi(
@@ -640,3 +661,32 @@ def test_ankan_no_longer_emits_kan_token() -> None:
 
     assert "take_self_0_ankan" in tokenizer.tokens
     assert all(not t.startswith("kan_") for t in tokenizer.tokens)
+
+
+def test_ankan_generates_reaction_decision_and_rob_kan_take(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    tile = tile_to_index("m1")
+    actor = 0
+    p = tokenizer.players[actor]
+    p.concealed[tile] = max(p.concealed[tile], 4)
+
+    def fake_ankan_reaction(self: TenhouTokenizer, actor: int, tile_idx: int) -> ReactionDecision:
+        return ReactionDecision(
+            discarder=actor,
+            discard_tile=tile_idx,
+            options_by_player={1: {"ron"}},
+            trigger="ankan",
+        )
+
+    monkeypatch.setattr(TenhouTokenizer, "_compute_ankan_reaction_options", fake_ankan_reaction)
+
+    tokenizer._on_gang({"l": actor, "m": "m1111"})
+    tokenizer._on_hule({"l": 1, "baojia": actor, "fenpei": [0, 0, 0, 0]})
+    tokenizer._flush_pending()
+
+    assert "take_self_0_ankan" in tokenizer.tokens
+    assert "opt_react_1_ron" in tokenizer.tokens
+    assert tokenizer.tokens.count("take_react_1_ron") == 1
+    assert "ron_from_1_0" in tokenizer.tokens
