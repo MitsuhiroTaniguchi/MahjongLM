@@ -159,6 +159,61 @@ def test_pass_react_forced_rule_does_not_set_furiten() -> None:
     assert not tokenizer.players[1].riichi_furiten
 
 
+def test_houtei_ron_option_uses_haidi_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    offered = tile_to_index("m1")
+    tokenizer.live_draws_left = 0
+
+    monkeypatch.setattr(engine, "_pm_wait_mask", lambda *_args, **_kwargs: 1 << offered)
+    monkeypatch.setattr(
+        engine,
+        "_pm_has_hupai_multi",
+        lambda cases: [bool(case[8]) for case in cases],  # is_haidi
+    )
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=offered)
+    assert reaction is not None
+    assert "ron" in reaction.options_by_player.get(1, set())
+
+
+def test_kakan_ron_option_uses_qianggang_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    offered = tile_to_index("m1")
+
+    monkeypatch.setattr(engine, "_pm_wait_mask", lambda *_args, **_kwargs: 1 << offered)
+    monkeypatch.setattr(
+        engine,
+        "_pm_has_hupai_multi",
+        lambda cases: [bool(case[10]) for case in cases],  # is_qianggang
+    )
+
+    reaction = tokenizer._compute_kakan_reaction_options(actor=0, tile_idx=offered)
+    assert reaction is not None
+    assert "ron" in reaction.options_by_player.get(1, set())
+
+
+def test_gangzimo_last_tile_draw_eval_uses_lingshang_and_haidi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.live_draws_left = 1
+    seen: dict[str, bool] = {}
+
+    def fake_eval_draw(*, is_haidi: bool, is_lingshang: bool, **_kwargs: object) -> tuple[bool, bool]:
+        seen["is_haidi"] = is_haidi
+        seen["is_lingshang"] = is_lingshang
+        return True, False
+
+    monkeypatch.setattr(engine, "_pm_evaluate_draw", fake_eval_draw)
+
+    tokenizer._on_draw({"l": 0, "p": "m1"}, is_gangzimo=True)
+    assert seen == {"is_haidi": True, "is_lingshang": True}
+    assert "opt_self_0_tsumo" in tokenizer.tokens
+
+
 def test_pingju_closes_reaction_as_forced_rule(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: set())
 

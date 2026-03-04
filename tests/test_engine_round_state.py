@@ -168,10 +168,14 @@ def test_compute_self_options_uses_combined_draw_eval(monkeypatch: pytest.Monkey
         lunban: int,
         closed_kans: int,
         check_riichi_discard: bool,
+        is_haidi: bool,
+        is_lingshang: bool,
     ) -> tuple[bool, bool]:
         observed["win_tile"] = win_tile
         observed["is_menqian"] = is_menqian
         observed["check_riichi_discard"] = check_riichi_discard
+        observed["is_haidi"] = is_haidi
+        observed["is_lingshang"] = is_lingshang
         return True, True
 
     monkeypatch.setattr(engine, "_pm_evaluate_draw", fake_evaluate_draw)
@@ -182,3 +186,5 @@ def test_compute_self_options_uses_combined_draw_eval(monkeypatch: pytest.Monkey
     assert observed["win_tile"] == draw_tile
     assert observed["is_menqian"] is True
     assert observed["check_riichi_discard"] is True
+    assert observed["is_haidi"] is False
+    assert observed["is_lingshang"] is False
