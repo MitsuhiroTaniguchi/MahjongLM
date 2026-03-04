@@ -24,6 +24,11 @@ source .venv/bin/activate
 python scripts/tokenize_tenhou.py --max-games 200 --progress-every 50
 ```
 
+`setup_pymahjong.sh` installs upstream `pymahjong` and applies a local additive patch for
+extra speed APIs (`has_hupai_multi`, `evaluate_draw`) before build/install.
+That patch corresponds to upstream PR #5.
+Upstream PR notes: `docs/performance/pymahjong_upstream_pr_notes.md`.
+
 Default input is `data/raw/tenhou/data2023.zip` and default output is `data/processed/tenhou/tokens_2023.jsonl.gz`.
 
 For all years in `data/raw/tenhou/`:
