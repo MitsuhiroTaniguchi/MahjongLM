@@ -6,7 +6,7 @@ pytest.importorskip("pymahjong")
 
 import tenhou_tokenizer.engine as engine
 from tenhou_tokenizer.engine import ReactionDecision, TenhouTokenizer, tile_to_index
-from tests.fixtures.synthetic_logs import minimal_game, qipai_event, qipai_payload
+from tests.fixtures.synthetic_logs import minimal_game, pingju_event, qipai_event, qipai_payload
 
 
 def test_permanent_furiten_blocks_ron_for_all_waits(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -160,3 +160,35 @@ def test_riichi_ankan_uses_pre_draw_waits_baseline(monkeypatch: pytest.MonkeyPat
 
     opts = tokenizer._compute_self_options(actor=actor, drawn_tile=draw_tile)
     assert "ankan" in opts
+
+
+def test_kaigang_between_discard_and_fulou_keeps_discard_reaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: set())
+    monkeypatch.setattr(TenhouTokenizer, "_can_win", lambda *_args, **_kwargs: False)
+
+    hands = [
+        "m5567p123s123z112",
+        "m123456789p1234",
+        "m123456789p1234",
+        "m123456789p1234",
+    ]
+    game = minimal_game(
+        [
+            qipai_event(hands=hands),
+            {"zimo": {"l": 3, "p": "p1"}},
+            {"dapai": {"l": 3, "p": "m6"}},
+            {"kaigang": {"baopai": "z1"}},
+            {"fulou": {"l": 0, "m": "m56-7"}},
+            {"dapai": {"l": 0, "p": "m6"}},
+            pingju_event(),
+        ]
+    )
+
+    tokens = TenhouTokenizer().tokenize_game(game)
+
+    assert "opt_react_0_chi" in tokens
+    assert "take_react_0_chi" in tokens
+    assert "call_chi_0_m5_m6_m7" in tokens
+    assert "discard_0_m6" in tokens

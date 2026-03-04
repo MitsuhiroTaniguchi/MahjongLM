@@ -686,9 +686,11 @@ class TenhouTokenizer:
     def _is_reaction_continuation(self, key: str, value: dict) -> bool:
         if not self.pending_reaction:
             return False
-        if key == "fulou" and self.pending_reaction.trigger == "discard":
+        # kaigang can appear between discard and the actual fulou/hule reaction.
+        # It is a dora reveal side event and should not close reaction windows.
+        if key == "kaigang":
             return True
-        if key == "kaigang" and self.pending_reaction.trigger == "kakan":
+        if key == "fulou" and self.pending_reaction.trigger == "discard":
             return True
         if key == "hule" and value.get("baojia") == self.pending_reaction.discarder:
             return True
