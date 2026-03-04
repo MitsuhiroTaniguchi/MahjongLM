@@ -79,6 +79,59 @@ def test_riichi_take_does_not_emit_riichi_event_token(monkeypatch: pytest.Monkey
     assert "riichi_0" not in tokenizer.tokens
 
 
+def test_riichi_discard_ron_does_not_deduct_stick(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: {"riichi"})
+    monkeypatch.setattr(
+        TenhouTokenizer,
+        "_compute_reaction_options",
+        lambda _self, discarder, tile_idx: ReactionDecision(
+            discarder=discarder,
+            discard_tile=tile_idx,
+            options_by_player={1: {"ron"}},
+            trigger="discard",
+        ),
+    )
+
+    tokenizer._on_draw({"l": 0, "p": "m1"}, is_gangzimo=False)
+    tokenizer._on_discard({"l": 0, "p": "m1*"})
+    assert tokenizer.players[0].score == 25000
+
+    tokenizer._on_hule({"l": 1, "baojia": 0, "fenpei": [0, 0, 0, 0]})
+    tokenizer._flush_pending()
+    assert tokenizer.players[0].score == 25000
+
+
+def test_riichi_stick_is_deducted_when_no_ron_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: {"riichi"})
+    monkeypatch.setattr(TenhouTokenizer, "_compute_reaction_options", lambda *_args, **_kwargs: None)
+
+    tokenizer._on_draw({"l": 0, "p": "m1"}, is_gangzimo=False)
+    tokenizer._on_discard({"l": 0, "p": "m1*"})
+
+    assert tokenizer.players[0].score == 24000
+
+
+def test_riichi_stick_is_deducted_when_ron_options_all_pass() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_reaction = ReactionDecision(
+        discarder=0,
+        discard_tile=tile_to_index("m1"),
+        options_by_player={1: {"ron"}},
+        trigger="discard",
+    )
+    tokenizer.pending_riichi_actor = 0
+
+    tokenizer._finalize_reaction(close_reason="voluntary")
+    assert tokenizer.players[0].score == 24000
+
+
 def test_kakan_generates_reaction_decision_and_rob_kan_take(monkeypatch: pytest.MonkeyPatch) -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())

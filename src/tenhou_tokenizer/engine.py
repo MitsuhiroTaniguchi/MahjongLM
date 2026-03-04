@@ -417,6 +417,7 @@ class TenhouTokenizer:
         self.players: List[PlayerState] = []
         self.pending_self: Optional[SelfDecision] = None
         self.pending_reaction: Optional[ReactionDecision] = None
+        self.pending_riichi_actor: Optional[int] = None
         self.round_index = 0
         self.live_draws_left = 70
         self.bakaze = 0
@@ -426,6 +427,7 @@ class TenhouTokenizer:
         self.tokens = ["game_start"]
         self.pending_self = None
         self.pending_reaction = None
+        self.pending_riichi_actor = None
         self.round_index = 0
         for round_data in game.get("log", []):
             self._process_round(round_data)
@@ -436,6 +438,7 @@ class TenhouTokenizer:
     def _process_round(self, round_data: list) -> None:
         self.pending_self = None
         self.pending_reaction = None
+        self.pending_riichi_actor = None
 
         for event in round_data:
             if not event:
@@ -478,6 +481,9 @@ class TenhouTokenizer:
             self._finalize_reaction(close_reason="voluntary")
         if self.pending_self:
             self._finalize_self(set())
+
+    def _apply_riichi_stick(self, actor: int) -> None:
+        self.players[actor].score -= 1000
 
     def _player_wind(self, seat: int) -> int:
         return (seat - self.dealer_seat) % 4
@@ -699,14 +705,21 @@ class TenhouTokenizer:
 
         if is_riichi:
             self.players[actor].is_riichi = True
-            self.players[actor].score -= 1000
 
         reaction = self._compute_reaction_options(actor, tile_idx)
         if reaction:
             self.pending_reaction = reaction
+            if is_riichi:
+                has_ron_option = any("ron" in opts for opts in reaction.options_by_player.values())
+                if has_ron_option:
+                    self.pending_riichi_actor = actor
+                else:
+                    self._apply_riichi_stick(actor)
             for seat, opts in sorted(reaction.options_by_player.items()):
                 for opt in sorted(opts):
                     self.tokens.append(f"opt_react_{seat}_{opt}")
+        elif is_riichi:
+            self._apply_riichi_stick(actor)
 
     def _compute_reaction_options(self, discarder: int, tile_idx: int) -> Optional[ReactionDecision]:
         options_by_player: Dict[int, Set[str]] = {}
@@ -1061,6 +1074,16 @@ class TenhouTokenizer:
     def _finalize_reaction(self, close_reason: str = "voluntary") -> None:
         if not self.pending_reaction:
             return
+
+        had_ron_winner = any(action == "ron" for action in self.pending_reaction.chosen.values())
+        if (
+            self.pending_riichi_actor is not None
+            and self.pending_reaction.trigger == "discard"
+            and self.pending_riichi_actor == self.pending_reaction.discarder
+        ):
+            if close_reason != "forced_rule" and not had_ron_winner:
+                self._apply_riichi_stick(self.pending_riichi_actor)
+            self.pending_riichi_actor = None
 
         for seat, opts in sorted(self.pending_reaction.options_by_player.items()):
             chosen = self.pending_reaction.chosen.get(seat)
