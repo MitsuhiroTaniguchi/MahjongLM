@@ -112,11 +112,51 @@ def parse_hand_counts(hand: str) -> List[int]:
     return counts
 
 
+def parse_hand_red_fives(hand: str) -> Dict[str, int]:
+    red_fives = {"m": 0, "p": 0, "s": 0}
+    for tile in _parse_tiles(hand, stop_at_comma=True, context="hand"):
+        if tile[1] == "0" and tile[0] in red_fives:
+            red_fives[tile[0]] += 1
+    return red_fives
+
+
 def parse_meld_tiles(meld: str) -> List[int]:
     tiles = [tile_to_index(tile) for tile in _parse_tiles(meld, stop_at_comma=False, context="meld")]
     if not tiles:
         raise TokenizeError(f"empty meld parse: {meld}")
     return tiles
+
+
+def parse_meld_token_tiles_and_called(meld: str) -> Tuple[List[str], Optional[int]]:
+    tiles: List[str] = []
+    called_index: Optional[int] = None
+    suit: Optional[str] = None
+    mark_next = False
+
+    for ch in meld:
+        if ch in SUIT_BASE:
+            suit = ch
+            continue
+        if ch == ",":
+            continue
+        if ch in "-=+":
+            mark_next = True
+            continue
+        if ch.isdigit():
+            if suit is None:
+                raise TokenizeError(f"digit without suit in meld: {meld}")
+            if mark_next:
+                called_index = len(tiles)
+                mark_next = False
+            tiles.append(token_tile(f"{suit}{ch}"))
+            continue
+
+    if not tiles:
+        raise TokenizeError(f"empty meld parse: {meld}")
+    # Some converter variants may place the marker after the called digit.
+    if mark_next and called_index is None:
+        called_index = len(tiles) - 1
+    return tiles, called_index
 
 
 def token_tile_sort_key(tile: str) -> Tuple[int, int]:
@@ -380,10 +420,12 @@ def _pm_evaluate_draw(
 class PlayerState:
     concealed: List[int]
     score: int
+    red_fives: Dict[str, int] = field(default_factory=lambda: {"m": 0, "p": 0, "s": 0})
     is_riichi: bool = False
     open_melds: int = 0
     closed_kans: int = 0
     open_pons: Dict[int, int] = field(default_factory=dict)
+    open_pons_red: Dict[int, int] = field(default_factory=dict)
     melds: List[Tuple[str, int]] = field(default_factory=list)
     furiten_tiles: Set[int] = field(default_factory=set)
     temporary_furiten: bool = False
@@ -485,6 +527,136 @@ class TenhouTokenizer:
     def _apply_riichi_stick(self, actor: int) -> None:
         self.players[actor].score -= 1000
 
+    def _can_consume_concealed_token(
+        self,
+        counts: List[int],
+        red_fives: Dict[str, int],
+        tile_token: str,
+    ) -> bool:
+        idx = tile_to_index(tile_token)
+        if counts[idx] <= 0:
+            return False
+        suit = tile_token[0]
+        digit = tile_token[1]
+        if digit == "0":
+            return suit in red_fives and red_fives[suit] > 0
+        if suit in red_fives and digit == "5":
+            normal_fives = counts[idx] - red_fives[suit]
+            return normal_fives > 0
+        return True
+
+    def _consume_concealed_token(self, p: PlayerState, tile_token: str) -> None:
+        if not self._can_consume_concealed_token(p.concealed, p.red_fives, tile_token):
+            raise TokenizeError(f"cannot consume tile from concealed hand: {tile_token}")
+        idx = tile_to_index(tile_token)
+        p.concealed[idx] -= 1
+        if tile_token[1] == "0" and tile_token[0] in p.red_fives:
+            p.red_fives[tile_token[0]] -= 1
+
+    def _consume_unspecified_tile(self, p: PlayerState, tile_idx: int, n: int = 1) -> None:
+        base_token = index_to_tile(tile_idx)
+        suit = base_token[0]
+        for _ in range(n):
+            tile_token = base_token
+            if suit in p.red_fives and base_token[1] == "5":
+                normal_fives = p.concealed[tile_idx] - p.red_fives[suit]
+                tile_token = f"{suit}5" if normal_fives > 0 else f"{suit}0"
+            self._consume_concealed_token(p, tile_token)
+
+    def _add_concealed_token(self, p: PlayerState, tile_token: str) -> int:
+        idx = tile_to_index(tile_token)
+        p.concealed[idx] += 1
+        if tile_token[1] == "0" and tile_token[0] in p.red_fives:
+            p.red_fives[tile_token[0]] += 1
+        return idx
+
+    def _infer_consumed_meld_tokens(
+        self,
+        p: PlayerState,
+        meld_token_tiles: List[str],
+        called_index: Optional[int],
+    ) -> List[str]:
+        target = max(0, len(meld_token_tiles) - 1)
+        counts = list(p.concealed)
+        red_fives = dict(p.red_fives)
+        consumed: List[str] = []
+        blocked = called_index if called_index is not None and 0 <= called_index < len(meld_token_tiles) else None
+        order = [i for i in range(len(meld_token_tiles)) if i != blocked]
+        order.extend(i for i in range(len(meld_token_tiles)) if i == blocked)
+
+        for idx in order:
+            if len(consumed) >= target:
+                break
+            tile_token = meld_token_tiles[idx]
+            if not self._can_consume_concealed_token(counts, red_fives, tile_token):
+                continue
+            tile_idx = tile_to_index(tile_token)
+            counts[tile_idx] -= 1
+            if tile_token[1] == "0" and tile_token[0] in red_fives:
+                red_fives[tile_token[0]] -= 1
+            consumed.append(tile_token)
+
+        if len(consumed) != target:
+            raise TokenizeError("cannot infer fulou consumption from concealed hand")
+        return consumed
+
+    def _chi_pos_label(
+        self,
+        meld_tiles: List[int],
+        called_index: Optional[int],
+        discard_tile: Optional[int],
+    ) -> Optional[str]:
+        if len(meld_tiles) != 3:
+            return None
+        sorted_tiles = sorted(meld_tiles)
+        if sorted_tiles[0] == sorted_tiles[1] or sorted_tiles[1] == sorted_tiles[2]:
+            return None
+        called_tile = discard_tile
+        if called_index is not None and 0 <= called_index < len(meld_tiles):
+            called_tile = meld_tiles[called_index]
+        if called_tile is None:
+            return None
+        if called_tile == sorted_tiles[0]:
+            return "low"
+        if called_tile == sorted_tiles[1]:
+            return "mid"
+        if called_tile == sorted_tiles[2]:
+            return "high"
+        return None
+
+    def _red_choice_token(
+        self,
+        action: str,
+        consumed_tokens: List[str],
+        pre_counts: List[int],
+        pre_red_fives: Dict[str, int],
+    ) -> Optional[str]:
+        if action not in {"chi", "pon"}:
+            return None
+
+        five_suits = [t[0] for t in consumed_tokens if t[0] in {"m", "p", "s"} and t[1] in {"0", "5"}]
+        if not five_suits:
+            return None
+        suit = five_suits[0]
+        if any(s != suit for s in five_suits):
+            return None
+
+        consumed_fives = len(five_suits)
+        if consumed_fives == 0:
+            return None
+
+        idx = tile_to_index(f"{suit}5")
+        total_fives = pre_counts[idx]
+        red_fives = pre_red_fives.get(suit, 0)
+        normal_fives = total_fives - red_fives
+        min_red_used = max(0, consumed_fives - normal_fives)
+        max_red_used = min(consumed_fives, red_fives)
+        if min_red_used == max_red_used:
+            return None
+
+        used_red = any(t == f"{suit}0" for t in consumed_tokens)
+        return f"red_{action}_{'used' if used_red else 'not_used'}"
+
     def _player_wind(self, seat: int) -> int:
         return (seat - self.dealer_seat) % 4
 
@@ -564,8 +736,13 @@ class TenhouTokenizer:
 
     def _on_qipai(self, q: dict) -> None:
         hand_counts_list = [parse_hand_counts(hand) for hand in q["shoupai"]]
+        hand_red_fives_list = [parse_hand_red_fives(hand) for hand in q["shoupai"]]
         self.players = [
-            PlayerState(concealed=list(hand_counts_list[seat]), score=q["defen"][seat])
+            PlayerState(
+                concealed=list(hand_counts_list[seat]),
+                score=q["defen"][seat],
+                red_fives=dict(hand_red_fives_list[seat]),
+            )
             for seat in range(4)
         ]
         self.live_draws_left = 70
@@ -593,10 +770,8 @@ class TenhouTokenizer:
     def _on_draw(self, z: dict, is_gangzimo: bool) -> None:
         actor = z["l"]
         tile_str = _strip_tile_suffix(z["p"])
-        tile_idx = tile_to_index(tile_str)
         tile_token = token_tile(tile_str)
-
-        self.players[actor].concealed[tile_idx] += 1
+        tile_idx = self._add_concealed_token(self.players[actor], tile_token)
         self.players[actor].temporary_furiten = False
         self._invalidate_wait_mask(actor)
         self.live_draws_left -= 1
@@ -688,15 +863,15 @@ class TenhouTokenizer:
         actor = d["l"]
         raw_tile = d["p"]
         tile_str = _strip_tile_suffix(raw_tile)
-        tile_idx = tile_to_index(tile_str)
         tile_token = token_tile(tile_str)
+        tile_idx = tile_to_index(tile_token)
         is_riichi = "*" in raw_tile
         is_tsumogiri = "_" in raw_tile
 
         chosen: Set[str] = {"riichi"} if is_riichi else set()
         self._finalize_self(chosen, actor=actor)
 
-        _remove_tiles(self.players[actor].concealed, tile_idx, 1)
+        self._consume_concealed_token(self.players[actor], tile_token)
         self.players[actor].furiten_tiles.add(tile_idx)
         self._invalidate_wait_mask(actor)
 
@@ -863,7 +1038,8 @@ class TenhouTokenizer:
     def _on_fulou(self, f: dict) -> None:
         actor = f["l"]
         meld_text = f["m"]
-        meld_tiles = parse_meld_tiles(meld_text)
+        meld_token_tiles, called_index_hint = parse_meld_token_tiles_and_called(meld_text)
+        meld_tiles = [tile_to_index(tile) for tile in meld_token_tiles]
         action = classify_fulou(meld_tiles)
 
         discard_tile = None
@@ -874,25 +1050,40 @@ class TenhouTokenizer:
             self._finalize_reaction()
 
         p = self.players[actor]
+        pre_counts = list(p.concealed)
+        pre_red_fives = dict(p.red_fives)
 
-        need = Counter(meld_tiles)
-        if discard_tile is not None and need.get(discard_tile, 0) > 0:
-            need[discard_tile] -= 1
-        else:
-            need = Counter()
-            remaining = len(meld_tiles) - 1
-            for tile in meld_tiles:
-                if remaining == 0:
-                    break
-                if p.concealed[tile] > need[tile]:
-                    need[tile] += 1
-                    remaining -= 1
-            if remaining != 0:
-                raise TokenizeError("cannot infer fulou consumption from concealed hand")
+        called_index = called_index_hint
+        if discard_tile is not None:
+            if called_index is None or called_index >= len(meld_tiles) or meld_tiles[called_index] != discard_tile:
+                matches = [i for i, tile in enumerate(meld_tiles) if tile == discard_tile]
+                if matches:
+                    called_index = matches[0]
 
-        for tile, n in need.items():
-            if n > 0:
-                _remove_tiles(p.concealed, tile, n)
+        try:
+            consumed_tokens = self._infer_consumed_meld_tokens(p, meld_token_tiles, called_index)
+            for tile_token in consumed_tokens:
+                self._consume_concealed_token(p, tile_token)
+        except TokenizeError:
+            self.tokens.append("event_unknown_fulou_detail")
+            consumed_tokens = []
+            need = Counter(meld_tiles)
+            if discard_tile is not None and need.get(discard_tile, 0) > 0:
+                need[discard_tile] -= 1
+            else:
+                need = Counter()
+                remaining = len(meld_tiles) - 1
+                for tile in meld_tiles:
+                    if remaining == 0:
+                        break
+                    if p.concealed[tile] > need[tile]:
+                        need[tile] += 1
+                        remaining -= 1
+                if remaining != 0:
+                    raise TokenizeError("cannot infer fulou consumption from concealed hand")
+            for tile, n in need.items():
+                if n > 0:
+                    self._consume_unspecified_tile(p, tile, n=n)
         self._invalidate_wait_mask(actor)
 
         p.open_melds += 1
@@ -904,6 +1095,9 @@ class TenhouTokenizer:
         elif action == "pon":
             tile = meld_tiles[0]
             p.open_pons[tile] = p.open_pons.get(tile, 0) + 1
+            red_in_pon = sum(1 for tile_token in meld_token_tiles if tile_token[1] == "0")
+            if red_in_pon:
+                p.open_pons_red[tile] = p.open_pons_red.get(tile, 0) + red_in_pon
             p.melds.append(("pon", tile))
         elif action == "minkan":
             tile = meld_tiles[0]
@@ -911,12 +1105,25 @@ class TenhouTokenizer:
 
         if not had_pending_reaction:
             self.tokens.append(f"take_react_{actor}_{action}")
+        if action == "chi":
+            chi_pos = self._chi_pos_label(meld_tiles, called_index, discard_tile)
+            if chi_pos is not None:
+                self.tokens.append(f"chi_pos_{chi_pos}")
+        red_choice = self._red_choice_token(
+            action=action,
+            consumed_tokens=consumed_tokens,
+            pre_counts=pre_counts,
+            pre_red_fives=pre_red_fives,
+        )
+        if red_choice is not None:
+            self.tokens.append(red_choice)
 
     def _on_gang(self, g: dict) -> None:
         actor = g["l"]
         meld_text = g["m"]
         kind = classify_gang(meld_text)
-        meld_tiles = parse_meld_tiles(meld_text)
+        meld_token_tiles, _called_index = parse_meld_token_tiles_and_called(meld_text)
+        meld_tiles = [tile_to_index(tile) for tile in meld_token_tiles]
         tile = meld_tiles[0]
 
         chosen = {kind}
@@ -926,15 +1133,34 @@ class TenhouTokenizer:
         p = self.players[actor]
 
         if kind == "ankan":
-            _remove_tiles(p.concealed, tile, 4)
+            for tile_token in meld_token_tiles:
+                try:
+                    self._consume_concealed_token(p, tile_token)
+                except TokenizeError:
+                    # Tolerate synthetic tests where concealed counts are patched without red_fives sync.
+                    self._consume_unspecified_tile(p, tile_to_index(tile_token), n=1)
             p.closed_kans += 1
             p.melds.append(("ankan", tile))
         else:
-            _remove_tiles(p.concealed, tile, 1)
+            tile_token = index_to_tile(tile)
+            suit = tile_token[0]
+            if suit in p.red_fives and tile_token[1] == "5":
+                meld_red_fives = sum(1 for t in meld_token_tiles if t[1] == "0")
+                open_pon_red = p.open_pons_red.get(tile, 0)
+                added_red = max(0, meld_red_fives - open_pon_red)
+                tile_token = f"{suit}0" if added_red > 0 else f"{suit}5"
+            try:
+                self._consume_concealed_token(p, tile_token)
+            except TokenizeError:
+                self._consume_unspecified_tile(p, tile, n=1)
             if p.open_pons.get(tile, 0) > 0:
                 p.open_pons[tile] -= 1
                 if p.open_pons[tile] == 0:
                     del p.open_pons[tile]
+            if p.open_pons_red.get(tile, 0) > 0:
+                p.open_pons_red[tile] -= 1
+                if p.open_pons_red[tile] == 0:
+                    del p.open_pons_red[tile]
             replaced = False
             for i, (mtype, mtile) in enumerate(p.melds):
                 if mtype == "pon" and mtile == tile:

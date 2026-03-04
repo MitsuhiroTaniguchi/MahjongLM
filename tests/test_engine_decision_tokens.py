@@ -500,6 +500,116 @@ def test_fulou_no_longer_emits_call_token(monkeypatch: pytest.MonkeyPatch) -> No
     assert all(not t.startswith("call_") for t in tokens)
 
 
+@pytest.mark.parametrize(
+    ("meld", "discard", "hand", "expected"),
+    [
+        ("m-456", "m4", "m56p123456s123z11", "chi_pos_low"),
+        ("m4-56", "m5", "m46p123456s123z11", "chi_pos_mid"),
+        ("m45-6", "m6", "m45p123456s123z11", "chi_pos_high"),
+    ],
+)
+def test_fulou_emits_chi_position_token(
+    meld: str,
+    discard: str,
+    hand: str,
+    expected: str,
+) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(
+        qipai_payload(hands=[hand, "m123456789p1234", "m123456789p1234", "m123456789p1234"])
+    )
+    tokenizer.pending_reaction = ReactionDecision(
+        discarder=3,
+        discard_tile=tile_to_index(discard),
+        options_by_player={0: {"chi"}},
+    )
+
+    tokenizer._on_fulou({"l": 0, "m": meld})
+
+    assert "take_react_0_chi" in tokenizer.tokens
+    assert expected in tokenizer.tokens
+
+
+def test_fulou_emits_red_chi_used_when_choice_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: set())
+    monkeypatch.setattr(TenhouTokenizer, "_can_win", lambda *_args, **_kwargs: False)
+    game = minimal_game(
+        [
+            qipai_event(hands=["m056p123s123z1122", "m123456789p1234", "m123456789p1234", "m123456789p1234"]),
+            {"zimo": {"l": 3, "p": "p1"}},
+            {"dapai": {"l": 3, "p": "m7"}},
+            {"fulou": {"l": 0, "m": "m06-7"}},
+            pingju_event(),
+        ]
+    )
+
+    tokens = TenhouTokenizer().tokenize_game(game)
+    assert "take_react_0_chi" in tokens
+    assert "chi_pos_high" in tokens
+    assert "red_chi_used" in tokens
+
+
+def test_fulou_emits_red_chi_not_used_when_choice_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: set())
+    monkeypatch.setattr(TenhouTokenizer, "_can_win", lambda *_args, **_kwargs: False)
+    game = minimal_game(
+        [
+            qipai_event(hands=["m056p123s123z1122", "m123456789p1234", "m123456789p1234", "m123456789p1234"]),
+            {"zimo": {"l": 3, "p": "p1"}},
+            {"dapai": {"l": 3, "p": "m7"}},
+            {"fulou": {"l": 0, "m": "m56-7"}},
+            pingju_event(),
+        ]
+    )
+
+    tokens = TenhouTokenizer().tokenize_game(game)
+    assert "take_react_0_chi" in tokens
+    assert "red_chi_not_used" in tokens
+
+
+def test_fulou_emits_red_pon_used_and_not_used() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(
+        qipai_payload(hands=["m055p123s123z1122", "m123456789p1234", "m123456789p1234", "m123456789p1234"])
+    )
+    tokenizer.pending_reaction = ReactionDecision(
+        discarder=1,
+        discard_tile=tile_to_index("m5"),
+        options_by_player={0: {"pon"}},
+    )
+    tokenizer._on_fulou({"l": 0, "m": "m05+5"})
+    assert "take_react_0_pon" in tokenizer.tokens
+    assert "red_pon_used" in tokenizer.tokens
+
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(
+        qipai_payload(hands=["m055p123s123z1122", "m123456789p1234", "m123456789p1234", "m123456789p1234"])
+    )
+    tokenizer.pending_reaction = ReactionDecision(
+        discarder=1,
+        discard_tile=tile_to_index("m5"),
+        options_by_player={0: {"pon"}},
+    )
+    tokenizer._on_fulou({"l": 0, "m": "m55+5"})
+    assert "take_react_0_pon" in tokenizer.tokens
+    assert "red_pon_not_used" in tokenizer.tokens
+
+
+def test_fulou_does_not_emit_red_token_when_no_choice() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(
+        qipai_payload(hands=["m05p123s123z11223", "m123456789p1234", "m123456789p1234", "m123456789p1234"])
+    )
+    tokenizer.pending_reaction = ReactionDecision(
+        discarder=1,
+        discard_tile=tile_to_index("m5"),
+        options_by_player={0: {"pon"}},
+    )
+    tokenizer._on_fulou({"l": 0, "m": "m05+5"})
+    assert "take_react_0_pon" in tokenizer.tokens
+    assert all(not token.startswith("red_pon_") for token in tokenizer.tokens)
+
+
 def test_kakan_no_longer_emits_kan_token(monkeypatch: pytest.MonkeyPatch) -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
