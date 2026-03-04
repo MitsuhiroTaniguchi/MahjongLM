@@ -388,7 +388,8 @@ class TenhouTokenizer:
             key, value = next(iter(event.items()))
 
             if self.pending_reaction and not self._is_reaction_continuation(key, value):
-                self._finalize_reaction()
+                close_reason = "forced_rule" if key == "pingju" else "voluntary"
+                self._finalize_reaction(close_reason=close_reason)
 
             if self.pending_self and not self._is_self_resolution(key, value):
                 self._finalize_self(set())
@@ -419,7 +420,7 @@ class TenhouTokenizer:
 
     def _flush_pending(self) -> None:
         if self.pending_reaction:
-            self._finalize_reaction()
+            self._finalize_reaction(close_reason="voluntary")
         if self.pending_self:
             self._finalize_self(set())
 
@@ -937,7 +938,40 @@ class TenhouTokenizer:
             self.tokens.append(f"pass_self_{seat}_{opt}")
         self.pending_self = None
 
-    def _finalize_reaction(self) -> None:
+    def _reaction_pass_reason(self, seat: int, opt: str, close_reason: str) -> str:
+        if close_reason == "forced_rule":
+            return "forced_rule"
+        if not self.pending_reaction:
+            return "voluntary"
+
+        chosen_other_actions = [
+            action
+            for other_seat, action in self.pending_reaction.chosen.items()
+            if other_seat != seat
+        ]
+        if not chosen_other_actions:
+            return "voluntary"
+
+        if opt == "chi":
+            if any(action in {"ron", "pon", "minkan"} for action in chosen_other_actions):
+                return "forced_priority"
+            return "voluntary"
+
+        if opt in {"pon", "minkan"}:
+            if any(action in {"ron", "pon", "minkan"} for action in chosen_other_actions):
+                return "forced_priority"
+            return "voluntary"
+
+        if opt == "ron":
+            # Do not infer atamahane/room-rule restrictions without explicit rule metadata.
+            return "voluntary"
+
+        return "voluntary"
+
+    def _emit_reaction_pass(self, seat: int, opt: str, reason: str) -> None:
+        self.tokens.append(f"pass_react_{seat}_{opt}_{reason}")
+
+    def _finalize_reaction(self, close_reason: str = "voluntary") -> None:
         if not self.pending_reaction:
             return
 
@@ -946,15 +980,20 @@ class TenhouTokenizer:
             if chosen and chosen in opts:
                 self.tokens.append(f"take_react_{seat}_{chosen}")
                 for opt in sorted(opts - {chosen}):
-                    self.tokens.append(f"pass_react_{seat}_{opt}")
+                    self._emit_reaction_pass(seat, opt, "voluntary")
             else:
                 for opt in sorted(opts):
-                    self.tokens.append(f"pass_react_{seat}_{opt}")
+                    reason = self._reaction_pass_reason(seat, opt, close_reason)
+                    self._emit_reaction_pass(seat, opt, reason)
             if "ron" in opts and chosen != "ron":
-                if self.players[seat].is_riichi:
-                    self.players[seat].riichi_furiten = True
-                else:
-                    self.players[seat].temporary_furiten = True
+                ron_reason = "voluntary"
+                if not (chosen and chosen in opts):
+                    ron_reason = self._reaction_pass_reason(seat, "ron", close_reason)
+                if ron_reason == "voluntary":
+                    if self.players[seat].is_riichi:
+                        self.players[seat].riichi_furiten = True
+                    else:
+                        self.players[seat].temporary_furiten = True
         self.pending_reaction = None
 
     def _is_reaction_continuation(self, key: str, value: dict) -> bool:

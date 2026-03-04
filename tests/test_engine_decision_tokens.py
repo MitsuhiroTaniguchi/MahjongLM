@@ -106,7 +106,64 @@ def test_passing_ron_by_taking_other_call_sets_temporary_furiten() -> None:
 
     assert tokenizer.players[1].temporary_furiten
     assert "take_react_1_chi" in tokenizer.tokens
-    assert "pass_react_1_ron" in tokenizer.tokens
+    assert "pass_react_1_ron_voluntary" in tokenizer.tokens
+
+
+def test_pass_react_forced_priority_when_pon_blocks_chi() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    tokenizer.pending_reaction = ReactionDecision(
+        discarder=3,
+        discard_tile=tile_to_index("m4"),
+        options_by_player={0: {"chi"}, 1: {"pon"}},
+        chosen={1: "pon"},
+    )
+    tokenizer._finalize_reaction()
+
+    assert "take_react_1_pon" in tokenizer.tokens
+    assert "pass_react_0_chi_forced_priority" in tokenizer.tokens
+
+
+def test_pass_react_forced_rule_does_not_set_furiten() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    tokenizer.pending_reaction = ReactionDecision(
+        discarder=0,
+        discard_tile=tile_to_index("m1"),
+        options_by_player={1: {"ron"}},
+    )
+    tokenizer._finalize_reaction(close_reason="forced_rule")
+
+    assert "pass_react_1_ron_forced_rule" in tokenizer.tokens
+    assert not tokenizer.players[1].temporary_furiten
+    assert not tokenizer.players[1].riichi_furiten
+
+
+def test_pingju_closes_reaction_as_forced_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: set())
+
+    def fake_reaction(_self: TenhouTokenizer, _discarder: int, _tile_idx: int) -> ReactionDecision:
+        return ReactionDecision(
+            discarder=0,
+            discard_tile=tile_to_index("m1"),
+            options_by_player={1: {"ron"}},
+        )
+
+    monkeypatch.setattr(TenhouTokenizer, "_compute_reaction_options", fake_reaction)
+
+    game = minimal_game(
+        [
+            qipai_event(),
+            {"zimo": {"l": 0, "p": "m1"}},
+            {"dapai": {"l": 0, "p": "m1"}},
+            {"pingju": {"name": "三家和了", "fenpei": [0, 0, 0, 0], "shoupai": ["", "", "", ""]}},
+        ]
+    )
+
+    tokens = TenhouTokenizer().tokenize_game(game)
+    assert "pass_react_1_ron_forced_rule" in tokens
 
 
 def test_riichi_ankan_requires_waits_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
