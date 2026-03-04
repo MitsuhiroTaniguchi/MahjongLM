@@ -651,6 +651,8 @@ class TenhouTokenizer:
             self.tokens.append(f"score_delta_{seat}_{p['fenpei'][seat]}")
 
     def _kyushukyuhai_actor(self, shoupai: object) -> Optional[int]:
+        if self.pending_self and "kyushukyuhai" in self.pending_self.options:
+            return self.pending_self.actor
         if not isinstance(shoupai, list):
             return None
         for seat, hand in enumerate(shoupai):

@@ -196,3 +196,22 @@ def test_kyushukyuhai_is_emitted_as_take_on_pingju() -> None:
     assert "opt_self_0_kyushukyuhai" in tokens
     assert "take_self_0_kyushukyuhai" in tokens
     assert "pass_self_0_kyushukyuhai" not in tokens
+
+
+def test_kyushukyuhai_uses_pending_actor_when_shoupai_has_multiple_non_empty() -> None:
+    kyushu_hand = "m1199p19s19z12345"
+    game = minimal_game(
+        [
+            qipai_event(hands=["m123456789p1234", "m123456789p1234", kyushu_hand, "m123456789p1234"]),
+            {"zimo": {"l": 2, "p": "m2"}},
+            # Converter variant: multiple non-empty shoupai slots.
+            {"pingju": {"name": "九種九牌", "fenpei": [0, 0, 0, 0], "shoupai": ["m1", "", "m2", ""]}},
+        ]
+    )
+
+    tokenizer = TenhouTokenizer()
+    tokens = tokenizer.tokenize_game(game)
+
+    assert "opt_self_2_kyushukyuhai" in tokens
+    assert "take_self_2_kyushukyuhai" in tokens
+    assert "pass_self_2_kyushukyuhai" not in tokens
