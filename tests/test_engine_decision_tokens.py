@@ -253,3 +253,77 @@ def test_kyushukyuhai_uses_pending_actor_when_shoupai_has_multiple_non_empty() -
     assert "opt_self_2_kyushukyuhai" in tokens
     assert "take_self_2_kyushukyuhai" in tokens
     assert "pass_self_2_kyushukyuhai" not in tokens
+
+
+def test_red_tiles_are_preserved_in_qipai_draw_and_discard_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: set())
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(
+        qipai_payload(
+            hands=["m067p123s123z1122", "m123456789p1234", "m123456789p1234", "m123456789p1234"]
+        )
+    )
+
+    tokenizer._on_draw({"l": 0, "p": "m0"}, is_gangzimo=False)
+    tokenizer._on_discard({"l": 0, "p": "m0_"})
+
+    assert "haipai_0_m0" in tokenizer.tokens
+    assert "draw_0_m0" in tokenizer.tokens
+    assert "discard_0_m0_tsumogiri" in tokenizer.tokens
+
+
+def test_red_tile_in_fulou_is_preserved_in_call_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: set())
+    monkeypatch.setattr(TenhouTokenizer, "_can_win", lambda *_args, **_kwargs: False)
+
+    hands = [
+        "m067p123s123z1122",
+        "m123456789p1234",
+        "m123456789p1234",
+        "m123456789p1234",
+    ]
+    game = minimal_game(
+        [
+            qipai_event(hands=hands),
+            {"zimo": {"l": 3, "p": "p1"}},
+            {"dapai": {"l": 3, "p": "m7"}},
+            {"fulou": {"l": 0, "m": "m06-7"}},
+            pingju_event(),
+        ]
+    )
+
+    tokens = TenhouTokenizer().tokenize_game(game)
+
+    assert "call_chi_0_m0_m6_m7" in tokens
+
+
+def test_red_tile_in_kakan_is_preserved_in_kan_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    tile = tile_to_index("m5")
+    actor = 0
+    p = tokenizer.players[actor]
+    p.concealed[tile] = max(p.concealed[tile], 1)
+    p.open_pons[tile] = 1
+    p.melds = [("pon", tile)]
+    monkeypatch.setattr(TenhouTokenizer, "_compute_kakan_reaction_options", lambda *_args, **_kwargs: None)
+
+    tokenizer._on_gang({"l": actor, "m": "m5550+"})
+
+    assert "kan_kakan_0_m0" in tokenizer.tokens
+
+
+def test_red_tile_in_ankan_is_preserved_in_kan_token() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    tile = tile_to_index("m5")
+    actor = 0
+    tokenizer.players[actor].concealed[tile] = 4
+
+    tokenizer._on_gang({"l": actor, "m": "m5550"})
+
+    assert "kan_ankan_0_m0" in tokenizer.tokens

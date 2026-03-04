@@ -44,14 +44,15 @@ def _norm_digit(digit: str) -> str:
 def tile_to_index(tile: str) -> int:
     if len(tile) != 2:
         raise TokenizeError(f"invalid tile format: {tile}")
-    suit, digit = tile[0], _norm_digit(tile[1])
+    suit, digit = tile[0], tile[1]
     if suit not in SUIT_BASE or not digit.isdigit():
         raise TokenizeError(f"invalid tile format: {tile}")
-    number = int(digit)
     if suit == "z":
+        number = int(digit)
         if number < 1 or number > 7:
             raise TokenizeError(f"invalid honor tile: {tile}")
     else:
+        number = int(_norm_digit(digit))
         if number < 1 or number > 9:
             raise TokenizeError(f"invalid suited tile: {tile}")
     return SUIT_BASE[suit] + number - 1
@@ -61,41 +62,66 @@ def index_to_tile(index: int) -> str:
     return INDEX_TO_TILE[index]
 
 
-def parse_hand_counts(hand: str) -> List[int]:
-    counts = [0] * 34
+def token_tile(tile: str) -> str:
+    if len(tile) != 2:
+        raise TokenizeError(f"invalid tile format: {tile}")
+    suit, digit = tile[0], tile[1]
+    if suit not in SUIT_BASE or not digit.isdigit():
+        raise TokenizeError(f"invalid tile format: {tile}")
+    if suit == "z":
+        number = int(digit)
+        if number < 1 or number > 7:
+            raise TokenizeError(f"invalid honor tile: {tile}")
+        return f"{suit}{number}"
+    number = int(digit)
+    if number == 0:
+        return f"{suit}0"
+    if number < 1 or number > 9:
+        raise TokenizeError(f"invalid suited tile: {tile}")
+    return f"{suit}{number}"
+
+
+def _parse_tiles(text: str, *, stop_at_comma: bool, context: str) -> List[str]:
+    tiles: List[str] = []
     suit: Optional[str] = None
-    for ch in hand:
+    for ch in text:
         if ch in SUIT_BASE:
             suit = ch
             continue
-        if ch == ",":
+        if stop_at_comma and ch == ",":
             break
-        if ch in "-=+":
-            continue
-        if ch.isdigit():
-            if suit is None:
-                raise TokenizeError(f"digit without suit in hand: {hand}")
-            idx = tile_to_index(f"{suit}{_norm_digit(ch)}")
-            counts[idx] += 1
-    return counts
-
-
-def parse_meld_tiles(meld: str) -> List[int]:
-    tiles: List[int] = []
-    suit: Optional[str] = None
-    for ch in meld:
-        if ch in SUIT_BASE:
-            suit = ch
-            continue
         if ch in "-=+,":
             continue
         if ch.isdigit():
             if suit is None:
-                raise TokenizeError(f"digit without suit in meld: {meld}")
-            tiles.append(tile_to_index(f"{suit}{_norm_digit(ch)}"))
+                raise TokenizeError(f"digit without suit in {context}: {text}")
+            tiles.append(token_tile(f"{suit}{ch}"))
+    return tiles
+
+
+def parse_hand_counts(hand: str) -> List[int]:
+    counts = [0] * 34
+    for tile in _parse_tiles(hand, stop_at_comma=True, context="hand"):
+        counts[tile_to_index(tile)] += 1
+    return counts
+
+
+def parse_meld_tiles(meld: str) -> List[int]:
+    tiles = [tile_to_index(tile) for tile in _parse_tiles(meld, stop_at_comma=False, context="meld")]
     if not tiles:
         raise TokenizeError(f"empty meld parse: {meld}")
     return tiles
+
+
+def parse_meld_token_tiles(meld: str) -> List[str]:
+    tiles = _parse_tiles(meld, stop_at_comma=False, context="meld")
+    if not tiles:
+        raise TokenizeError(f"empty meld parse: {meld}")
+    return tiles
+
+
+def token_tile_sort_key(tile: str) -> Tuple[int, int]:
+    return (tile_to_index(tile), 0 if tile[1] == "0" else 1)
 
 
 def classify_fulou(meld_tiles: List[int]) -> str:
@@ -487,15 +513,16 @@ class TenhouTokenizer:
         for seat, score in enumerate(q["defen"]):
             self.tokens.append(f"score_{seat}_{score}")
 
-        for seat, hand_counts in enumerate(hand_counts_list):
-            for tile_idx, count in enumerate(hand_counts):
-                for _ in range(count):
-                    self.tokens.append(f"haipai_{seat}_{index_to_tile(tile_idx)}")
+        for seat, hand in enumerate(q["shoupai"]):
+            hand_tiles = _parse_tiles(hand, stop_at_comma=True, context="hand")
+            for tile in sorted(hand_tiles, key=token_tile_sort_key):
+                self.tokens.append(f"haipai_{seat}_{tile}")
 
     def _on_draw(self, z: dict, is_gangzimo: bool) -> None:
         actor = z["l"]
         tile_str = _strip_tile_suffix(z["p"])
         tile_idx = tile_to_index(tile_str)
+        tile_token = token_tile(tile_str)
 
         self.players[actor].concealed[tile_idx] += 1
         self.players[actor].temporary_furiten = False
@@ -503,7 +530,7 @@ class TenhouTokenizer:
         self.live_draws_left -= 1
 
         action = "gang_draw" if is_gangzimo else "draw"
-        self.tokens.append(f"{action}_{actor}_{index_to_tile(tile_idx)}")
+        self.tokens.append(f"{action}_{actor}_{tile_token}")
 
         options = self._compute_self_options(actor, tile_idx)
         for opt in sorted(options):
@@ -583,6 +610,7 @@ class TenhouTokenizer:
         raw_tile = d["p"]
         tile_str = _strip_tile_suffix(raw_tile)
         tile_idx = tile_to_index(tile_str)
+        tile_token = token_tile(tile_str)
         is_riichi = "*" in raw_tile
         is_tsumogiri = "_" in raw_tile
 
@@ -594,7 +622,7 @@ class TenhouTokenizer:
         self._invalidate_wait_mask(actor)
 
         suffix = "_tsumogiri" if is_tsumogiri else ""
-        self.tokens.append(f"discard_{actor}_{index_to_tile(tile_idx)}{suffix}")
+        self.tokens.append(f"discard_{actor}_{tile_token}{suffix}")
 
         if is_riichi:
             self.players[actor].is_riichi = True
@@ -743,6 +771,7 @@ class TenhouTokenizer:
     def _on_fulou(self, f: dict) -> None:
         actor = f["l"]
         meld_text = f["m"]
+        meld_token_tiles = parse_meld_token_tiles(meld_text)
         meld_tiles = parse_meld_tiles(meld_text)
         action = classify_fulou(meld_tiles)
 
@@ -788,15 +817,17 @@ class TenhouTokenizer:
             tile = meld_tiles[0]
             p.melds.append(("minkan", tile))
 
-        meld_repr = "_".join(index_to_tile(t) for t in sorted(meld_tiles))
+        meld_repr = "_".join(sorted(meld_token_tiles, key=token_tile_sort_key))
         self.tokens.append(f"call_{action}_{actor}_{meld_repr}")
 
     def _on_gang(self, g: dict) -> None:
         actor = g["l"]
         meld_text = g["m"]
+        meld_token_tiles = parse_meld_token_tiles(meld_text)
         kind = classify_gang(meld_text)
         meld_tiles = parse_meld_tiles(meld_text)
         tile = meld_tiles[0]
+        tile_token = next((t for t in meld_token_tiles if t[1] == "0"), index_to_tile(tile))
 
         chosen = {kind}
         self._finalize_self(chosen, actor=actor)
@@ -823,7 +854,7 @@ class TenhouTokenizer:
                 p.melds.append(("minkan", tile))
         self._invalidate_wait_mask(actor)
 
-        self.tokens.append(f"kan_{kind}_{actor}_{index_to_tile(tile)}")
+        self.tokens.append(f"kan_{kind}_{actor}_{tile_token}")
 
         if kind == "kakan":
             reaction = self._compute_kakan_reaction_options(actor, tile)
