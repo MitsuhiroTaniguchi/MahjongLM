@@ -5,7 +5,7 @@ import pytest
 pytest.importorskip("pymahjong")
 
 import tenhou_tokenizer.engine as engine
-from tenhou_tokenizer.engine import ReactionDecision, TenhouTokenizer, tile_to_index
+from tenhou_tokenizer.engine import ReactionDecision, SelfDecision, TenhouTokenizer, tile_to_index
 from tests.fixtures.synthetic_logs import minimal_game, pingju_event, qipai_event, qipai_payload
 
 
@@ -105,6 +105,25 @@ def test_riichi_missed_ron_becomes_persistent_furiten(monkeypatch: pytest.Monkey
     monkeypatch.setattr(TenhouTokenizer, "_can_win", lambda *_args, **_kwargs: True)
     reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=tile_to_index("m1"))
     assert reaction is None or "ron" not in reaction.options_by_player.get(1, set())
+
+
+def test_riichi_missed_tsumo_becomes_persistent_furiten(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    seat = 1
+    tile_idx = tile_to_index("m1")
+    tokenizer.players[seat].is_riichi = True
+    tokenizer.pending_self = SelfDecision(actor=seat, options={"tsumo"})
+
+    tokenizer._finalize_self(set(), actor=seat)
+
+    assert tokenizer.players[seat].riichi_furiten
+    assert "pass_self_1_tsumo" in tokenizer.tokens
+
+    monkeypatch.setattr(TenhouTokenizer, "_wait_mask", lambda _self, s: (1 << tile_idx) if s == seat else 0)
+    monkeypatch.setattr(engine, "_pm_has_hupai_multi", lambda cases: [True] * len(cases))
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=tile_idx)
+    assert reaction is None or "ron" not in reaction.options_by_player.get(seat, set())
 
 
 def test_wait_mask_is_cached_until_player_state_changes(monkeypatch: pytest.MonkeyPatch) -> None:

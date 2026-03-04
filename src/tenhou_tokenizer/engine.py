@@ -1013,6 +1013,8 @@ class TenhouTokenizer:
 
         seat = self.pending_self.actor
         chosen_effective = chosen & self.pending_self.options
+        if self.players[seat].is_riichi and "tsumo" in self.pending_self.options and "tsumo" not in chosen_effective:
+            self.players[seat].riichi_furiten = True
         for opt in sorted(chosen_effective):
             self.tokens.append(f"take_self_{seat}_{opt}")
         for opt in sorted(self.pending_self.options - chosen_effective):
