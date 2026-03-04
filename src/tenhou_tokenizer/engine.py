@@ -7,6 +7,11 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 import pymahjong as pm  # type: ignore
 
 PM_XIANGTING = pm.Xiangting()
+PM_FASTAPI_AVAILABLE = all(
+    hasattr(pm, name) for name in ("wait_mask", "has_riichi_discard", "has_hupai")
+)
+PM_MULTI_HUPAI_AVAILABLE = hasattr(pm, "has_hupai_multi")
+PM_EVALUATE_DRAW_AVAILABLE = hasattr(pm, "evaluate_draw")
 
 SUIT_BASE = {"m": 0, "p": 9, "s": 18, "z": 27}
 INDEX_TO_TILE = [
@@ -16,6 +21,12 @@ INDEX_TO_TILE = [
     *(f"z{i}" for i in range(1, 8)),
 ]
 YAOCHU_INDICES: Set[int] = {0, 8, 9, 17, 18, 26, *range(27, 34)}
+MELD_TYPE_TO_PM_CODE = {
+    "chi": 0,
+    "pon": 1,
+    "minkan": 2,
+    "ankan": 3,
+}
 
 
 class TokenizeError(RuntimeError):
@@ -156,15 +167,26 @@ def _pm_xiangting(counts: List[int], meld_count: int) -> int:
     return int(x)
 
 
-def _pm_wait_tiles(counts: List[int], meld_count: int) -> Set[int]:
+def _pm_wait_mask(counts: List[int], meld_count: int) -> int:
+    if PM_FASTAPI_AVAILABLE:
+        return int(pm.wait_mask(tuple(counts), int(meld_count)))
     x, _mode, _disc, wait = PM_XIANGTING.calculate(tuple(counts), 4 - meld_count, 7, False, False)
     if int(x) != 0:
+        return 0
+    return int(wait)
+
+
+def _pm_wait_tiles(counts: List[int], meld_count: int) -> Set[int]:
+    wait_mask = _pm_wait_mask(counts, meld_count)
+    if wait_mask == 0:
         return set()
-    wait_mask = int(wait)
     return {i for i in range(34) if (wait_mask >> i) & 1}
 
 
 def _pm_has_riichi_discard(counts: List[int], meld_count: int) -> bool:
+    if PM_FASTAPI_AVAILABLE:
+        return bool(pm.has_riichi_discard(tuple(counts), int(meld_count)))
+
     base = list(counts)
     for i in range(34):
         if base[i] == 0:
@@ -186,6 +208,23 @@ def _pm_has_hupai(
     zhuangfeng: int,
     lunban: int,
 ) -> bool:
+    encoded_melds: List[Tuple[int, int]] = [
+        (MELD_TYPE_TO_PM_CODE[meld_type], pai_34) for meld_type, pai_34 in melds
+    ]
+    if PM_FASTAPI_AVAILABLE:
+        return bool(
+            pm.has_hupai(
+                tuple(counts),
+                encoded_melds,
+                int(win_tile),
+                bool(is_tsumo),
+                bool(is_menqian),
+                bool(is_riichi),
+                int(zhuangfeng),
+                int(lunban),
+            )
+        )
+
     shoupai = _make_pm_shoupai(counts, melds)
     option = pm.HuleOption(int(zhuangfeng), int(lunban))
     option.is_menqian = bool(is_menqian)
@@ -194,6 +233,92 @@ def _pm_has_hupai(
     action = pm.Action(action_type, int(win_tile))
     hule = pm.Hule(shoupai, action, option)
     return bool(hule.has_hupai)
+
+
+def _pm_has_hupai_multi(
+    cases: List[
+        Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int]
+    ],
+) -> List[bool]:
+    if not cases:
+        return []
+    if PM_MULTI_HUPAI_AVAILABLE:
+        encoded_cases: List[
+            Tuple[Tuple[int, ...], List[Tuple[int, int]], int, bool, bool, bool, int, int]
+        ] = []
+        for counts, melds, win_tile, is_tsumo, is_menqian, is_riichi, zhuangfeng, lunban in cases:
+            encoded_melds = [(MELD_TYPE_TO_PM_CODE[mtype], pai_34) for mtype, pai_34 in melds]
+            encoded_cases.append(
+                (
+                    tuple(counts),
+                    encoded_melds,
+                    int(win_tile),
+                    bool(is_tsumo),
+                    bool(is_menqian),
+                    bool(is_riichi),
+                    int(zhuangfeng),
+                    int(lunban),
+                )
+            )
+        return [bool(x) for x in pm.has_hupai_multi(encoded_cases)]
+
+    return [
+        _pm_has_hupai(
+            counts=counts,
+            melds=melds,
+            win_tile=win_tile,
+            is_tsumo=is_tsumo,
+            is_menqian=is_menqian,
+            is_riichi=is_riichi,
+            zhuangfeng=zhuangfeng,
+            lunban=lunban,
+        )
+        for counts, melds, win_tile, is_tsumo, is_menqian, is_riichi, zhuangfeng, lunban in cases
+    ]
+
+
+def _pm_evaluate_draw(
+    counts: List[int],
+    melds: List[Tuple[str, int]],
+    win_tile: int,
+    is_menqian: bool,
+    is_riichi: bool,
+    zhuangfeng: int,
+    lunban: int,
+    closed_kans: int,
+    check_riichi_discard: bool,
+) -> Tuple[bool, bool]:
+    encoded_melds: List[Tuple[int, int]] = [
+        (MELD_TYPE_TO_PM_CODE[meld_type], pai_34) for meld_type, pai_34 in melds
+    ]
+    if PM_EVALUATE_DRAW_AVAILABLE:
+        can_tsumo, can_riichi_discard = pm.evaluate_draw(
+            tuple(counts),
+            encoded_melds,
+            int(win_tile),
+            bool(is_menqian),
+            bool(is_riichi),
+            int(zhuangfeng),
+            int(lunban),
+            int(closed_kans),
+            bool(check_riichi_discard),
+        )
+        return bool(can_tsumo), bool(can_riichi_discard)
+
+    can_tsumo = _pm_has_hupai(
+        counts=counts,
+        melds=melds,
+        win_tile=win_tile,
+        is_tsumo=True,
+        is_menqian=is_menqian,
+        is_riichi=is_riichi,
+        zhuangfeng=zhuangfeng,
+        lunban=lunban,
+    )
+    can_riichi_discard = (
+        _pm_has_riichi_discard(counts, closed_kans) if check_riichi_discard else False
+    )
+    return can_tsumo, can_riichi_discard
 
 
 @dataclass
@@ -209,6 +334,7 @@ class PlayerState:
     temporary_furiten: bool = False
     riichi_furiten: bool = False
     is_first_turn: bool = True
+    wait_mask_cache: Optional[int] = None
 
     @property
     def meld_count(self) -> int:
@@ -300,11 +426,35 @@ class TenhouTokenizer:
     def _player_wind(self, seat: int) -> int:
         return (seat - self.dealer_seat) % 4
 
+    def _invalidate_wait_mask(self, seat: int) -> None:
+        self.players[seat].wait_mask_cache = None
+
+    def _wait_mask(self, seat: int) -> int:
+        p = self.players[seat]
+        if p.wait_mask_cache is None:
+            p.wait_mask_cache = _pm_wait_mask(p.concealed, p.meld_count)
+        return p.wait_mask_cache
+
     def _can_win(self, seat: int, win_tile: int, is_tsumo: bool) -> bool:
         p = self.players[seat]
+        return self._can_win_with_counts(
+            seat=seat,
+            counts=p.concealed,
+            win_tile=win_tile,
+            is_tsumo=is_tsumo,
+        )
+
+    def _can_win_with_counts(
+        self,
+        seat: int,
+        counts: List[int],
+        win_tile: int,
+        is_tsumo: bool,
+    ) -> bool:
+        p = self.players[seat]
         return _pm_has_hupai(
-            counts=list(p.concealed),
-            melds=list(p.melds),
+            counts=counts,
+            melds=p.melds,
             win_tile=win_tile,
             is_tsumo=is_tsumo,
             is_menqian=(p.open_melds == 0),
@@ -315,17 +465,37 @@ class TenhouTokenizer:
 
     def _has_riichi_discard(self, seat: int) -> bool:
         p = self.players[seat]
-        return _pm_has_riichi_discard(list(p.concealed), p.closed_kans)
+        return _pm_has_riichi_discard(p.concealed, p.closed_kans)
 
-    def _is_permanent_furiten(self, seat: int) -> bool:
+    def _evaluate_draw(self, seat: int, drawn_tile: int, check_riichi_discard: bool) -> Tuple[bool, bool]:
         p = self.players[seat]
-        waits = _pm_wait_tiles(list(p.concealed), p.meld_count)
-        return bool(waits & p.furiten_tiles)
+        return _pm_evaluate_draw(
+            counts=p.concealed,
+            melds=p.melds,
+            win_tile=drawn_tile,
+            is_menqian=(p.open_melds == 0),
+            is_riichi=p.is_riichi,
+            zhuangfeng=self.bakaze,
+            lunban=self._player_wind(seat),
+            closed_kans=p.closed_kans,
+            check_riichi_discard=check_riichi_discard,
+        )
+
+    def _is_permanent_furiten(self, seat: int, wait_mask: Optional[int] = None) -> bool:
+        p = self.players[seat]
+        seat_wait_mask = self._wait_mask(seat) if wait_mask is None else wait_mask
+        if seat_wait_mask == 0:
+            return False
+        for tile in p.furiten_tiles:
+            if (seat_wait_mask >> tile) & 1:
+                return True
+        return False
 
     def _on_qipai(self, q: dict) -> None:
+        hand_counts_list = [parse_hand_counts(hand) for hand in q["shoupai"]]
         self.players = [
-            PlayerState(concealed=parse_hand_counts(hand), score=q["defen"][seat])
-            for seat, hand in enumerate(q["shoupai"])
+            PlayerState(concealed=list(hand_counts_list[seat]), score=q["defen"][seat])
+            for seat in range(4)
         ]
         self.live_draws_left = 70
         self.bakaze = int(q["zhuangfeng"])
@@ -356,6 +526,7 @@ class TenhouTokenizer:
 
         self.players[actor].concealed[tile_idx] += 1
         self.players[actor].temporary_furiten = False
+        self._invalidate_wait_mask(actor)
         self.live_draws_left -= 1
 
         action = "gang_draw" if is_gangzimo else "draw"
@@ -370,22 +541,27 @@ class TenhouTokenizer:
     def _compute_self_options(self, actor: int, drawn_tile: int) -> Set[str]:
         p = self.players[actor]
         options: Set[str] = set()
-        if self._can_win(actor, drawn_tile, is_tsumo=True):
-            options.add("tsumo")
-
-        if (
+        can_riichi = (
             not p.is_riichi
             and p.open_melds == 0
             and p.score >= 1000
             and self.live_draws_left >= 4
-            and self._has_riichi_discard(actor)
-        ):
+        )
+        can_tsumo, has_riichi_discard = self._evaluate_draw(
+            seat=actor,
+            drawn_tile=drawn_tile,
+            check_riichi_discard=can_riichi,
+        )
+        if can_tsumo:
+            options.add("tsumo")
+
+        if can_riichi and has_riichi_discard:
             options.add("riichi")
 
         if self._can_ankan(actor, drawn_tile):
             options.add("ankan")
 
-        if any(p.open_pons.get(i, 0) > 0 and p.concealed[i] > 0 for i in range(34)):
+        if any(p.concealed[tile] > 0 for tile in p.open_pons):
             options.add("kakan")
 
         if self._can_kyushukyuhai(actor):
@@ -401,7 +577,6 @@ class TenhouTokenizer:
             return False
         uniq_yaochu = sum(1 for i in YAOCHU_INDICES if p.concealed[i] > 0)
         return uniq_yaochu >= 9
-
     def _can_ankan(self, actor: int, drawn_tile: Optional[int] = None) -> bool:
         p = self.players[actor]
         candidates = [tile for tile, count in enumerate(p.concealed) if count >= 4]
@@ -418,15 +593,15 @@ class TenhouTokenizer:
             return False
         pre_draw_counts[drawn_tile] -= 1
 
-        waits_before = _pm_wait_tiles(pre_draw_counts, p.meld_count)
-        if not waits_before:
+        waits_before_mask = _pm_wait_mask(pre_draw_counts, p.meld_count)
+        if waits_before_mask == 0:
             return False
 
         for tile in candidates:
             next_counts = list(p.concealed)
             next_counts[tile] -= 4
-            waits_after = _pm_wait_tiles(next_counts, p.meld_count + 1)
-            if waits_after and waits_after == waits_before:
+            waits_after_mask = _pm_wait_mask(next_counts, p.meld_count + 1)
+            if waits_after_mask != 0 and waits_after_mask == waits_before_mask:
                 return True
         return False
 
@@ -444,6 +619,7 @@ class TenhouTokenizer:
 
         _remove_tiles(self.players[actor].concealed, tile_idx, 1)
         self.players[actor].furiten_tiles.add(tile_idx)
+        self._invalidate_wait_mask(actor)
 
         suffix = "_tsumogiri" if is_tsumogiri else ""
         self.tokens.append(f"discard_{actor}_{tile_token}{suffix}")
@@ -462,28 +638,46 @@ class TenhouTokenizer:
 
     def _compute_reaction_options(self, discarder: int, tile_idx: int) -> Optional[ReactionDecision]:
         options_by_player: Dict[int, Set[str]] = {}
+        ron_cases: List[
+            Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int]
+        ] = []
+        ron_case_seats: List[int] = []
+
+        for offset in range(1, 4):
+            seat = (discarder + offset) % 4
+            p = self.players[seat]
+            if not p.temporary_furiten and not p.riichi_furiten:
+                wait_mask = self._wait_mask(seat)
+                permanent_furiten = self._is_permanent_furiten(seat, wait_mask=wait_mask)
+                if not permanent_furiten and ((wait_mask >> tile_idx) & 1):
+                    counts_plus = list(p.concealed)
+                    counts_plus[tile_idx] += 1
+                    ron_cases.append(
+                        (
+                            counts_plus,
+                            p.melds,
+                            tile_idx,
+                            False,
+                            (p.open_melds == 0),
+                            p.is_riichi,
+                            self.bakaze,
+                            self._player_wind(seat),
+                        )
+                    )
+                    ron_case_seats.append(seat)
+
+        ron_seats: Set[int] = set()
+        if ron_cases:
+            for seat, can_ron in zip(ron_case_seats, _pm_has_hupai_multi(ron_cases)):
+                if can_ron:
+                    ron_seats.add(seat)
 
         for offset in range(1, 4):
             seat = (discarder + offset) % 4
             p = self.players[seat]
             options: Set[str] = set()
-            permanent_furiten = self._is_permanent_furiten(seat)
-
-            counts_plus = list(p.concealed)
-            counts_plus[tile_idx] += 1
-            if (
-                not p.temporary_furiten
-                and not p.riichi_furiten
-                and not permanent_furiten
-            ):
-                saved = p.concealed
-                try:
-                    p.concealed = counts_plus
-                    if self._can_win(seat, tile_idx, is_tsumo=False):
-                        options.add("ron")
-                finally:
-                    p.concealed = saved
-
+            if seat in ron_seats:
+                options.add("ron")
             if p.is_riichi:
                 if options:
                     options_by_player[seat] = options
@@ -511,24 +705,43 @@ class TenhouTokenizer:
 
     def _compute_kakan_reaction_options(self, actor: int, tile_idx: int) -> Optional[ReactionDecision]:
         options_by_player: Dict[int, Set[str]] = {}
+        ron_cases: List[
+            Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int]
+        ] = []
+        ron_case_seats: List[int] = []
 
         for seat in range(4):
             if seat == actor:
                 continue
 
             p = self.players[seat]
-            if p.temporary_furiten or p.riichi_furiten or self._is_permanent_furiten(seat):
+            if p.temporary_furiten or p.riichi_furiten:
+                continue
+
+            wait_mask = self._wait_mask(seat)
+            if self._is_permanent_furiten(seat, wait_mask=wait_mask) or not ((wait_mask >> tile_idx) & 1):
                 continue
 
             counts_plus = list(p.concealed)
             counts_plus[tile_idx] += 1
-            saved = p.concealed
-            try:
-                p.concealed = counts_plus
-                if self._can_win(seat, tile_idx, is_tsumo=False):
+            ron_cases.append(
+                (
+                    counts_plus,
+                    p.melds,
+                    tile_idx,
+                    False,
+                    (p.open_melds == 0),
+                    p.is_riichi,
+                    self.bakaze,
+                    self._player_wind(seat),
+                )
+            )
+            ron_case_seats.append(seat)
+
+        if ron_cases:
+            for seat, can_ron in zip(ron_case_seats, _pm_has_hupai_multi(ron_cases)):
+                if can_ron:
                     options_by_player[seat] = {"ron"}
-            finally:
-                p.concealed = saved
 
         if not options_by_player:
             return None
@@ -588,6 +801,7 @@ class TenhouTokenizer:
         for tile, n in need.items():
             if n > 0:
                 _remove_tiles(p.concealed, tile, n)
+        self._invalidate_wait_mask(actor)
 
         p.open_melds += 1
         p.is_riichi = False
@@ -638,6 +852,7 @@ class TenhouTokenizer:
                     break
             if not replaced:
                 p.melds.append(("minkan", tile))
+        self._invalidate_wait_mask(actor)
 
         self.tokens.append(f"kan_{kind}_{actor}_{tile_token}")
 

@@ -17,7 +17,11 @@ def test_permanent_furiten_blocks_ron_for_all_waits(monkeypatch: pytest.MonkeyPa
     discarded_wait = tile_to_index("m1")
 
     tokenizer.players[1].furiten_tiles.add(discarded_wait)
-    monkeypatch.setattr(engine, "_pm_wait_tiles", lambda *_args, **_kwargs: {discarded_wait, offered_tile})
+    monkeypatch.setattr(
+        engine,
+        "_pm_wait_mask",
+        lambda *_args, **_kwargs: (1 << discarded_wait) | (1 << offered_tile),
+    )
     monkeypatch.setattr(TenhouTokenizer, "_can_win", lambda *_args, **_kwargs: True)
 
     reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=offered_tile)
@@ -112,21 +116,23 @@ def test_riichi_ankan_requires_waits_unchanged(monkeypatch: pytest.MonkeyPatch) 
     tile = tile_to_index("m1")
     tokenizer.players[0].concealed[tile] = 4
 
-    def same_waits(_counts: list[int], meld_count: int) -> set[int]:
-        return {tile_to_index("m1"), tile_to_index("m2")} if meld_count in {0, 1} else set()
+    def same_waits_mask(_counts: list[int], meld_count: int) -> int:
+        if meld_count in {0, 1}:
+            return (1 << tile_to_index("m1")) | (1 << tile_to_index("m2"))
+        return 0
 
-    monkeypatch.setattr(engine, "_pm_wait_tiles", same_waits)
+    monkeypatch.setattr(engine, "_pm_wait_mask", same_waits_mask)
     opts = tokenizer._compute_self_options(actor=0, drawn_tile=tile)
     assert "ankan" in opts
 
-    def changed_waits(_counts: list[int], meld_count: int) -> set[int]:
+    def changed_waits_mask(_counts: list[int], meld_count: int) -> int:
         if meld_count == 0:
-            return {tile_to_index("m1"), tile_to_index("m2")}
+            return (1 << tile_to_index("m1")) | (1 << tile_to_index("m2"))
         if meld_count == 1:
-            return {tile_to_index("m3")}
-        return set()
+            return 1 << tile_to_index("m3")
+        return 0
 
-    monkeypatch.setattr(engine, "_pm_wait_tiles", changed_waits)
+    monkeypatch.setattr(engine, "_pm_wait_mask", changed_waits_mask)
     opts = tokenizer._compute_self_options(actor=0, drawn_tile=tile)
     assert "ankan" not in opts
 
@@ -144,18 +150,18 @@ def test_riichi_ankan_uses_pre_draw_waits_baseline(monkeypatch: pytest.MonkeyPat
     p.concealed[kan_tile] = 4
     p.concealed[draw_tile] = 1
 
-    waits_13 = {tile_to_index("m6"), tile_to_index("p5")}
-    waits_14 = waits_13 | {tile_to_index("p4")}
+    waits_13_mask = (1 << tile_to_index("m6")) | (1 << tile_to_index("p5"))
+    waits_14_mask = waits_13_mask | (1 << tile_to_index("p4"))
 
-    def fake_waits(counts: list[int], meld_count: int) -> set[int]:
+    def fake_waits_mask(counts: list[int], meld_count: int) -> int:
         if meld_count == 0:
             # Distinguish pre-draw(13) from post-draw(14) baseline by drawn tile count.
-            return waits_13 if counts[draw_tile] == 0 else waits_14
+            return waits_13_mask if counts[draw_tile] == 0 else waits_14_mask
         if meld_count == 1:
-            return waits_13
-        return set()
+            return waits_13_mask
+        return 0
 
-    monkeypatch.setattr(engine, "_pm_wait_tiles", fake_waits)
+    monkeypatch.setattr(engine, "_pm_wait_mask", fake_waits_mask)
     monkeypatch.setattr(TenhouTokenizer, "_can_win", lambda *_args, **_kwargs: False)
 
     opts = tokenizer._compute_self_options(actor=actor, drawn_tile=draw_tile)

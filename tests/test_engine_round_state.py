@@ -72,9 +72,10 @@ def test_call_options_are_blocked_on_last_draw(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(
         TenhouTokenizer,
-        "_can_win",
-        lambda _self, seat, _tile, is_tsumo: (not is_tsumo) and seat in {1, 2},
+        "_wait_mask",
+        lambda _self, seat: (1 << m2) if seat in {1, 2} else 0,
     )
+    monkeypatch.setattr(engine, "_pm_has_hupai_multi", lambda cases: [True] * len(cases))
 
     reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=m2)
 
@@ -104,3 +105,80 @@ def test_riichi_missed_ron_becomes_persistent_furiten(monkeypatch: pytest.Monkey
     monkeypatch.setattr(TenhouTokenizer, "_can_win", lambda *_args, **_kwargs: True)
     reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=tile_to_index("m1"))
     assert reaction is None or "ron" not in reaction.options_by_player.get(1, set())
+
+
+def test_wait_mask_is_cached_until_player_state_changes(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    seat = 1
+    calls = {"n": 0}
+
+    def fake_wait_mask(_counts: list[int], _meld_count: int) -> int:
+        calls["n"] += 1
+        return 1 << tile_to_index("m1")
+
+    monkeypatch.setattr(engine, "_pm_wait_mask", fake_wait_mask)
+
+    tokenizer._is_permanent_furiten(seat)
+    tokenizer._is_permanent_furiten(seat)
+    assert calls["n"] == 1
+
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: set())
+    tokenizer._on_draw({"l": seat, "p": "m2"}, is_gangzimo=False)
+    tokenizer._is_permanent_furiten(seat)
+    assert calls["n"] == 2
+
+
+def test_reaction_ron_shape_gate_skips_hupai_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.live_draws_left = 0
+
+    # Make all potential callers unable to chi/pon/minkan so only ron is relevant.
+    for seat in range(4):
+        tokenizer.players[seat].concealed = [0] * 34
+
+    offered = tile_to_index("m5")
+    monkeypatch.setattr(engine, "_pm_wait_mask", lambda *_args, **_kwargs: 0)
+
+    def fail_has_hupai_multi(*_args, **_kwargs) -> bool:
+        raise AssertionError("has_hupai_multi should not be called when discard is outside wait mask")
+
+    monkeypatch.setattr(engine, "_pm_has_hupai_multi", fail_has_hupai_multi)
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=offered)
+    assert reaction is None
+
+
+def test_compute_self_options_uses_combined_draw_eval(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    actor = 0
+    draw_tile = tile_to_index("m1")
+    observed: dict[str, object] = {}
+
+    def fake_evaluate_draw(
+        counts: list[int],
+        melds: list[tuple[str, int]],
+        win_tile: int,
+        is_menqian: bool,
+        is_riichi: bool,
+        zhuangfeng: int,
+        lunban: int,
+        closed_kans: int,
+        check_riichi_discard: bool,
+    ) -> tuple[bool, bool]:
+        observed["win_tile"] = win_tile
+        observed["is_menqian"] = is_menqian
+        observed["check_riichi_discard"] = check_riichi_discard
+        return True, True
+
+    monkeypatch.setattr(engine, "_pm_evaluate_draw", fake_evaluate_draw)
+
+    opts = tokenizer._compute_self_options(actor=actor, drawn_tile=draw_tile)
+    assert "tsumo" in opts
+    assert "riichi" in opts
+    assert observed["win_tile"] == draw_tile
+    assert observed["is_menqian"] is True
+    assert observed["check_riichi_discard"] is True
