@@ -656,6 +656,10 @@ class TenhouTokenizer:
 
         if drawn_tile is None:
             return False
+        # Disallow okuri-kan after riichi: only a quad including the drawn tile can be declared.
+        candidates = [tile for tile in candidates if tile == drawn_tile]
+        if not candidates:
+            return False
 
         pre_draw_counts = list(p.concealed)
         if pre_draw_counts[drawn_tile] <= 0:

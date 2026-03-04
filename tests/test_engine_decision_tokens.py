@@ -267,7 +267,7 @@ def test_riichi_ankan_requires_waits_unchanged(monkeypatch: pytest.MonkeyPatch) 
     assert "ankan" not in opts
 
 
-def test_riichi_ankan_uses_pre_draw_waits_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_riichi_okurigang_is_not_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
 
@@ -280,19 +280,36 @@ def test_riichi_ankan_uses_pre_draw_waits_baseline(monkeypatch: pytest.MonkeyPat
     p.concealed[kan_tile] = 4
     p.concealed[draw_tile] = 1
 
+    monkeypatch.setattr(TenhouTokenizer, "_evaluate_draw", lambda *_args, **_kwargs: (False, False))
+
+    opts = tokenizer._compute_self_options(actor=actor, drawn_tile=draw_tile)
+    assert "ankan" not in opts
+
+
+def test_riichi_ankan_uses_pre_draw_waits_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    actor = 0
+    draw_tile = tile_to_index("m1")
+    p = tokenizer.players[actor]
+    p.is_riichi = True
+    p.concealed = [0] * 34
+    p.concealed[draw_tile] = 4
+
     waits_13_mask = (1 << tile_to_index("m6")) | (1 << tile_to_index("p5"))
     waits_14_mask = waits_13_mask | (1 << tile_to_index("p4"))
 
     def fake_waits_mask(counts: list[int], meld_count: int) -> int:
         if meld_count == 0:
             # Distinguish pre-draw(13) from post-draw(14) baseline by drawn tile count.
-            return waits_13_mask if counts[draw_tile] == 0 else waits_14_mask
+            return waits_13_mask if counts[draw_tile] == 3 else waits_14_mask
         if meld_count == 1:
             return waits_13_mask
         return 0
 
     monkeypatch.setattr(engine, "_pm_wait_mask", fake_waits_mask)
-    monkeypatch.setattr(TenhouTokenizer, "_can_win", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(TenhouTokenizer, "_evaluate_draw", lambda *_args, **_kwargs: (False, False))
 
     opts = tokenizer._compute_self_options(actor=actor, drawn_tile=draw_tile)
     assert "ankan" in opts
