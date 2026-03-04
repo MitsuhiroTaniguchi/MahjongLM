@@ -291,3 +291,33 @@ def test_red_tile_in_fulou_is_preserved_in_call_token(monkeypatch: pytest.Monkey
     tokens = TenhouTokenizer().tokenize_game(game)
 
     assert "call_chi_0_m0_m6_m7" in tokens
+
+
+def test_red_tile_in_kakan_is_preserved_in_kan_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    tile = tile_to_index("m5")
+    actor = 0
+    p = tokenizer.players[actor]
+    p.concealed[tile] = max(p.concealed[tile], 1)
+    p.open_pons[tile] = 1
+    p.melds = [("pon", tile)]
+    monkeypatch.setattr(TenhouTokenizer, "_compute_kakan_reaction_options", lambda *_args, **_kwargs: None)
+
+    tokenizer._on_gang({"l": actor, "m": "m5550+"})
+
+    assert "kan_kakan_0_m0" in tokenizer.tokens
+
+
+def test_red_tile_in_ankan_is_preserved_in_kan_token() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    tile = tile_to_index("m5")
+    actor = 0
+    tokenizer.players[actor].concealed[tile] = 4
+
+    tokenizer._on_gang({"l": actor, "m": "m5550"})
+
+    assert "kan_ankan_0_m0" in tokenizer.tokens

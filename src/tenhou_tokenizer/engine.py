@@ -609,9 +609,11 @@ class TenhouTokenizer:
     def _on_gang(self, g: dict) -> None:
         actor = g["l"]
         meld_text = g["m"]
+        meld_token_tiles = parse_meld_token_tiles(meld_text)
         kind = classify_gang(meld_text)
         meld_tiles = parse_meld_tiles(meld_text)
         tile = meld_tiles[0]
+        tile_token = next((t for t in meld_token_tiles if t[1] == "0"), index_to_tile(tile))
 
         chosen = {kind}
         self._finalize_self(chosen, actor=actor)
@@ -637,7 +639,7 @@ class TenhouTokenizer:
             if not replaced:
                 p.melds.append(("minkan", tile))
 
-        self.tokens.append(f"kan_{kind}_{actor}_{index_to_tile(tile)}")
+        self.tokens.append(f"kan_{kind}_{actor}_{tile_token}")
 
         if kind == "kakan":
             reaction = self._compute_kakan_reaction_options(actor, tile)
