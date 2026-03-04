@@ -192,3 +192,58 @@ def test_kaigang_between_discard_and_fulou_keeps_discard_reaction(
     assert "take_react_0_chi" in tokens
     assert "call_chi_0_m5_m6_m7" in tokens
     assert "discard_0_m6" in tokens
+
+
+def test_kyushukyuhai_is_emitted_as_pass_when_not_taken() -> None:
+    kyushu_hand = "m1199p19s19z12345"
+    game = minimal_game(
+        [
+            qipai_event(hands=[kyushu_hand, "m123456789p1234", "m123456789p1234", "m123456789p1234"]),
+            {"zimo": {"l": 0, "p": "m2"}},
+            {"dapai": {"l": 0, "p": "m2_"}},
+        ]
+    )
+
+    tokenizer = TenhouTokenizer()
+    tokens = tokenizer.tokenize_game(game)
+
+    assert "opt_self_0_kyushukyuhai" in tokens
+    assert "pass_self_0_kyushukyuhai" in tokens
+    assert "take_self_0_kyushukyuhai" not in tokens
+
+
+def test_kyushukyuhai_is_emitted_as_take_on_pingju() -> None:
+    kyushu_hand = "m1199p19s19z12345"
+    game = minimal_game(
+        [
+            qipai_event(hands=[kyushu_hand, "m123456789p1234", "m123456789p1234", "m123456789p1234"]),
+            {"zimo": {"l": 0, "p": "m2"}},
+            {"pingju": {"name": "九種九牌", "fenpei": [0, 0, 0, 0], "shoupai": ["m1", "", "", ""]}},
+        ]
+    )
+
+    tokenizer = TenhouTokenizer()
+    tokens = tokenizer.tokenize_game(game)
+
+    assert "opt_self_0_kyushukyuhai" in tokens
+    assert "take_self_0_kyushukyuhai" in tokens
+    assert "pass_self_0_kyushukyuhai" not in tokens
+
+
+def test_kyushukyuhai_uses_pending_actor_when_shoupai_has_multiple_non_empty() -> None:
+    kyushu_hand = "m1199p19s19z12345"
+    game = minimal_game(
+        [
+            qipai_event(hands=["m123456789p1234", "m123456789p1234", kyushu_hand, "m123456789p1234"]),
+            {"zimo": {"l": 2, "p": "m2"}},
+            # Converter variant: multiple non-empty shoupai slots.
+            {"pingju": {"name": "九種九牌", "fenpei": [0, 0, 0, 0], "shoupai": ["m1", "", "m2", ""]}},
+        ]
+    )
+
+    tokenizer = TenhouTokenizer()
+    tokens = tokenizer.tokenize_game(game)
+
+    assert "opt_self_2_kyushukyuhai" in tokens
+    assert "take_self_2_kyushukyuhai" in tokens
+    assert "pass_self_2_kyushukyuhai" not in tokens
