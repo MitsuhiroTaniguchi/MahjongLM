@@ -15,6 +15,7 @@ INDEX_TO_TILE = [
     *(f"s{i}" for i in range(1, 10)),
     *(f"z{i}" for i in range(1, 8)),
 ]
+YAOCHU_INDICES: Set[int] = {0, 8, 9, 17, 18, 26, *range(27, 34)}
 
 
 class TokenizeError(RuntimeError):
@@ -181,6 +182,7 @@ class PlayerState:
     furiten_tiles: Set[int] = field(default_factory=set)
     temporary_furiten: bool = False
     riichi_furiten: bool = False
+    is_first_turn: bool = True
 
     @property
     def meld_count(self) -> int:
@@ -337,6 +339,7 @@ class TenhouTokenizer:
         for opt in sorted(options):
             self.tokens.append(f"opt_self_{actor}_{opt}")
         self.pending_self = SelfDecision(actor=actor, options=options)
+        self.players[actor].is_first_turn = False
 
     def _compute_self_options(self, actor: int, drawn_tile: int) -> Set[str]:
         p = self.players[actor]
@@ -359,7 +362,19 @@ class TenhouTokenizer:
         if any(p.open_pons.get(i, 0) > 0 and p.concealed[i] > 0 for i in range(34)):
             options.add("kakan")
 
+        if self._can_kyushukyuhai(actor):
+            options.add("kyushukyuhai")
+
         return options
+
+    def _can_kyushukyuhai(self, actor: int) -> bool:
+        p = self.players[actor]
+        if not p.is_first_turn:
+            return False
+        if p.open_melds > 0 or p.closed_kans > 0 or p.melds:
+            return False
+        uniq_yaochu = sum(1 for i in YAOCHU_INDICES if p.concealed[i] > 0)
+        return uniq_yaochu >= 9
 
     def _can_ankan(self, actor: int, drawn_tile: Optional[int] = None) -> bool:
         p = self.players[actor]
@@ -626,10 +641,24 @@ class TenhouTokenizer:
 
     def _on_pingju(self, p: dict) -> None:
         name = p.get("name", "unknown")
+        if name == "九種九牌":
+            actor = self._kyushukyuhai_actor(p.get("shoupai"))
+            if actor is not None:
+                self._finalize_self({"kyushukyuhai"}, actor=actor)
         self.tokens.append(f"draw_{self._normalize_name(name)}")
         for seat in range(4):
             self.players[seat].score += p["fenpei"][seat]
             self.tokens.append(f"score_delta_{seat}_{p['fenpei'][seat]}")
+
+    def _kyushukyuhai_actor(self, shoupai: object) -> Optional[int]:
+        if self.pending_self and "kyushukyuhai" in self.pending_self.options:
+            return self.pending_self.actor
+        if not isinstance(shoupai, list):
+            return None
+        for seat, hand in enumerate(shoupai):
+            if isinstance(hand, str) and hand:
+                return seat
+        return None
 
     def _normalize_name(self, text: str) -> str:
         mapping = {
