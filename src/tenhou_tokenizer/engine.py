@@ -223,11 +223,16 @@ def _pm_has_hupai(
     is_riichi: bool,
     zhuangfeng: int,
     lunban: int,
+    is_haidi: bool = False,
+    is_lingshang: bool = False,
+    is_qianggang: bool = False,
 ) -> bool:
     encoded_melds: List[Tuple[int, int]] = [
         (MELD_TYPE_TO_PM_CODE[meld_type], pai_34) for meld_type, pai_34 in melds
     ]
-    if PM_FASTAPI_AVAILABLE:
+    # Current fast API does not expose context flags for special yaku checks.
+    # Fall back to HuleOption path when any context-dependent flag is needed.
+    if PM_FASTAPI_AVAILABLE and not (is_haidi or is_lingshang or is_qianggang):
         return bool(
             pm.has_hupai(
                 tuple(counts),
@@ -245,6 +250,9 @@ def _pm_has_hupai(
     option = pm.HuleOption(int(zhuangfeng), int(lunban))
     option.is_menqian = bool(is_menqian)
     option.is_lizhi = bool(is_riichi)
+    option.is_haidi = bool(is_haidi)
+    option.is_lingshang = bool(is_lingshang)
+    option.is_qianggang = bool(is_qianggang)
     action_type = pm.ActionType.zimohu if is_tsumo else pm.ActionType.ronghu
     action = pm.Action(action_type, int(win_tile))
     hule = pm.Hule(shoupai, action, option)
@@ -253,16 +261,28 @@ def _pm_has_hupai(
 
 def _pm_has_hupai_multi(
     cases: List[
-        Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int]
+        Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int, bool, bool, bool]
     ],
 ) -> List[bool]:
     if not cases:
         return []
-    if PM_MULTI_HUPAI_AVAILABLE:
+    if PM_MULTI_HUPAI_AVAILABLE and not any(c[8] or c[9] or c[10] for c in cases):
         encoded_cases: List[
             Tuple[Tuple[int, ...], List[Tuple[int, int]], int, bool, bool, bool, int, int]
         ] = []
-        for counts, melds, win_tile, is_tsumo, is_menqian, is_riichi, zhuangfeng, lunban in cases:
+        for (
+            counts,
+            melds,
+            win_tile,
+            is_tsumo,
+            is_menqian,
+            is_riichi,
+            zhuangfeng,
+            lunban,
+            _is_haidi,
+            _is_lingshang,
+            _is_qianggang,
+        ) in cases:
             encoded_melds = [(MELD_TYPE_TO_PM_CODE[mtype], pai_34) for mtype, pai_34 in melds]
             encoded_cases.append(
                 (
@@ -288,8 +308,23 @@ def _pm_has_hupai_multi(
             is_riichi=is_riichi,
             zhuangfeng=zhuangfeng,
             lunban=lunban,
+            is_haidi=is_haidi,
+            is_lingshang=is_lingshang,
+            is_qianggang=is_qianggang,
         )
-        for counts, melds, win_tile, is_tsumo, is_menqian, is_riichi, zhuangfeng, lunban in cases
+        for (
+            counts,
+            melds,
+            win_tile,
+            is_tsumo,
+            is_menqian,
+            is_riichi,
+            zhuangfeng,
+            lunban,
+            is_haidi,
+            is_lingshang,
+            is_qianggang,
+        ) in cases
     ]
 
 
@@ -303,11 +338,13 @@ def _pm_evaluate_draw(
     lunban: int,
     closed_kans: int,
     check_riichi_discard: bool,
+    is_haidi: bool = False,
+    is_lingshang: bool = False,
 ) -> Tuple[bool, bool]:
     encoded_melds: List[Tuple[int, int]] = [
         (MELD_TYPE_TO_PM_CODE[meld_type], pai_34) for meld_type, pai_34 in melds
     ]
-    if PM_EVALUATE_DRAW_AVAILABLE:
+    if PM_EVALUATE_DRAW_AVAILABLE and not (is_haidi or is_lingshang):
         can_tsumo, can_riichi_discard = pm.evaluate_draw(
             tuple(counts),
             encoded_melds,
@@ -330,6 +367,8 @@ def _pm_evaluate_draw(
         is_riichi=is_riichi,
         zhuangfeng=zhuangfeng,
         lunban=lunban,
+        is_haidi=is_haidi,
+        is_lingshang=is_lingshang,
     )
     can_riichi_discard = (
         _pm_has_riichi_discard(counts, closed_kans) if check_riichi_discard else False
@@ -484,7 +523,14 @@ class TenhouTokenizer:
         p = self.players[seat]
         return _pm_has_riichi_discard(p.concealed, p.closed_kans)
 
-    def _evaluate_draw(self, seat: int, drawn_tile: int, check_riichi_discard: bool) -> Tuple[bool, bool]:
+    def _evaluate_draw(
+        self,
+        seat: int,
+        drawn_tile: int,
+        check_riichi_discard: bool,
+        is_haidi: bool = False,
+        is_lingshang: bool = False,
+    ) -> Tuple[bool, bool]:
         p = self.players[seat]
         return _pm_evaluate_draw(
             counts=p.concealed,
@@ -496,6 +542,8 @@ class TenhouTokenizer:
             lunban=self._player_wind(seat),
             closed_kans=p.closed_kans,
             check_riichi_discard=check_riichi_discard,
+            is_haidi=is_haidi,
+            is_lingshang=is_lingshang,
         )
 
     def _is_permanent_furiten(self, seat: int, wait_mask: Optional[int] = None) -> bool:
@@ -550,13 +598,13 @@ class TenhouTokenizer:
         action = "gang_draw" if is_gangzimo else "draw"
         self.tokens.append(f"{action}_{actor}_{tile_token}")
 
-        options = self._compute_self_options(actor, tile_idx)
+        options = self._compute_self_options(actor, tile_idx, is_gangzimo=is_gangzimo)
         for opt in sorted(options):
             self.tokens.append(f"opt_self_{actor}_{opt}")
         self.pending_self = SelfDecision(actor=actor, options=options)
         self.players[actor].is_first_turn = False
 
-    def _compute_self_options(self, actor: int, drawn_tile: int) -> Set[str]:
+    def _compute_self_options(self, actor: int, drawn_tile: int, is_gangzimo: bool = False) -> Set[str]:
         p = self.players[actor]
         options: Set[str] = set()
         can_riichi = (
@@ -565,10 +613,13 @@ class TenhouTokenizer:
             and p.score >= 1000
             and self.live_draws_left >= 4
         )
+        is_haidi = self.live_draws_left == 0
         can_tsumo, has_riichi_discard = self._evaluate_draw(
             seat=actor,
             drawn_tile=drawn_tile,
             check_riichi_discard=can_riichi,
+            is_haidi=is_haidi,
+            is_lingshang=is_gangzimo,
         )
         if can_tsumo:
             options.add("tsumo")
@@ -656,9 +707,10 @@ class TenhouTokenizer:
     def _compute_reaction_options(self, discarder: int, tile_idx: int) -> Optional[ReactionDecision]:
         options_by_player: Dict[int, Set[str]] = {}
         ron_cases: List[
-            Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int]
+            Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int, bool, bool, bool]
         ] = []
         ron_case_seats: List[int] = []
+        is_haidi = self.live_draws_left == 0
 
         for offset in range(1, 4):
             seat = (discarder + offset) % 4
@@ -679,6 +731,9 @@ class TenhouTokenizer:
                             p.is_riichi,
                             self.bakaze,
                             self._player_wind(seat),
+                            is_haidi,
+                            False,
+                            False,
                         )
                     )
                     ron_case_seats.append(seat)
@@ -723,7 +778,7 @@ class TenhouTokenizer:
     def _compute_kakan_reaction_options(self, actor: int, tile_idx: int) -> Optional[ReactionDecision]:
         options_by_player: Dict[int, Set[str]] = {}
         ron_cases: List[
-            Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int]
+            Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int, bool, bool, bool]
         ] = []
         ron_case_seats: List[int] = []
 
@@ -751,6 +806,9 @@ class TenhouTokenizer:
                     p.is_riichi,
                     self.bakaze,
                     self._player_wind(seat),
+                    False,
+                    False,
+                    True,
                 )
             )
             ron_case_seats.append(seat)
