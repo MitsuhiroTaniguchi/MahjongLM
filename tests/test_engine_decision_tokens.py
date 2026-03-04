@@ -36,7 +36,9 @@ def test_hule_with_baojia_is_classified_as_ron() -> None:
 
     tokenizer._on_hule({"l": 2, "baojia": 0, "fenpei": [0, 0, 0, 0]})
 
-    assert "win_ron_2_from_0" in tokenizer.tokens
+    assert "take_react_2_ron" in tokenizer.tokens
+    assert "ron_from_2_0" in tokenizer.tokens
+    assert "win_ron_2_from_0" not in tokenizer.tokens
     assert "win_tsumo_2" not in tokenizer.tokens
 
 
@@ -58,7 +60,23 @@ def test_kaigang_does_not_force_self_pass_before_tsumo(monkeypatch: pytest.Monke
     assert "opt_self_0_tsumo" in tokens
     assert "take_self_0_tsumo" in tokens
     assert "pass_self_0_tsumo" not in tokens
-    assert tokens.index("take_self_0_tsumo") < tokens.index("win_tsumo_0")
+    assert "win_tsumo_0" not in tokens
+    assert "score_delta_0" in tokens
+    assert "TENBO_ZERO" in tokens
+
+
+def test_riichi_take_does_not_emit_riichi_event_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: {"riichi"})
+    monkeypatch.setattr(TenhouTokenizer, "_compute_reaction_options", lambda *_args, **_kwargs: None)
+
+    tokenizer._on_draw({"l": 0, "p": "m1"}, is_gangzimo=False)
+    tokenizer._on_discard({"l": 0, "p": "m1*"})
+
+    assert "take_self_0_riichi" in tokenizer.tokens
+    assert "riichi_0" not in tokenizer.tokens
 
 
 def test_kakan_generates_reaction_decision_and_rob_kan_take(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -86,10 +104,10 @@ def test_kakan_generates_reaction_decision_and_rob_kan_take(monkeypatch: pytest.
     tokenizer._on_hule({"l": 1, "baojia": actor, "fenpei": [0, 0, 0, 0]})
     tokenizer._flush_pending()
 
-    assert "kan_kakan_0_m1" in tokenizer.tokens
+    assert "take_self_0_kakan" in tokenizer.tokens
     assert "opt_react_1_ron" in tokenizer.tokens
-    assert "win_ron_1_from_0" in tokenizer.tokens
     assert "take_react_1_ron" in tokenizer.tokens
+    assert "ron_from_1_0" in tokenizer.tokens
 
 
 def test_passing_ron_by_taking_other_call_sets_temporary_furiten() -> None:
@@ -253,7 +271,7 @@ def test_kaigang_between_discard_and_fulou_keeps_discard_reaction(
 
     assert "opt_react_0_chi" in tokens
     assert "take_react_0_chi" in tokens
-    assert "call_chi_0_m5_m6_m7" in tokens
+    assert "call_chi_0_m5_m6_m7" not in tokens
     assert "discard_0_m6" in tokens
 
 
@@ -331,7 +349,7 @@ def test_red_tiles_are_preserved_in_qipai_draw_and_discard_tokens(
     assert "discard_0_m0_tsumogiri" in tokenizer.tokens
 
 
-def test_red_tile_in_fulou_is_preserved_in_call_token(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fulou_no_longer_emits_call_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: set())
     monkeypatch.setattr(TenhouTokenizer, "_can_win", lambda *_args, **_kwargs: False)
 
@@ -353,10 +371,11 @@ def test_red_tile_in_fulou_is_preserved_in_call_token(monkeypatch: pytest.Monkey
 
     tokens = TenhouTokenizer().tokenize_game(game)
 
-    assert "call_chi_0_m0_m6_m7" in tokens
+    assert "take_react_0_chi" in tokens
+    assert all(not t.startswith("call_") for t in tokens)
 
 
-def test_red_tile_in_kakan_is_preserved_in_kan_token(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_kakan_no_longer_emits_kan_token(monkeypatch: pytest.MonkeyPatch) -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
 
@@ -370,10 +389,11 @@ def test_red_tile_in_kakan_is_preserved_in_kan_token(monkeypatch: pytest.MonkeyP
 
     tokenizer._on_gang({"l": actor, "m": "m5550+"})
 
-    assert "kan_kakan_0_m0" in tokenizer.tokens
+    assert "take_self_0_kakan" in tokenizer.tokens
+    assert all(not t.startswith("kan_") for t in tokenizer.tokens)
 
 
-def test_red_tile_in_ankan_is_preserved_in_kan_token() -> None:
+def test_ankan_no_longer_emits_kan_token() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
 
@@ -383,4 +403,5 @@ def test_red_tile_in_ankan_is_preserved_in_kan_token() -> None:
 
     tokenizer._on_gang({"l": actor, "m": "m5550"})
 
-    assert "kan_ankan_0_m0" in tokenizer.tokens
+    assert "take_self_0_ankan" in tokenizer.tokens
+    assert all(not t.startswith("kan_") for t in tokenizer.tokens)

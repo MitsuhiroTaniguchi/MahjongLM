@@ -27,6 +27,12 @@ MELD_TYPE_TO_PM_CODE = {
     "minkan": 2,
     "ankan": 3,
 }
+TENBO_UNITS: Tuple[Tuple[int, str], ...] = (
+    (10000, "TENBO_10000"),
+    (5000, "TENBO_5000"),
+    (1000, "TENBO_1000"),
+    (100, "TENBO_100"),
+)
 
 
 class TokenizeError(RuntimeError):
@@ -113,15 +119,25 @@ def parse_meld_tiles(meld: str) -> List[int]:
     return tiles
 
 
-def parse_meld_token_tiles(meld: str) -> List[str]:
-    tiles = _parse_tiles(meld, stop_at_comma=False, context="meld")
-    if not tiles:
-        raise TokenizeError(f"empty meld parse: {meld}")
-    return tiles
-
-
 def token_tile_sort_key(tile: str) -> Tuple[int, int]:
     return (tile_to_index(tile), 0 if tile[1] == "0" else 1)
+
+
+def encode_tenbo_tokens(value: int) -> List[str]:
+    if value == 0:
+        return ["TENBO_ZERO"]
+    sign = "TENBO_PLUS" if value > 0 else "TENBO_MINUS"
+    remaining = abs(value)
+    if remaining % 100 != 0:
+        raise TokenizeError(f"score value must be a multiple of 100: {value}")
+    tokens = [sign]
+    for unit_value, unit_token in TENBO_UNITS:
+        count, remaining = divmod(remaining, unit_value)
+        if count:
+            tokens.extend([unit_token] * count)
+    if remaining != 0:
+        raise TokenizeError(f"score value cannot be represented by tenbo units: {value}")
+    return tokens
 
 
 def classify_fulou(meld_tiles: List[int]) -> str:
@@ -512,7 +528,8 @@ class TenhouTokenizer:
         self.tokens.append(f"dora_{_strip_tile_suffix(q['baopai']).replace('0', '5')}")
 
         for seat, score in enumerate(q["defen"]):
-            self.tokens.append(f"score_{seat}_{score}")
+            self.tokens.append(f"score_{seat}")
+            self.tokens.extend(encode_tenbo_tokens(int(score)))
 
         for seat, hand in enumerate(q["shoupai"]):
             hand_tiles = _parse_tiles(hand, stop_at_comma=True, context="hand")
@@ -628,7 +645,6 @@ class TenhouTokenizer:
         if is_riichi:
             self.players[actor].is_riichi = True
             self.players[actor].score -= 1000
-            self.tokens.append(f"riichi_{actor}")
 
         reaction = self._compute_reaction_options(actor, tile_idx)
         if reaction:
@@ -772,11 +788,11 @@ class TenhouTokenizer:
     def _on_fulou(self, f: dict) -> None:
         actor = f["l"]
         meld_text = f["m"]
-        meld_token_tiles = parse_meld_token_tiles(meld_text)
         meld_tiles = parse_meld_tiles(meld_text)
         action = classify_fulou(meld_tiles)
 
         discard_tile = None
+        had_pending_reaction = self.pending_reaction is not None
         if self.pending_reaction:
             self.pending_reaction.chosen[actor] = action
             discard_tile = self.pending_reaction.discard_tile
@@ -818,19 +834,18 @@ class TenhouTokenizer:
             tile = meld_tiles[0]
             p.melds.append(("minkan", tile))
 
-        meld_repr = "_".join(sorted(meld_token_tiles, key=token_tile_sort_key))
-        self.tokens.append(f"call_{action}_{actor}_{meld_repr}")
+        if not had_pending_reaction:
+            self.tokens.append(f"take_react_{actor}_{action}")
 
     def _on_gang(self, g: dict) -> None:
         actor = g["l"]
         meld_text = g["m"]
-        meld_token_tiles = parse_meld_token_tiles(meld_text)
         kind = classify_gang(meld_text)
         meld_tiles = parse_meld_tiles(meld_text)
         tile = meld_tiles[0]
-        tile_token = next((t for t in meld_token_tiles if t[1] == "0"), index_to_tile(tile))
 
         chosen = {kind}
+        had_pending_self = self.pending_self is not None and self.pending_self.actor == actor
         self._finalize_self(chosen, actor=actor)
 
         p = self.players[actor]
@@ -855,7 +870,8 @@ class TenhouTokenizer:
                 p.melds.append(("minkan", tile))
         self._invalidate_wait_mask(actor)
 
-        self.tokens.append(f"kan_{kind}_{actor}_{tile_token}")
+        if not had_pending_self:
+            self.tokens.append(f"take_self_{actor}_{kind}")
 
         if kind == "kakan":
             reaction = self._compute_kakan_reaction_options(actor, tile)
@@ -876,14 +892,20 @@ class TenhouTokenizer:
         if baojia is not None:
             if self.pending_reaction and baojia == self.pending_reaction.discarder:
                 self.pending_reaction.chosen[winner] = "ron"
-            self.tokens.append(f"win_ron_{winner}_from_{baojia}")
+            else:
+                # Fallback for malformed or reduced logs where reaction window is absent.
+                self.tokens.append(f"take_react_{winner}_ron")
+            self.tokens.append(f"ron_from_{winner}_{baojia}")
         else:
+            had_pending_self = self.pending_self is not None and self.pending_self.actor == winner
             self._finalize_self({"tsumo"}, actor=winner)
-            self.tokens.append(f"win_tsumo_{winner}")
+            if not had_pending_self:
+                self.tokens.append(f"take_self_{winner}_tsumo")
 
         for seat in range(4):
             self.players[seat].score += h["fenpei"][seat]
-            self.tokens.append(f"score_delta_{seat}_{h['fenpei'][seat]}")
+            self.tokens.append(f"score_delta_{seat}")
+            self.tokens.extend(encode_tenbo_tokens(int(h["fenpei"][seat])))
 
     def _on_pingju(self, p: dict) -> None:
         name = p.get("name", "unknown")
@@ -894,7 +916,8 @@ class TenhouTokenizer:
         self.tokens.append(f"draw_{self._normalize_name(name)}")
         for seat in range(4):
             self.players[seat].score += p["fenpei"][seat]
-            self.tokens.append(f"score_delta_{seat}_{p['fenpei'][seat]}")
+            self.tokens.append(f"score_delta_{seat}")
+            self.tokens.extend(encode_tenbo_tokens(int(p["fenpei"][seat])))
 
     def _kyushukyuhai_actor(self, shoupai: object) -> Optional[int]:
         if self.pending_self and "kyushukyuhai" in self.pending_self.options:
