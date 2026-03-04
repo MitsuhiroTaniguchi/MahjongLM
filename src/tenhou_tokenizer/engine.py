@@ -199,6 +199,27 @@ def _pm_wait_tiles(counts: List[int], meld_count: int) -> Set[int]:
     return {i for i in range(34) if (wait_mask >> i) & 1}
 
 
+def _is_kokushi_agari_shape(counts: List[int], meld_count: int) -> bool:
+    if meld_count != 0:
+        return False
+    if sum(counts) != 14:
+        return False
+    pair_found = False
+    for i, c in enumerate(counts):
+        if i in YAOCHU_INDICES:
+            if c == 0:
+                return False
+            if c == 1:
+                continue
+            if c == 2 and not pair_found:
+                pair_found = True
+                continue
+            return False
+        if c != 0:
+            return False
+    return pair_found
+
+
 def _pm_has_riichi_discard(counts: List[int], meld_count: int) -> bool:
     if PM_FASTAPI_AVAILABLE:
         return bool(pm.has_riichi_discard(tuple(counts), int(meld_count)))
@@ -827,6 +848,61 @@ class TenhouTokenizer:
             trigger="kakan",
         )
 
+    def _compute_ankan_reaction_options(self, actor: int, tile_idx: int) -> Optional[ReactionDecision]:
+        options_by_player: Dict[int, Set[str]] = {}
+        ron_cases: List[
+            Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int, bool, bool, bool]
+        ] = []
+        ron_case_seats: List[int] = []
+
+        for seat in range(4):
+            if seat == actor:
+                continue
+
+            p = self.players[seat]
+            if p.temporary_furiten or p.riichi_furiten:
+                continue
+
+            wait_mask = self._wait_mask(seat)
+            if self._is_permanent_furiten(seat, wait_mask=wait_mask) or not ((wait_mask >> tile_idx) & 1):
+                continue
+
+            counts_plus = list(p.concealed)
+            counts_plus[tile_idx] += 1
+            if not _is_kokushi_agari_shape(counts_plus, p.meld_count):
+                continue
+
+            ron_cases.append(
+                (
+                    counts_plus,
+                    p.melds,
+                    tile_idx,
+                    False,
+                    (p.open_melds == 0),
+                    p.is_riichi,
+                    self.bakaze,
+                    self._player_wind(seat),
+                    False,
+                    False,
+                    True,
+                )
+            )
+            ron_case_seats.append(seat)
+
+        if ron_cases:
+            for seat, can_ron in zip(ron_case_seats, _pm_has_hupai_multi(ron_cases)):
+                if can_ron:
+                    options_by_player[seat] = {"ron"}
+
+        if not options_by_player:
+            return None
+        return ReactionDecision(
+            discarder=actor,
+            discard_tile=tile_idx,
+            options_by_player=options_by_player,
+            trigger="ankan",
+        )
+
     def _can_chi(self, concealed: List[int], tile_idx: int) -> bool:
         if tile_idx >= 27:
             return False
@@ -931,13 +1007,16 @@ class TenhouTokenizer:
         if not had_pending_self:
             self.tokens.append(f"take_self_{actor}_{kind}")
 
+        reaction: Optional[ReactionDecision] = None
         if kind == "kakan":
             reaction = self._compute_kakan_reaction_options(actor, tile)
-            if reaction:
-                self.pending_reaction = reaction
-                for seat, opts in sorted(reaction.options_by_player.items()):
-                    for opt in sorted(opts):
-                        self.tokens.append(f"opt_react_{seat}_{opt}")
+        elif kind == "ankan":
+            reaction = self._compute_ankan_reaction_options(actor, tile)
+        if reaction:
+            self.pending_reaction = reaction
+            for seat, opts in sorted(reaction.options_by_player.items()):
+                for opt in sorted(opts):
+                    self.tokens.append(f"opt_react_{seat}_{opt}")
 
     def _on_kaigang(self, k: dict) -> None:
         tile = _strip_tile_suffix(k["baopai"]).replace("0", "5")
