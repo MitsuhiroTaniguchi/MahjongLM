@@ -291,9 +291,7 @@ def _pm_has_hupai(
     encoded_melds: List[Tuple[int, int]] = [
         (MELD_TYPE_TO_PM_CODE[meld_type], pai_34) for meld_type, pai_34 in melds
     ]
-    # Current fast API does not expose context flags for special yaku checks.
-    # Fall back to HuleOption path when any context-dependent flag is needed.
-    if PM_FASTAPI_AVAILABLE and not (is_haidi or is_lingshang or is_qianggang):
+    if PM_FASTAPI_AVAILABLE:
         return bool(
             pm.has_hupai(
                 tuple(counts),
@@ -304,6 +302,9 @@ def _pm_has_hupai(
                 bool(is_riichi),
                 int(zhuangfeng),
                 int(lunban),
+                bool(is_haidi),
+                bool(is_lingshang),
+                bool(is_qianggang),
             )
         )
 
@@ -327,9 +328,9 @@ def _pm_has_hupai_multi(
 ) -> List[bool]:
     if not cases:
         return []
-    if PM_MULTI_HUPAI_AVAILABLE and not any(c[8] or c[9] or c[10] for c in cases):
-        encoded_cases: List[
-            Tuple[Tuple[int, ...], List[Tuple[int, int]], int, bool, bool, bool, int, int]
+    if PM_MULTI_HUPAI_AVAILABLE:
+        encoded_cases_with_context: List[
+            Tuple[Tuple[int, ...], List[Tuple[int, int]], int, bool, bool, bool, int, int, bool, bool, bool]
         ] = []
         for (
             counts,
@@ -340,12 +341,12 @@ def _pm_has_hupai_multi(
             is_riichi,
             zhuangfeng,
             lunban,
-            _is_haidi,
-            _is_lingshang,
-            _is_qianggang,
+            is_haidi,
+            is_lingshang,
+            is_qianggang,
         ) in cases:
             encoded_melds = [(MELD_TYPE_TO_PM_CODE[mtype], pai_34) for mtype, pai_34 in melds]
-            encoded_cases.append(
+            encoded_cases_with_context.append(
                 (
                     tuple(counts),
                     encoded_melds,
@@ -355,9 +356,12 @@ def _pm_has_hupai_multi(
                     bool(is_riichi),
                     int(zhuangfeng),
                     int(lunban),
+                    bool(is_haidi),
+                    bool(is_lingshang),
+                    bool(is_qianggang),
                 )
             )
-        return [bool(x) for x in pm.has_hupai_multi(encoded_cases)]
+        return [bool(x) for x in pm.has_hupai_multi(encoded_cases_with_context)]
 
     return [
         _pm_has_hupai(
@@ -405,7 +409,7 @@ def _pm_evaluate_draw(
     encoded_melds: List[Tuple[int, int]] = [
         (MELD_TYPE_TO_PM_CODE[meld_type], pai_34) for meld_type, pai_34 in melds
     ]
-    if PM_EVALUATE_DRAW_AVAILABLE and not (is_haidi or is_lingshang):
+    if PM_EVALUATE_DRAW_AVAILABLE:
         can_tsumo, can_riichi_discard = pm.evaluate_draw(
             tuple(counts),
             encoded_melds,
@@ -416,6 +420,8 @@ def _pm_evaluate_draw(
             int(lunban),
             int(closed_kans),
             bool(check_riichi_discard),
+            bool(is_haidi),
+            bool(is_lingshang),
         )
         return bool(can_tsumo), bool(can_riichi_discard)
 

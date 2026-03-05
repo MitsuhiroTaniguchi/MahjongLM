@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import pytest
-
-pytest.importorskip("pymahjong")
+import pymahjong  # noqa: F401
 
 import tenhou_tokenizer.engine as engine
 from tenhou_tokenizer.engine import ReactionDecision, TenhouTokenizer, parse_hand_counts, tile_to_index

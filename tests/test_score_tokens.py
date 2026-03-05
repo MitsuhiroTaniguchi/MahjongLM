@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import pytest
-
-pytest.importorskip("pymahjong")
+import pymahjong  # noqa: F401
 
 from tenhou_tokenizer.engine import TenhouTokenizer, TokenizeError, encode_tenbo_tokens
 from tests.fixtures.synthetic_logs import qipai_payload

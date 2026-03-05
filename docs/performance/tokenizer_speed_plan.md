@@ -41,11 +41,12 @@ Results:
 - removed temporary `p.concealed` swap in reaction path (`_can_win_with_counts`)
 
 4. Setup made reproducible:
-- `scripts/setup_pymahjong.sh` installs from upstream merged commit + local batch-API patch.
+- `scripts/setup_pymahjong.sh` installs directly from `pymahjong` GitHub repository (`main` by default).
 
-5. Added pymahjong-side phase-2 APIs (local patch):
+5. Added pymahjong-side phase-2 APIs:
 - `evaluate_draw(...)` for combined tsumo/riichi-discard evaluation in one call
 - `has_hupai_multi(...)` for batched hupai checks
+- context-aware flags integrated into existing APIs (`has_hupai`, `has_hupai_multi`, `evaluate_draw`)
 - tokenizer engine switched self/reaction paths to use these APIs
 
 ## Remaining bottlenecks (cProfile, 1000 games)
@@ -74,7 +75,7 @@ Completed:
 
 Remaining:
 - optional API to return `wait_mask` and riichi-discard possibility in one pass
-- upstream PR/merge for phase-2 local patch
+- upstream PR/merge for phase-2 APIs
 
 ### Phase 3 (throughput scaling)
 

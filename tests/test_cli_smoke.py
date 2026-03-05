@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import subprocess
 import sys
@@ -9,8 +8,7 @@ from pathlib import Path
 
 import pytest
 
-if importlib.util.find_spec("pymahjong") is None:
-    pytest.skip("pymahjong is required for CLI tests", allow_module_level=True)
+import pymahjong  # noqa: F401
 
 from tests.fixtures.synthetic_logs import minimal_game, pingju_event, qipai_event
 
@@ -27,9 +25,9 @@ def _write_zip(path: Path, members: dict[str, object]) -> None:
                 zf.writestr(name, json.dumps(payload, ensure_ascii=False))
 
 
-def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
+def _run_cli(*args: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
     cmd = [sys.executable, str(SCRIPT), *args]
-    return subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT), check=False)
+    return subprocess.run(cmd, capture_output=True, text=True, cwd=str(cwd), check=False)
 
 
 def test_cli_tokenizes_single_zip(tmp_path: Path) -> None:
@@ -101,3 +99,28 @@ def test_cli_all_years_glob(tmp_path: Path) -> None:
     lines = [json.loads(line) for line in out_path.read_text(encoding="utf-8").strip().splitlines()]
     assert len(lines) == 2
     assert {line["source_zip"] for line in lines} == {str(zip1), str(zip2)}
+
+
+def test_cli_resolves_user_relative_paths_from_cwd(tmp_path: Path) -> None:
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    zip_path = workdir / "local.zip"
+    out_path = workdir / "tokens.jsonl"
+
+    valid_game = minimal_game([qipai_event(), pingju_event()])
+    _write_zip(zip_path, {"game_valid.json": valid_game})
+
+    result = _run_cli(
+        "--zip-path",
+        "local.zip",
+        "--output",
+        "tokens.jsonl",
+        "--progress-every",
+        "0",
+        cwd=workdir,
+    )
+
+    assert result.returncode == 0, result.stderr
+    lines = [json.loads(line) for line in out_path.read_text(encoding="utf-8").strip().splitlines()]
+    assert len(lines) == 1
+    assert lines[0]["source_zip"] == "local.zip"

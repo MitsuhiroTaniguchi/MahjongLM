@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+import pymahjong  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "tokenize_tenhou.py"
@@ -15,8 +15,6 @@ DATASET_2023 = ROOT / "data" / "raw" / "tenhou" / "data2023.zip"
 
 @pytest.mark.slow
 def test_cli_smoke_with_local_2023_dataset(tmp_path: Path) -> None:
-    if importlib.util.find_spec("pymahjong") is None:
-        pytest.skip("pymahjong is required")
     if not DATASET_2023.exists():
         pytest.skip(f"missing dataset: {DATASET_2023}")
 

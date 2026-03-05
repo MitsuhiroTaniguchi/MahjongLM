@@ -24,12 +24,18 @@ source .venv/bin/activate
 python scripts/tokenize_tenhou.py --max-games 200 --progress-every 50
 ```
 
-`setup_pymahjong.sh` installs upstream `pymahjong` and applies a local additive patch for
-extra speed APIs (`has_hupai_multi`, `evaluate_draw`) before build/install.
-That patch corresponds to upstream PR #5.
+`setup_pymahjong.sh` installs `pymahjong` directly from GitHub.
+Default ref is `main`, and you can override with:
+
+```bash
+PYMAHJONG_REF=<branch-or-commit> ./scripts/setup_pymahjong.sh
+```
+
 Upstream PR notes: `docs/performance/pymahjong_upstream_pr_notes.md`.
 
 Default input is `data/raw/tenhou/data2023.zip` and default output is `data/processed/tenhou/tokens_2023.jsonl.gz`.
+Defaults are resolved from the repository root.
+User-provided relative paths for `--zip-path`, `--zip-glob`, and `--output` are resolved from the current shell working directory.
 
 For all years in `data/raw/tenhou/`:
 
@@ -51,6 +57,8 @@ pip install -U pytest
 pytest -m "not slow" -q
 ```
 
+`pymahjong` is required for tokenizer and CLI tests.
+
 Optional dataset smoke test:
 
 ```bash
@@ -60,6 +68,8 @@ pytest -m slow -q
 ## Important note
 
 This tokenizer is `pymahjong`-first: shanten and hupai checks are delegated to its C++ implementation.
+
+Generated token outputs under `data/processed/` are local artifacts and are not tracked in Git.
 
 ## References
 

@@ -13,6 +13,10 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+DEFAULT_ZIP_PATH = ROOT / "data/raw/tenhou/data2023.zip"
+DEFAULT_ZIP_GLOB = str(ROOT / "data/raw/tenhou/data*.zip")
+DEFAULT_OUTPUT_PATH = ROOT / "data/processed/tenhou/tokens_2023.jsonl.gz"
+
 
 def open_output(path: Path):
     if path.suffix == ".gz":
@@ -25,8 +29,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--zip-path",
         type=Path,
-        default=Path("data/raw/tenhou/data2023.zip"),
-        help="Path to one Tenhou ZIP archive.",
+        default=None,
+        help=f"Path to one Tenhou ZIP archive. Default: {DEFAULT_ZIP_PATH}",
     )
     parser.add_argument(
         "--all-years",
@@ -36,14 +40,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--zip-glob",
         type=str,
-        default="data/raw/tenhou/data*.zip",
-        help="Glob pattern used when --all-years is set.",
+        default=None,
+        help=f"Glob pattern used when --all-years is set. Default: {DEFAULT_ZIP_GLOB}",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("data/processed/tenhou/tokens_2023.jsonl.gz"),
-        help="Output JSONL(.gz) path.",
+        default=None,
+        help=f"Output JSONL(.gz) path. Default: {DEFAULT_OUTPUT_PATH}",
     )
     parser.add_argument("--max-games", type=int, default=None, help="Limit number of games.")
     parser.add_argument("--start-index", type=int, default=0, help="Start index in zip namelist.")
@@ -63,7 +67,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    args.output.parent.mkdir(parents=True, exist_ok=True)
+    zip_path = args.zip_path if args.zip_path is not None else DEFAULT_ZIP_PATH
+    zip_glob = args.zip_glob if args.zip_glob is not None else DEFAULT_ZIP_GLOB
+    output_path = args.output if args.output is not None else DEFAULT_OUTPUT_PATH
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     import zipfile
     try:
@@ -72,7 +79,7 @@ def main() -> int:
         if exc.name == "pymahjong":
             print(
                 "pymahjong is required. Activate your venv and install it first: "
-                "pip install \"git+https://github.com/MitsuhiroTaniguchi/pymahjong.git\"",
+                "./scripts/setup_pymahjong.sh",
                 file=sys.stderr,
             )
             return 2
@@ -83,19 +90,14 @@ def main() -> int:
     skipped = 0
 
     if args.all_years:
-        pattern_path = Path(args.zip_glob)
-        if pattern_path.is_absolute():
-            pattern = args.zip_glob
-        else:
-            pattern = str(ROOT / args.zip_glob)
-        zip_paths = sorted(Path(p) for p in glob(pattern))
+        zip_paths = sorted(Path(p) for p in glob(zip_glob))
         if not zip_paths:
-            print(f"no zip matched --zip-glob: {args.zip_glob}", file=sys.stderr)
+            print(f"no zip matched --zip-glob: {zip_glob}", file=sys.stderr)
             return 2
     else:
-        zip_paths = [args.zip_path]
+        zip_paths = [zip_path]
 
-    with open_output(args.output) as out:
+    with open_output(output_path) as out:
         for zip_path in zip_paths:
             with zipfile.ZipFile(zip_path) as zf:
                 names = zf.namelist()
@@ -139,7 +141,7 @@ def main() -> int:
             if args.max_games is not None and written >= args.max_games:
                 break
 
-    print(f"done: tokenized={written} skipped={skipped} output={args.output}")
+    print(f"done: tokenized={written} skipped={skipped} output={output_path}")
     if args.strict and skipped > 0:
         return 1
     return 0

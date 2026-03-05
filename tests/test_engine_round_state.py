@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import pytest
-
-pytest.importorskip("pymahjong")
+import pymahjong  # noqa: F401
 
 import tenhou_tokenizer.engine as engine
 from tenhou_tokenizer.engine import ReactionDecision, SelfDecision, TenhouTokenizer, tile_to_index
@@ -207,3 +206,117 @@ def test_compute_self_options_uses_combined_draw_eval(monkeypatch: pytest.Monkey
     assert observed["check_riichi_discard"] is True
     assert observed["is_haidi"] is False
     assert observed["is_lingshang"] is False
+
+
+def test_pm_has_hupai_uses_context_enabled_has_hupai(monkeypatch: pytest.MonkeyPatch) -> None:
+    called: dict[str, object] = {}
+
+    def fake_has_hupai(
+        _hand: tuple[int, ...],
+        _melds: list[tuple[int, int]],
+        _win_tile: int,
+        _is_tsumo: bool,
+        _is_menqian: bool,
+        _is_riichi: bool,
+        _zhuangfeng: int,
+        _lunban: int,
+        is_haidi: bool,
+        is_lingshang: bool,
+        is_qianggang: bool,
+    ) -> bool:
+        called["flags"] = (is_haidi, is_lingshang, is_qianggang)
+        return True
+
+    monkeypatch.setattr(engine, "PM_FASTAPI_AVAILABLE", True)
+    monkeypatch.setattr(engine.pm, "has_hupai", fake_has_hupai, raising=False)
+
+    out = engine._pm_has_hupai(
+        counts=[0] * 34,
+        melds=[],
+        win_tile=0,
+        is_tsumo=False,
+        is_menqian=True,
+        is_riichi=False,
+        zhuangfeng=0,
+        lunban=0,
+        is_haidi=True,
+        is_lingshang=False,
+        is_qianggang=True,
+    )
+    assert out is True
+    assert called["flags"] == (True, False, True)
+
+
+def test_pm_has_hupai_multi_uses_context_enabled_has_hupai_multi(monkeypatch: pytest.MonkeyPatch) -> None:
+    called = {"n": 0}
+
+    def fake_has_hupai_multi(
+        cases: list[
+            tuple[
+                tuple[int, ...],
+                list[tuple[int, int]],
+                int,
+                bool,
+                bool,
+                bool,
+                int,
+                int,
+                bool,
+                bool,
+                bool,
+            ]
+        ]
+    ) -> list[bool]:
+        called["n"] = len(cases)
+        return [True] * len(cases)
+
+    monkeypatch.setattr(engine, "PM_MULTI_HUPAI_AVAILABLE", True)
+    monkeypatch.setattr(engine.pm, "has_hupai_multi", fake_has_hupai_multi, raising=False)
+
+    out = engine._pm_has_hupai_multi(
+        [
+            ([0] * 34, [], 0, False, True, False, 0, 0, True, False, False),
+            ([0] * 34, [], 1, False, True, False, 0, 1, False, True, True),
+        ]
+    )
+    assert out == [True, True]
+    assert called["n"] == 2
+
+
+def test_pm_evaluate_draw_uses_context_enabled_evaluate_draw(monkeypatch: pytest.MonkeyPatch) -> None:
+    called: dict[str, object] = {}
+
+    def fake_evaluate_draw(
+        _hand: tuple[int, ...],
+        _melds: list[tuple[int, int]],
+        _win_tile: int,
+        _is_menqian: bool,
+        _is_riichi: bool,
+        _zhuangfeng: int,
+        _lunban: int,
+        _closed_kans: int,
+        _check_riichi_discard: bool,
+        is_haidi: bool,
+        is_lingshang: bool,
+    ) -> tuple[bool, bool]:
+        called["flags"] = (is_haidi, is_lingshang)
+        return True, False
+
+    monkeypatch.setattr(engine, "PM_EVALUATE_DRAW_AVAILABLE", True)
+    monkeypatch.setattr(engine.pm, "evaluate_draw", fake_evaluate_draw, raising=False)
+
+    out = engine._pm_evaluate_draw(
+        counts=[0] * 34,
+        melds=[],
+        win_tile=0,
+        is_menqian=True,
+        is_riichi=False,
+        zhuangfeng=0,
+        lunban=0,
+        closed_kans=0,
+        check_riichi_discard=False,
+        is_haidi=True,
+        is_lingshang=True,
+    )
+    assert out == (True, False)
+    assert called["flags"] == (True, True)
