@@ -1,4 +1,4 @@
-# Mahjong LLM
+# MahjongLM
 
 This repository now includes a streaming Tenhou tokenizer that adds explicit option/pass tokens for latent decisions.
 
