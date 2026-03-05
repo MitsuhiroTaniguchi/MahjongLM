@@ -491,6 +491,8 @@ class TenhouTokenizer:
         self.live_draws_left = 70
         self.bakaze = 0
         self.dealer_seat = 0
+        self.first_turn_open_calls_seen = False
+        self.last_draw_was_gangzimo = False
 
     def tokenize_game(self, game: dict) -> List[str]:
         self.tokens = ["game_start"]
@@ -776,6 +778,8 @@ class TenhouTokenizer:
         self.bakaze = int(q["zhuangfeng"])
         # Tenhou JSON used here is seat-rotated so dealer is always seat 0.
         self.dealer_seat = 0
+        self.first_turn_open_calls_seen = False
+        self.last_draw_was_gangzimo = False
 
         self.tokens.append("round_start")
         self.tokens.append(f"round_seq_{self.round_index}")
@@ -802,6 +806,7 @@ class TenhouTokenizer:
         self.players[actor].temporary_furiten = False
         self._invalidate_wait_mask(actor)
         self.live_draws_left -= 1
+        self.last_draw_was_gangzimo = is_gangzimo
 
         action = "gang_draw" if is_gangzimo else "draw"
         self.tokens.append(f"{action}_{actor}_{tile_token}")
@@ -821,7 +826,7 @@ class TenhouTokenizer:
             and p.score >= 1000
             and self.live_draws_left >= 4
         )
-        is_haidi = self.live_draws_left == 0
+        is_haidi = self.live_draws_left == 0 and not is_gangzimo
         can_tsumo, has_riichi_discard = self._evaluate_draw(
             seat=actor,
             drawn_tile=drawn_tile,
@@ -849,6 +854,8 @@ class TenhouTokenizer:
     def _can_kyushukyuhai(self, actor: int) -> bool:
         p = self.players[actor]
         if not p.is_first_turn:
+            return False
+        if self.first_turn_open_calls_seen:
             return False
         if p.open_melds > 0 or p.closed_kans > 0 or p.melds:
             return False
@@ -909,6 +916,7 @@ class TenhouTokenizer:
             self.players[actor].is_riichi = True
 
         reaction = self._compute_reaction_options(actor, tile_idx)
+        self.last_draw_was_gangzimo = False
         if reaction:
             self.pending_reaction = reaction
             if is_riichi:
@@ -929,7 +937,7 @@ class TenhouTokenizer:
             Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int, bool, bool, bool]
         ] = []
         ron_case_seats: List[int] = []
-        is_haidi = self.live_draws_left == 0
+        is_haidi = self.live_draws_left == 0 and not self.last_draw_was_gangzimo
 
         for offset in range(1, 4):
             seat = (discarder + offset) % 4
@@ -1123,6 +1131,7 @@ class TenhouTokenizer:
         meld_token_tiles, called_index_hint = parse_meld_token_tiles_and_called(meld_text)
         meld_tiles = [tile_to_index(tile) for tile in meld_token_tiles]
         action = classify_fulou(meld_tiles)
+        self.first_turn_open_calls_seen = True
 
         discard_tile = None
         had_pending_reaction = self.pending_reaction is not None

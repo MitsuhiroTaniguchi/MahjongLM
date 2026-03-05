@@ -283,8 +283,30 @@ def test_gangzimo_last_tile_draw_eval_uses_lingshang_and_haidi(
     monkeypatch.setattr(engine, "_pm_evaluate_draw", fake_eval_draw)
 
     tokenizer._on_draw({"l": 0, "p": "m1"}, is_gangzimo=True)
-    assert seen == {"is_haidi": True, "is_lingshang": True}
+    assert seen == {"is_haidi": False, "is_lingshang": True}
     assert "opt_self_0_tsumo" in tokenizer.tokens
+
+
+def test_rinshan_discard_does_not_set_houtei_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.live_draws_left = 1
+    offered = tile_to_index("m2")
+    seen: list[tuple[bool, bool, bool]] = []
+
+    monkeypatch.setattr(engine, "_pm_wait_mask", lambda *_args, **_kwargs: 1 << offered)
+
+    def fake_has_hupai_multi(cases: list[tuple[object, ...]]) -> list[bool]:
+        seen.extend((bool(case[8]), bool(case[9]), bool(case[10])) for case in cases)
+        return [False] * len(cases)
+
+    monkeypatch.setattr(engine, "_pm_has_hupai_multi", fake_has_hupai_multi)
+
+    tokenizer._on_draw({"l": 0, "p": "m2"}, is_gangzimo=True)
+    tokenizer._on_discard({"l": 0, "p": "m2_"})
+
+    assert seen
+    assert all(flags == (False, False, False) for flags in seen)
 
 
 def test_pingju_closes_reaction_as_forced_rule(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -436,6 +458,31 @@ def test_kyushukyuhai_is_emitted_as_pass_when_not_taken() -> None:
     assert "opt_self_0_kyushukyuhai" in tokens
     assert "pass_self_0_kyushukyuhai" in tokens
     assert "take_self_0_kyushukyuhai" not in tokens
+
+
+def test_kyushukyuhai_is_not_offered_after_other_player_calls() -> None:
+    hands = [
+        "m1456789p1234s11",
+        "m23p123456s123z11",
+        "m1199p19s19z12345",
+        "m123456789p1234",
+    ]
+    game = minimal_game(
+        [
+            qipai_event(hands=hands),
+            {"zimo": {"l": 0, "p": "s2"}},
+            {"dapai": {"l": 0, "p": "m1"}},
+            {"fulou": {"l": 1, "m": "m1-23"}},
+            {"dapai": {"l": 1, "p": "z1"}},
+            {"zimo": {"l": 2, "p": "m2"}},
+        ]
+    )
+
+    tokens = TenhouTokenizer().tokenize_game(game)
+
+    assert "take_react_1_chi" in tokens
+    assert "opt_self_2_kyushukyuhai" not in tokens
+    assert "pass_self_2_kyushukyuhai" not in tokens
 
 
 def test_kyushukyuhai_is_emitted_as_take_on_pingju() -> None:
