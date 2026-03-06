@@ -4,7 +4,13 @@ import pytest
 import pymahjong  # noqa: F401
 
 import tenhou_tokenizer.engine as engine
-from tenhou_tokenizer.engine import ReactionDecision, TenhouTokenizer, parse_hand_counts, tile_to_index
+from tenhou_tokenizer.engine import (
+    ReactionDecision,
+    SelfDecision,
+    TenhouTokenizer,
+    parse_hand_counts,
+    tile_to_index,
+)
 from tests.fixtures.synthetic_logs import minimal_game, pingju_event, qipai_event, qipai_payload
 
 
@@ -32,8 +38,14 @@ def test_permanent_furiten_blocks_ron_for_all_waits(monkeypatch: pytest.MonkeyPa
 def test_hule_with_baojia_is_classified_as_ron() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_reaction = ReactionDecision(
+        discarder=0,
+        discard_tile=tile_to_index("m1"),
+        options_by_player={2: {"ron"}},
+    )
 
     tokenizer._on_hule({"l": 2, "baojia": 0, "fenpei": [0, 0, 0, 0]})
+    tokenizer._flush_pending()
 
     assert "take_react_2_ron" in tokenizer.tokens
     assert "ron_from_2_0" in tokenizer.tokens
@@ -42,11 +54,17 @@ def test_hule_with_baojia_is_classified_as_ron() -> None:
 
 
 def test_kaigang_does_not_force_self_pass_before_tsumo(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: {"tsumo"})
+    monkeypatch.setattr(
+        TenhouTokenizer,
+        "_compute_self_options",
+        lambda _self, _actor, _tile_idx, is_gangzimo=False: {"tsumo"} if is_gangzimo else {"ankan"},
+    )
 
     game = minimal_game(
         [
-            qipai_event(),
+            qipai_event(hands=["m111p123s123z1122", "m123456789p1234", "m123456789p1234", "m123456789p1234"]),
+            {"zimo": {"l": 0, "p": "m1"}},
+            {"gang": {"l": 0, "m": "m1111"}},
             {"gangzimo": {"l": 0, "p": "m1"}},
             {"kaigang": {"baopai": "p5"}},
             {"hule": {"l": 0, "fenpei": [0, 0, 0, 0]}},
@@ -131,6 +149,36 @@ def test_riichi_stick_is_deducted_when_ron_options_all_pass() -> None:
     assert tokenizer.players[0].score == 24000
 
 
+@pytest.mark.parametrize(
+    ("chosen", "close_reason", "expected_score"),
+    [
+        ({1: "ron"}, "voluntary", 25000),
+        ({}, "voluntary", 24000),
+        ({}, "forced_rule", 25000),
+    ],
+)
+def test_riichi_stick_resolution_matrix(
+    chosen: dict[int, str],
+    close_reason: str,
+    expected_score: int,
+) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_reaction = ReactionDecision(
+        discarder=0,
+        discard_tile=tile_to_index("m1"),
+        options_by_player={1: {"ron"}},
+        chosen=chosen,
+        trigger="discard",
+    )
+    tokenizer.pending_riichi_actor = 0
+
+    tokenizer._finalize_reaction(close_reason=close_reason)
+
+    assert tokenizer.players[0].score == expected_score
+    assert tokenizer.pending_riichi_actor is None
+
+
 def test_kakan_generates_reaction_decision_and_rob_kan_take(monkeypatch: pytest.MonkeyPatch) -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
@@ -141,6 +189,8 @@ def test_kakan_generates_reaction_decision_and_rob_kan_take(monkeypatch: pytest.
     p.concealed[tile] = max(p.concealed[tile], 1)
     p.open_pons[tile] = 1
     p.melds = [("pon", tile)]
+    tokenizer.pending_self = SelfDecision(actor=actor, options={"kakan"})
+    tokenizer.expected_discard_actor = actor
 
     def fake_kakan_reaction(self: TenhouTokenizer, actor: int, tile_idx: int) -> ReactionDecision:
         return ReactionDecision(
@@ -209,6 +259,191 @@ def test_pass_react_forced_rule_does_not_set_furiten() -> None:
     assert "pass_react_1_ron_forced_rule" in tokenizer.tokens
     assert not tokenizer.players[1].temporary_furiten
     assert not tokenizer.players[1].riichi_furiten
+
+
+@pytest.mark.parametrize(
+    (
+        "options_by_player",
+        "chosen",
+        "riichi_seats",
+        "close_reason",
+        "expected_tokens",
+        "temporary_furiten_seats",
+        "riichi_furiten_seats",
+    ),
+    [
+        (
+            {0: {"chi"}, 1: {"pon"}},
+            {1: "pon"},
+            set(),
+            "voluntary",
+            {"take_react_1_pon", "pass_react_0_chi_forced_priority"},
+            set(),
+            set(),
+        ),
+        (
+            {0: {"pon"}, 1: {"ron"}},
+            {1: "ron"},
+            set(),
+            "voluntary",
+            {"take_react_1_ron", "pass_react_0_pon_forced_priority"},
+            set(),
+            set(),
+        ),
+        (
+            {0: {"minkan"}, 1: {"pon"}},
+            {1: "pon"},
+            set(),
+            "voluntary",
+            {"take_react_1_pon", "pass_react_0_minkan_forced_priority"},
+            set(),
+            set(),
+        ),
+        (
+            {1: {"pon", "ron"}},
+            {1: "pon"},
+            set(),
+            "voluntary",
+            {"take_react_1_pon", "pass_react_1_ron_voluntary"},
+            {1},
+            set(),
+        ),
+        (
+            {1: {"minkan", "ron"}},
+            {1: "minkan"},
+            set(),
+            "voluntary",
+            {"take_react_1_minkan", "pass_react_1_ron_voluntary"},
+            {1},
+            set(),
+        ),
+        (
+            {0: {"pon"}, 1: {"pon"}},
+            {1: "pon"},
+            set(),
+            "voluntary",
+            {"take_react_1_pon", "pass_react_0_pon_forced_priority"},
+            set(),
+            set(),
+        ),
+        (
+            {0: {"minkan"}, 1: {"minkan"}},
+            {1: "minkan"},
+            set(),
+            "voluntary",
+            {"take_react_1_minkan", "pass_react_0_minkan_forced_priority"},
+            set(),
+            set(),
+        ),
+        (
+            {0: {"pon"}, 1: {"minkan"}},
+            {1: "minkan"},
+            set(),
+            "voluntary",
+            {"take_react_1_minkan", "pass_react_0_pon_forced_priority"},
+            set(),
+            set(),
+        ),
+        (
+            {0: {"chi"}, 1: {"pon"}, 2: {"ron"}},
+            {2: "ron"},
+            set(),
+            "voluntary",
+            {"take_react_2_ron", "pass_react_0_chi_forced_priority", "pass_react_1_pon_forced_priority"},
+            set(),
+            set(),
+        ),
+        (
+            {0: {"chi"}, 1: {"minkan"}, 2: {"pon"}},
+            {1: "minkan"},
+            set(),
+            "voluntary",
+            {"take_react_1_minkan", "pass_react_0_chi_forced_priority", "pass_react_2_pon_forced_priority"},
+            set(),
+            set(),
+        ),
+        (
+            {1: {"ron"}},
+            {},
+            {1},
+            "voluntary",
+            {"pass_react_1_ron_voluntary"},
+            set(),
+            {1},
+        ),
+        (
+            {1: {"chi"}},
+            {},
+            set(),
+            "voluntary",
+            {"pass_react_1_chi_voluntary"},
+            set(),
+            set(),
+        ),
+    ],
+)
+def test_reaction_resolution_matrix(
+    options_by_player: dict[int, set[str]],
+    chosen: dict[int, str],
+    riichi_seats: set[int],
+    close_reason: str,
+    expected_tokens: set[str],
+    temporary_furiten_seats: set[int],
+    riichi_furiten_seats: set[int],
+) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    for seat in riichi_seats:
+        tokenizer.players[seat].is_riichi = True
+
+    tokenizer.pending_reaction = ReactionDecision(
+        discarder=3,
+        discard_tile=tile_to_index("m4"),
+        options_by_player=options_by_player,
+        chosen=chosen,
+    )
+    tokenizer._finalize_reaction(close_reason=close_reason)
+
+    for token in expected_tokens:
+        assert token in tokenizer.tokens
+    for seat in range(4):
+        assert tokenizer.players[seat].temporary_furiten is (seat in temporary_furiten_seats)
+        assert tokenizer.players[seat].riichi_furiten is (seat in riichi_furiten_seats)
+
+
+def test_self_resolution_emits_take_before_pass_in_sorted_order() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_self = SelfDecision(actor=0, options={"tsumo", "ankan", "riichi"})
+
+    tokenizer._finalize_self({"riichi"})
+
+    tail = tokenizer.tokens[-3:]
+    assert tail == [
+        "take_self_0_riichi",
+        "pass_self_0_ankan",
+        "pass_self_0_tsumo",
+    ]
+
+
+def test_reaction_resolution_emits_take_before_pass_in_sorted_order() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_reaction = ReactionDecision(
+        discarder=3,
+        discard_tile=tile_to_index("m4"),
+        options_by_player={1: {"pon", "ron", "minkan"}},
+        chosen={1: "pon"},
+    )
+
+    tokenizer._finalize_reaction()
+
+    tail = tokenizer.tokens[-3:]
+    assert tail == [
+        "take_react_1_pon",
+        "pass_react_1_minkan_voluntary",
+        "pass_react_1_ron_voluntary",
+    ]
 
 
 def test_houtei_ron_option_uses_haidi_context(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -410,14 +645,14 @@ def test_riichi_ankan_uses_pre_draw_waits_baseline(monkeypatch: pytest.MonkeyPat
     assert "ankan" in opts
 
 
-def test_kaigang_between_discard_and_fulou_keeps_discard_reaction(
+def test_kaigang_after_minkan_discard_keeps_discard_reaction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: set())
     monkeypatch.setattr(TenhouTokenizer, "_can_win", lambda *_args, **_kwargs: False)
 
     hands = [
-        "m5567p123s123z112",
+        "m666p123s123z1122",
         "m123456789p1234",
         "m123456789p1234",
         "m123456789p1234",
@@ -427,19 +662,21 @@ def test_kaigang_between_discard_and_fulou_keeps_discard_reaction(
             qipai_event(hands=hands),
             {"zimo": {"l": 3, "p": "p1"}},
             {"dapai": {"l": 3, "p": "m6"}},
+            {"fulou": {"l": 0, "m": "m6666-"}},
+            {"gangzimo": {"l": 0, "p": "p1"}},
+            {"dapai": {"l": 0, "p": "p1_"}},
             {"kaigang": {"baopai": "z1"}},
-            {"fulou": {"l": 0, "m": "m56-7"}},
-            {"dapai": {"l": 0, "p": "m6"}},
             pingju_event(),
         ]
     )
 
     tokens = TenhouTokenizer().tokenize_game(game)
 
-    assert "opt_react_0_chi" in tokens
-    assert "take_react_0_chi" in tokens
-    assert "call_chi_0_m5_m6_m7" not in tokens
-    assert "discard_0_m6" in tokens
+    assert "opt_react_0_minkan" in tokens
+    assert "take_react_0_minkan" in tokens
+    assert "dora_z1" in tokens
+    assert "discard_0_p1_tsumogiri" in tokens
+    assert "pass_react_1_chi_forced_rule" in tokens
 
 
 def test_kyushukyuhai_is_emitted_as_pass_when_not_taken() -> None:
@@ -688,6 +925,8 @@ def test_kakan_no_longer_emits_kan_token(monkeypatch: pytest.MonkeyPatch) -> Non
     p.open_pons[tile] = 1
     p.melds = [("pon", tile)]
     monkeypatch.setattr(TenhouTokenizer, "_compute_kakan_reaction_options", lambda *_args, **_kwargs: None)
+    tokenizer.pending_self = SelfDecision(actor=actor, options={"kakan"})
+    tokenizer.expected_discard_actor = actor
 
     tokenizer._on_gang({"l": actor, "m": "m5550+"})
 
@@ -702,6 +941,8 @@ def test_ankan_no_longer_emits_kan_token() -> None:
     tile = tile_to_index("m5")
     actor = 0
     tokenizer.players[actor].concealed[tile] = 4
+    tokenizer.pending_self = SelfDecision(actor=actor, options={"ankan"})
+    tokenizer.expected_discard_actor = actor
 
     tokenizer._on_gang({"l": actor, "m": "m5550"})
 
@@ -717,6 +958,8 @@ def test_ankan_generates_reaction_decision_and_rob_kan_take(monkeypatch: pytest.
     actor = 0
     p = tokenizer.players[actor]
     p.concealed[tile] = max(p.concealed[tile], 4)
+    tokenizer.pending_self = SelfDecision(actor=actor, options={"ankan"})
+    tokenizer.expected_discard_actor = actor
 
     def fake_ankan_reaction(self: TenhouTokenizer, actor: int, tile_idx: int) -> ReactionDecision:
         return ReactionDecision(
@@ -736,3 +979,49 @@ def test_ankan_generates_reaction_decision_and_rob_kan_take(monkeypatch: pytest.
     assert "opt_react_1_ron" in tokenizer.tokens
     assert tokenizer.tokens.count("take_react_1_ron") == 1
     assert "ron_from_1_0" in tokenizer.tokens
+
+
+@pytest.mark.parametrize(
+    ("method_name", "trigger_arg"),
+    [
+        ("_compute_kakan_reaction_options", {"actor": 0, "tile_idx": tile_to_index("m1")}),
+        ("_compute_ankan_reaction_options", {"actor": 0, "tile_idx": tile_to_index("z7")}),
+    ],
+)
+def test_rob_kan_reaction_skips_furiten_players(
+    monkeypatch: pytest.MonkeyPatch,
+    method_name: str,
+    trigger_arg: dict[str, int],
+) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    offered = trigger_arg["tile_idx"]
+
+    monkeypatch.setattr(engine, "_pm_wait_mask", lambda *_args, **_kwargs: 1 << offered)
+    monkeypatch.setattr(engine, "_pm_has_hupai_multi", lambda cases: [True] * len(cases))
+
+    tokenizer.players[1].temporary_furiten = True
+    tokenizer.players[2].riichi_furiten = True
+    tokenizer.players[3].furiten_tiles.add(offered)
+
+    reaction = getattr(tokenizer, method_name)(**trigger_arg)
+    assert reaction is None
+
+
+def test_kakan_reaction_only_offers_ron() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.players[1].concealed = [0] * 34
+    tokenizer.players[1].concealed[tile_to_index("m1")] = 3
+
+    reaction = ReactionDecision(
+        discarder=0,
+        discard_tile=tile_to_index("m1"),
+        options_by_player={1: {"ron"}},
+        trigger="kakan",
+    )
+    tokenizer.pending_reaction = reaction
+    tokenizer._finalize_reaction()
+
+    assert "take_react_1_ron" not in tokenizer.tokens
+    assert "pass_react_1_ron_voluntary" in tokenizer.tokens

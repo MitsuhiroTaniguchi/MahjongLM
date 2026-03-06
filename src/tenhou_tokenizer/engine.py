@@ -102,6 +102,10 @@ def _parse_tiles(text: str, *, stop_at_comma: bool, context: str) -> List[str]:
             if suit is None:
                 raise TokenizeError(f"digit without suit in {context}: {text}")
             tiles.append(token_tile(f"{suit}{ch}"))
+            continue
+        if ch.isspace():
+            continue
+        raise TokenizeError(f"unexpected character in {context}: {text}")
     return tiles
 
 
@@ -493,28 +497,110 @@ class TenhouTokenizer:
         self.dealer_seat = 0
         self.first_turn_open_calls_seen = False
         self.last_draw_was_gangzimo = False
+        self.expected_draw_actor: Optional[int] = None
+        self.expected_discard_actor: Optional[int] = None
+        self.awaiting_kaigang = False
 
     def tokenize_game(self, game: dict) -> List[str]:
+        if not isinstance(game, dict):
+            raise TokenizeError("game must be a dict")
+        log = game.get("log", [])
+        if not isinstance(log, list):
+            raise TokenizeError("game log must be a list")
+        if not log:
+            raise TokenizeError("game log cannot be empty")
         self.tokens = ["game_start"]
         self.pending_self = None
         self.pending_reaction = None
         self.pending_riichi_actor = None
         self.round_index = 0
-        for round_data in game.get("log", []):
+        self.expected_draw_actor = None
+        self.expected_discard_actor = None
+        self.awaiting_kaigang = False
+        for round_data in log:
             self._process_round(round_data)
         self._flush_pending()
         self.tokens.append("game_end")
         return self.tokens
 
+    def _require_round_initialized(self) -> None:
+        if len(self.players) != 4:
+            raise TokenizeError("round state is not initialized")
+
+    def _require_int(self, value: object, *, field: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TokenizeError(f"{field} must be an integer")
+        return value
+
+    def _require_seat(self, seat: object, *, field: str) -> int:
+        seat_int = self._require_int(seat, field=field)
+        if seat_int < 0 or seat_int >= 4:
+            raise TokenizeError(f"invalid seat for {field}: {seat}")
+        return seat_int
+
+    def _require_four(self, values: object, *, field: str) -> List[object]:
+        if not isinstance(values, list) or len(values) != 4:
+            raise TokenizeError(f"{field} must be a list of length 4")
+        return values
+
+    def _require_dict(self, value: object, *, field: str) -> dict:
+        if not isinstance(value, dict):
+            raise TokenizeError(f"{field} must be a dict")
+        return value
+
+    def _require_str(self, value: object, *, field: str) -> str:
+        if not isinstance(value, str):
+            raise TokenizeError(f"{field} must be a string")
+        return value
+
+    def _require_non_negative_int(self, value: object, *, field: str) -> int:
+        value_int = self._require_int(value, field=field)
+        if value_int < 0:
+            raise TokenizeError(f"{field} must be a non-negative integer")
+        return value_int
+
+    def _require_score(self, value: object, *, field: str) -> int:
+        value = self._require_int(value, field=field)
+        if value % 100 != 0:
+            raise TokenizeError(f"score value must be a multiple of 100: {value}")
+        return value
+
     def _process_round(self, round_data: list) -> None:
+        if not isinstance(round_data, list):
+            raise TokenizeError("round data must be a list")
+        if not round_data:
+            raise TokenizeError("round data cannot be empty")
         self.pending_self = None
         self.pending_reaction = None
         self.pending_riichi_actor = None
+        self.expected_draw_actor = None
+        self.expected_discard_actor = None
+        self.awaiting_kaigang = False
+        saw_qipai = False
+        round_ended = False
 
         for event in round_data:
+            if not isinstance(event, dict):
+                raise TokenizeError("round event must be a dict")
             if not event:
-                continue
+                raise TokenizeError("round event cannot be empty")
             key, value = next(iter(event.items()))
+
+            if not saw_qipai:
+                if key != "qipai":
+                    raise TokenizeError("round must start with qipai")
+                saw_qipai = True
+            elif key == "qipai":
+                raise TokenizeError("round cannot contain multiple qipai")
+            elif round_ended:
+                is_multi_ron_continuation = (
+                    key == "hule"
+                    and isinstance(value, dict)
+                    and self.pending_reaction is not None
+                    and value.get("baojia") == self.pending_reaction.discarder
+                )
+                if not is_multi_ron_continuation:
+                    raise TokenizeError("round already ended")
 
             if self.pending_reaction and not self._is_reaction_continuation(key, value):
                 close_reason = "forced_rule" if key == "pingju" else "voluntary"
@@ -543,6 +629,9 @@ class TenhouTokenizer:
                 self._on_pingju(value)
             else:
                 self.tokens.append(f"event_unknown_{key}")
+
+            if key in {"hule", "pingju"}:
+                round_ended = True
 
         self._flush_pending()
         self.round_index += 1
@@ -764,43 +853,76 @@ class TenhouTokenizer:
         return False
 
     def _on_qipai(self, q: dict) -> None:
-        hand_counts_list = [parse_hand_counts(hand) for hand in q["shoupai"]]
-        hand_red_fives_list = [parse_hand_red_fives(hand) for hand in q["shoupai"]]
+        if not isinstance(q, dict):
+            raise TokenizeError("qipai payload must be a dict")
+        shoupai = self._require_four(q["shoupai"], field="qipai.shoupai")
+        defen = self._require_four(q["defen"], field="qipai.defen")
+        if not all(isinstance(hand, str) for hand in shoupai):
+            raise TokenizeError("qipai.shoupai entries must be strings")
+        baopai = self._require_str(q["baopai"], field="qipai.baopai")
+        token_tile(_strip_tile_suffix(baopai))
+
+        hand_counts_list = [parse_hand_counts(hand) for hand in shoupai]
+        hand_red_fives_list = [parse_hand_red_fives(hand) for hand in shoupai]
+        for counts in hand_counts_list:
+            if sum(counts) != 13:
+                raise TokenizeError("qipai hand must contain exactly 13 tiles")
+            if any(count > 4 for count in counts):
+                raise TokenizeError("qipai hand cannot contain more than four of a tile")
+        scores = [self._require_score(score, field=f"qipai.defen[{seat}]") for seat, score in enumerate(defen)]
         self.players = [
             PlayerState(
                 concealed=list(hand_counts_list[seat]),
-                score=q["defen"][seat],
+                score=scores[seat],
                 red_fives=dict(hand_red_fives_list[seat]),
             )
             for seat in range(4)
         ]
+        bakaze = self._require_non_negative_int(q["zhuangfeng"], field="qipai.zhuangfeng")
+        kyoku = self._require_non_negative_int(q["jushu"], field="qipai.jushu")
+        honba = self._require_non_negative_int(q["changbang"], field="qipai.changbang")
+        riichi_sticks = self._require_non_negative_int(q["lizhibang"], field="qipai.lizhibang")
+
         self.live_draws_left = 70
-        self.bakaze = int(q["zhuangfeng"])
+        self.bakaze = bakaze
         # Tenhou JSON used here is seat-rotated so dealer is always seat 0.
         self.dealer_seat = 0
         self.first_turn_open_calls_seen = False
         self.last_draw_was_gangzimo = False
+        self.expected_draw_actor = None
+        self.expected_discard_actor = None
+        self.awaiting_kaigang = False
 
         self.tokens.append("round_start")
         self.tokens.append(f"round_seq_{self.round_index}")
-        self.tokens.append(f"bakaze_{q['zhuangfeng']}")
-        self.tokens.append(f"kyoku_{q['jushu']}")
-        self.tokens.append(f"honba_{q['changbang']}")
-        self.tokens.append(f"riichi_sticks_{q['lizhibang']}")
-        self.tokens.append(f"dora_{_strip_tile_suffix(q['baopai']).replace('0', '5')}")
+        self.tokens.append(f"bakaze_{bakaze}")
+        self.tokens.append(f"kyoku_{kyoku}")
+        self.tokens.append(f"honba_{honba}")
+        self.tokens.append(f"riichi_sticks_{riichi_sticks}")
+        self.tokens.append(f"dora_{_strip_tile_suffix(baopai).replace('0', '5')}")
 
-        for seat, score in enumerate(q["defen"]):
+        for seat, score in enumerate(scores):
             self.tokens.append(f"score_{seat}")
-            self.tokens.extend(encode_tenbo_tokens(int(score)))
+            self.tokens.extend(encode_tenbo_tokens(score))
 
-        for seat, hand in enumerate(q["shoupai"]):
+        for seat, hand in enumerate(shoupai):
             hand_tiles = _parse_tiles(hand, stop_at_comma=True, context="hand")
             for tile in sorted(hand_tiles, key=token_tile_sort_key):
                 self.tokens.append(f"haipai_{seat}_{tile}")
 
     def _on_draw(self, z: dict, is_gangzimo: bool) -> None:
-        actor = z["l"]
-        tile_str = _strip_tile_suffix(z["p"])
+        self._require_round_initialized()
+        z = self._require_dict(z, field="draw")
+        if self.live_draws_left <= 0:
+            raise TokenizeError("no live draws remaining")
+        if self.awaiting_kaigang and not is_gangzimo:
+            raise TokenizeError("kaigang must occur before the next live draw")
+        if self.expected_discard_actor is not None:
+            raise TokenizeError("draw is not allowed before discard resolution")
+        actor = self._require_seat(z["l"], field="draw.l")
+        if self.expected_draw_actor is not None and actor != self.expected_draw_actor:
+            raise TokenizeError(f"unexpected draw actor: {actor}")
+        tile_str = _strip_tile_suffix(self._require_str(z["p"], field="draw.p"))
         tile_token = token_tile(tile_str)
         tile_idx = self._add_concealed_token(self.players[actor], tile_token)
         self.players[actor].temporary_furiten = False
@@ -816,6 +938,8 @@ class TenhouTokenizer:
             self.tokens.append(f"opt_self_{actor}_{opt}")
         self.pending_self = SelfDecision(actor=actor, options=options)
         self.players[actor].is_first_turn = False
+        self.expected_draw_actor = None
+        self.expected_discard_actor = actor
 
     def _compute_self_options(self, actor: int, drawn_tile: int, is_gangzimo: bool = False) -> Set[str]:
         p = self.players[actor]
@@ -894,8 +1018,12 @@ class TenhouTokenizer:
         return False
 
     def _on_discard(self, d: dict) -> None:
-        actor = d["l"]
-        raw_tile = d["p"]
+        self._require_round_initialized()
+        d = self._require_dict(d, field="dapai")
+        actor = self._require_seat(d["l"], field="dapai.l")
+        if self.expected_discard_actor is None or actor != self.expected_discard_actor:
+            raise TokenizeError(f"unexpected discard actor: {actor}")
+        raw_tile = self._require_str(d["p"], field="dapai.p")
         tile_str = _strip_tile_suffix(raw_tile)
         tile_token = token_tile(tile_str)
         tile_idx = tile_to_index(tile_token)
@@ -917,6 +1045,7 @@ class TenhouTokenizer:
 
         reaction = self._compute_reaction_options(actor, tile_idx)
         self.last_draw_was_gangzimo = False
+        self.expected_discard_actor = None
         if reaction:
             self.pending_reaction = reaction
             if is_riichi:
@@ -930,6 +1059,9 @@ class TenhouTokenizer:
                     self.tokens.append(f"opt_react_{seat}_{opt}")
         elif is_riichi:
             self._apply_riichi_stick(actor)
+            self.expected_draw_actor = (actor + 1) % 4
+        else:
+            self.expected_draw_actor = (actor + 1) % 4
 
     def _compute_reaction_options(self, discarder: int, tile_idx: int) -> Optional[ReactionDecision]:
         options_by_player: Dict[int, Set[str]] = {}
@@ -1126,19 +1258,25 @@ class TenhouTokenizer:
         return False
 
     def _on_fulou(self, f: dict) -> None:
-        actor = f["l"]
-        meld_text = f["m"]
+        self._require_round_initialized()
+        f = self._require_dict(f, field="fulou")
+        actor = self._require_seat(f["l"], field="fulou.l")
+        meld_text = self._require_str(f["m"], field="fulou.m")
         meld_token_tiles, called_index_hint = parse_meld_token_tiles_and_called(meld_text)
         meld_tiles = [tile_to_index(tile) for tile in meld_token_tiles]
         action = classify_fulou(meld_tiles)
+        if not self.pending_reaction or self.pending_reaction.trigger != "discard":
+            raise TokenizeError("fulou requires a pending discard reaction")
+        offered = self.pending_reaction.options_by_player.get(actor, set())
+        if action not in offered:
+            raise TokenizeError("fulou action was not offered")
         self.first_turn_open_calls_seen = True
 
         discard_tile = None
-        had_pending_reaction = self.pending_reaction is not None
-        if self.pending_reaction:
-            self.pending_reaction.chosen[actor] = action
-            discard_tile = self.pending_reaction.discard_tile
-            self._finalize_reaction()
+        had_pending_reaction = True
+        self.pending_reaction.chosen[actor] = action
+        discard_tile = self.pending_reaction.discard_tile
+        self._finalize_reaction()
 
         p = self.players[actor]
         pre_counts = list(p.concealed)
@@ -1208,17 +1346,32 @@ class TenhouTokenizer:
         )
         if red_choice is not None:
             self.tokens.append(red_choice)
+        if action == "minkan":
+            self.awaiting_kaigang = True
+            self.expected_draw_actor = actor
+            self.expected_discard_actor = None
+        else:
+            self.expected_draw_actor = None
+            self.expected_discard_actor = actor
 
     def _on_gang(self, g: dict) -> None:
-        actor = g["l"]
-        meld_text = g["m"]
+        self._require_round_initialized()
+        g = self._require_dict(g, field="gang")
+        actor = self._require_seat(g["l"], field="gang.l")
+        meld_text = self._require_str(g["m"], field="gang.m")
         kind = classify_gang(meld_text)
         meld_token_tiles, _called_index = parse_meld_token_tiles_and_called(meld_text)
         meld_tiles = [tile_to_index(tile) for tile in meld_token_tiles]
         tile = meld_tiles[0]
+        if not self.pending_self or self.pending_self.actor != actor:
+            raise TokenizeError("gang requires a pending self decision")
+        if kind not in self.pending_self.options:
+            raise TokenizeError("gang action was not offered")
+        if self.expected_discard_actor is None or actor != self.expected_discard_actor:
+            raise TokenizeError(f"unexpected gang actor: {actor}")
 
         chosen = {kind}
-        had_pending_self = self.pending_self is not None and self.pending_self.actor == actor
+        had_pending_self = True
         self._finalize_self(chosen, actor=actor)
 
         p = self.players[actor]
@@ -1262,57 +1415,75 @@ class TenhouTokenizer:
                 p.melds.append(("minkan", tile))
         self._invalidate_wait_mask(actor)
 
-        if not had_pending_self:
-            self.tokens.append(f"take_self_{actor}_{kind}")
-
         reaction: Optional[ReactionDecision] = None
         if kind == "kakan":
             reaction = self._compute_kakan_reaction_options(actor, tile)
         elif kind == "ankan":
             reaction = self._compute_ankan_reaction_options(actor, tile)
+        self.awaiting_kaigang = True
         if reaction:
             self.pending_reaction = reaction
             for seat, opts in sorted(reaction.options_by_player.items()):
                 for opt in sorted(opts):
                     self.tokens.append(f"opt_react_{seat}_{opt}")
+        self.expected_discard_actor = None
+        self.expected_draw_actor = actor
 
     def _on_kaigang(self, k: dict) -> None:
-        tile = _strip_tile_suffix(k["baopai"]).replace("0", "5")
+        if not self.awaiting_kaigang:
+            raise TokenizeError("kaigang is not expected")
+        k = self._require_dict(k, field="kaigang")
+        tile = token_tile(_strip_tile_suffix(self._require_str(k["baopai"], field="kaigang.baopai"))).replace("0", "5")
         self.tokens.append(f"dora_{tile}")
+        self.awaiting_kaigang = False
 
     def _on_hule(self, h: dict) -> None:
-        winner = h["l"]
+        self._require_round_initialized()
+        h = self._require_dict(h, field="hule")
+        winner = self._require_seat(h["l"], field="hule.l")
         baojia = h.get("baojia")
+        if baojia is not None:
+            baojia = self._require_seat(baojia, field="hule.baojia")
+        fenpei = self._require_four(h["fenpei"], field="hule.fenpei")
 
         if baojia is not None:
-            if self.pending_reaction and baojia == self.pending_reaction.discarder:
-                self.pending_reaction.chosen[winner] = "ron"
-            else:
-                # Fallback for malformed or reduced logs where reaction window is absent.
-                self.tokens.append(f"take_react_{winner}_ron")
+            if not self.pending_reaction or baojia != self.pending_reaction.discarder:
+                raise TokenizeError("ron requires a pending matching reaction")
+            offered = self.pending_reaction.options_by_player.get(winner, set())
+            if "ron" not in offered:
+                raise TokenizeError("ron action was not offered")
+            self.pending_reaction.chosen[winner] = "ron"
             self.tokens.append(f"ron_from_{winner}_{baojia}")
         else:
-            had_pending_self = self.pending_self is not None and self.pending_self.actor == winner
+            if not self.pending_self or self.pending_self.actor != winner:
+                raise TokenizeError("tsumo requires a pending self decision")
+            if "tsumo" not in self.pending_self.options:
+                raise TokenizeError("tsumo action was not offered")
             self._finalize_self({"tsumo"}, actor=winner)
-            if not had_pending_self:
-                self.tokens.append(f"take_self_{winner}_tsumo")
 
+        deltas = [self._require_score(delta, field=f"hule.fenpei[{seat}]") for seat, delta in enumerate(fenpei)]
         for seat in range(4):
-            self.players[seat].score += h["fenpei"][seat]
+            self.players[seat].score += deltas[seat]
             self.tokens.append(f"score_delta_{seat}")
-            self.tokens.extend(encode_tenbo_tokens(int(h["fenpei"][seat])))
+            self.tokens.extend(encode_tenbo_tokens(deltas[seat]))
 
     def _on_pingju(self, p: dict) -> None:
+        self._require_round_initialized()
+        p = self._require_dict(p, field="pingju")
         name = p.get("name", "unknown")
+        if not isinstance(name, str):
+            raise TokenizeError("pingju.name must be a string")
+        fenpei = self._require_four(p["fenpei"], field="pingju.fenpei")
         if name == "九種九牌":
             actor = self._kyushukyuhai_actor(p.get("shoupai"))
             if actor is not None:
                 self._finalize_self({"kyushukyuhai"}, actor=actor)
         self.tokens.append(f"draw_{self._normalize_name(name)}")
+        deltas = [self._require_score(delta, field=f"pingju.fenpei[{seat}]") for seat, delta in enumerate(fenpei)]
         for seat in range(4):
-            self.players[seat].score += p["fenpei"][seat]
+            self.players[seat].score += deltas[seat]
             self.tokens.append(f"score_delta_{seat}")
-            self.tokens.extend(encode_tenbo_tokens(int(p["fenpei"][seat])))
+            self.tokens.extend(encode_tenbo_tokens(deltas[seat]))
 
     def _kyushukyuhai_actor(self, shoupai: object) -> Optional[int]:
         if self.pending_self and "kyushukyuhai" in self.pending_self.options:
@@ -1396,6 +1567,7 @@ class TenhouTokenizer:
             return
 
         had_ron_winner = any(action == "ron" for action in self.pending_reaction.chosen.values())
+        had_call_winner = any(action in {"chi", "pon", "minkan"} for action in self.pending_reaction.chosen.values())
         if (
             self.pending_riichi_actor is not None
             and self.pending_reaction.trigger == "discard"
@@ -1424,6 +1596,11 @@ class TenhouTokenizer:
                         self.players[seat].riichi_furiten = True
                     else:
                         self.players[seat].temporary_furiten = True
+        if not had_ron_winner and not had_call_winner:
+            self.expected_discard_actor = None
+            self.expected_draw_actor = self.pending_reaction.discarder
+            if self.pending_reaction.trigger == "discard":
+                self.expected_draw_actor = (self.pending_reaction.discarder + 1) % 4
         self.pending_reaction = None
 
     def _is_reaction_continuation(self, key: str, value: dict) -> bool:
@@ -1433,6 +1610,8 @@ class TenhouTokenizer:
         # It is a dora reveal side event and should not close reaction windows.
         if key == "kaigang":
             return True
+        if not isinstance(value, dict):
+            return False
         if key == "fulou" and self.pending_reaction.trigger == "discard":
             return True
         if key == "hule" and value.get("baojia") == self.pending_reaction.discarder:
@@ -1445,13 +1624,15 @@ class TenhouTokenizer:
         actor = self.pending_self.actor
         if key == "kaigang":
             return True
+        if not isinstance(value, dict):
+            return False
         if key == "dapai" and value.get("l") == actor:
             return True
         if key == "gang" and value.get("l") == actor:
             return True
         if key == "hule" and value.get("l") == actor and value.get("baojia") is None:
             return True
-        if key == "pingju":
+        if key == "pingju" and value.get("name") == "九種九牌":
             return True
         return False
 
