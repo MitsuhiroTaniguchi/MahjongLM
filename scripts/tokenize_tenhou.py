@@ -99,7 +99,19 @@ def main() -> int:
 
     with open_output(output_path) as out:
         for zip_path in zip_paths:
-            with zipfile.ZipFile(zip_path) as zf:
+            try:
+                zf = zipfile.ZipFile(zip_path)
+            except FileNotFoundError:
+                print(f"zip not found: {zip_path}", file=sys.stderr)
+                return 2
+            except (IsADirectoryError, PermissionError):
+                print(f"cannot open zip: {zip_path}", file=sys.stderr)
+                return 2
+            except zipfile.BadZipFile:
+                print(f"invalid zip file: {zip_path}", file=sys.stderr)
+                return 2
+
+            with zf:
                 names = zf.namelist()
                 for idx, name in enumerate(names):
                     if idx < args.start_index:
