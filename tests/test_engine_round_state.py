@@ -388,6 +388,7 @@ def test_compute_self_options_uses_combined_draw_eval(monkeypatch: pytest.Monkey
     def fake_evaluate_draw(
         counts: list[int],
         melds: list[tuple[str, int]],
+        encoded_melds: list[tuple[int, int]],
         win_tile: int,
         is_menqian: bool,
         is_riichi: bool,
@@ -400,6 +401,7 @@ def test_compute_self_options_uses_combined_draw_eval(monkeypatch: pytest.Monkey
     ) -> tuple[bool, bool]:
         observed["win_tile"] = win_tile
         observed["is_menqian"] = is_menqian
+        observed["encoded_melds"] = encoded_melds
         observed["check_riichi_discard"] = check_riichi_discard
         observed["is_haidi"] = is_haidi
         observed["is_lingshang"] = is_lingshang
@@ -412,6 +414,7 @@ def test_compute_self_options_uses_combined_draw_eval(monkeypatch: pytest.Monkey
     assert "riichi" in opts
     assert observed["win_tile"] == draw_tile
     assert observed["is_menqian"] is True
+    assert observed["encoded_melds"] == []
     assert observed["check_riichi_discard"] is True
     assert observed["is_haidi"] is False
     assert observed["is_lingshang"] is False
@@ -442,6 +445,7 @@ def test_pm_has_hupai_uses_context_enabled_has_hupai(monkeypatch: pytest.MonkeyP
     out = engine._pm_has_hupai(
         counts=[0] * 34,
         melds=[],
+        encoded_melds=None,
         win_tile=0,
         is_tsumo=False,
         is_menqian=True,
@@ -594,6 +598,7 @@ def test_pm_evaluate_draw_uses_context_enabled_evaluate_draw(monkeypatch: pytest
     out = engine._pm_evaluate_draw(
         counts=[0] * 34,
         melds=[],
+        encoded_melds=None,
         win_tile=0,
         is_menqian=True,
         is_riichi=False,

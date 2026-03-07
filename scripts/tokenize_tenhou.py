@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import gzip
 import json
+import os
 import sys
 from glob import glob
+from itertools import islice
 from pathlib import Path
+from typing import Iterable, Iterator, List, Optional, Sequence, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -16,12 +20,107 @@ if str(SRC) not in sys.path:
 DEFAULT_ZIP_PATH = ROOT / "data/raw/tenhou/data2023.zip"
 DEFAULT_ZIP_GLOB = str(ROOT / "data/raw/tenhou/data*.zip")
 DEFAULT_OUTPUT_PATH = ROOT / "data/processed/tenhou/tokens_2023.jsonl.gz"
+AUTO_PARALLEL_MIN_GAMES = 512
+
+_WORKER_ZIP_PATH: Optional[str] = None
+_WORKER_ZF = None
+_WORKER_TOKENIZER = None
+_WORKER_TOKENIZE_ERROR = None
 
 
 def open_output(path: Path):
     if path.suffix == ".gz":
         return gzip.open(path, "wt", encoding="utf-8")
     return path.open("w", encoding="utf-8")
+
+
+def _iter_chunks(items: Sequence[str], chunk_size: int) -> Iterator[List[str]]:
+    iterator = iter(items)
+    while True:
+        chunk = list(islice(iterator, chunk_size))
+        if not chunk:
+            return
+        yield chunk
+
+
+def _init_tokenize_worker(zip_path: str) -> None:
+    import zipfile
+
+    global _WORKER_ZIP_PATH, _WORKER_ZF, _WORKER_TOKENIZER, _WORKER_TOKENIZE_ERROR
+    from tenhou_tokenizer import TenhouTokenizer, TokenizeError
+
+    if _WORKER_ZIP_PATH == zip_path and _WORKER_ZF is not None and _WORKER_TOKENIZER is not None:
+        return
+    if _WORKER_ZF is not None:
+        _WORKER_ZF.close()
+    _WORKER_ZIP_PATH = zip_path
+    _WORKER_ZF = zipfile.ZipFile(zip_path)
+    _WORKER_TOKENIZER = TenhouTokenizer()
+    _WORKER_TOKENIZE_ERROR = TokenizeError
+
+
+def _tokenize_chunk_worker(names: Sequence[str]) -> List[Tuple[str, Optional[List[str]], Optional[str]]]:
+    global _WORKER_ZF, _WORKER_TOKENIZER, _WORKER_TOKENIZE_ERROR
+    assert _WORKER_ZF is not None
+    assert _WORKER_TOKENIZER is not None
+    assert _WORKER_TOKENIZE_ERROR is not None
+
+    rows: List[Tuple[str, Optional[List[str]], Optional[str]]] = []
+    for name in names:
+        try:
+            with _WORKER_ZF.open(name) as f:
+                game = json.load(f)
+            tokens = _WORKER_TOKENIZER.tokenize_game(game)
+            rows.append((name, tokens, None))
+        except KeyboardInterrupt:
+            raise
+        except (json.JSONDecodeError, KeyError, _WORKER_TOKENIZE_ERROR, ValueError) as exc:
+            rows.append((name, None, str(exc)))
+    return rows
+
+
+def _tokenize_zip_serial(
+    names: Sequence[str],
+    tokenizer,
+    zf,
+) -> Iterator[Tuple[str, Optional[List[str]], Optional[str]]]:
+    from tenhou_tokenizer import TokenizeError
+
+    for name in names:
+        try:
+            with zf.open(name) as f:
+                game = json.load(f)
+            yield name, tokenizer.tokenize_game(game), None
+        except KeyboardInterrupt:
+            raise
+        except (json.JSONDecodeError, KeyError, TokenizeError, ValueError) as exc:
+            yield name, None, str(exc)
+
+
+def _tokenize_zip_parallel(
+    zip_path: Path,
+    names: Sequence[str],
+    workers: int,
+    chunk_size: int,
+) -> Iterator[Tuple[str, Optional[List[str]], Optional[str]]]:
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=workers,
+        initializer=_init_tokenize_worker,
+        initargs=(str(zip_path),),
+    ) as executor:
+        for chunk_rows in executor.map(_tokenize_chunk_worker, _iter_chunks(names, chunk_size)):
+            for row in chunk_rows:
+                yield row
+
+
+def _resolve_workers(requested_workers: int, names_count: int) -> int:
+    if requested_workers == 1 or names_count <= 1:
+        return 1
+    if requested_workers <= 0:
+        if names_count < AUTO_PARALLEL_MIN_GAMES:
+            return 1
+        requested_workers = os.process_cpu_count() or 1
+    return max(1, min(requested_workers, names_count))
 
 
 def parse_args() -> argparse.Namespace:
@@ -62,6 +161,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Exit with non-zero status if any game is skipped.",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help="Worker processes. Use 0 to auto-select; small inputs stay serial. Use 1 to disable parallelism.",
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=128,
+        help="Games per worker task when --workers != 1.",
+    )
     return parser.parse_args()
 
 
@@ -85,7 +196,6 @@ def main() -> int:
             return 2
         raise
 
-    tokenizer = TenhouTokenizer()
     written = 0
     skipped = 0
 
@@ -113,22 +223,30 @@ def main() -> int:
 
             with zf:
                 names = zf.namelist()
-                for idx, name in enumerate(names):
-                    if idx < args.start_index:
-                        continue
+                selected_names = names[args.start_index :]
+                if args.max_games is not None and written >= args.max_games:
+                    break
+                workers = _resolve_workers(args.workers, len(selected_names))
+                chunk_size = max(1, args.chunk_size)
+                tokenizer = None
+                if workers == 1:
+                    tokenizer = TenhouTokenizer()
+                    row_iter = _tokenize_zip_serial(selected_names, tokenizer=tokenizer, zf=zf)
+                else:
+                    row_iter = _tokenize_zip_parallel(
+                        zip_path=zip_path,
+                        names=selected_names,
+                        workers=workers,
+                        chunk_size=chunk_size,
+                    )
+
+                for local_idx, (name, tokens, error_text) in enumerate(row_iter, start=args.start_index):
                     if args.max_games is not None and written >= args.max_games:
                         break
-
-                    try:
-                        with zf.open(name) as f:
-                            game = json.load(f)
-                        tokens = tokenizer.tokenize_game(game)
-                    except KeyboardInterrupt:
-                        raise
-                    except (json.JSONDecodeError, KeyError, TokenizeError, ValueError) as exc:
+                    if error_text is not None:
                         skipped += 1
                         if skipped <= 10:
-                            print(f"skip: {zip_path.name}:{name} ({exc})", file=sys.stderr)
+                            print(f"skip: {zip_path.name}:{name} ({error_text})", file=sys.stderr)
                         continue
 
                     out.write(
@@ -146,7 +264,7 @@ def main() -> int:
 
                     if args.progress_every > 0 and written % args.progress_every == 0:
                         print(
-                            f"tokenized={written} skipped={skipped} zip={zip_path.name} last_index={idx}",
+                            f"tokenized={written} skipped={skipped} zip={zip_path.name} last_index={local_idx}",
                             file=sys.stderr,
                         )
 

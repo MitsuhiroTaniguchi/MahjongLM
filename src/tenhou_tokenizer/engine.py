@@ -222,6 +222,10 @@ def _make_pm_shoupai(counts: List[int], melds: List[Tuple[str, int]]):
     return pm.Shoupai(tuple(counts))
 
 
+def _encode_pm_melds(melds: List[Tuple[str, int]]) -> List[Tuple[int, int]]:
+    return [(MELD_TYPE_TO_PM_CODE[meld_type], pai_34) for meld_type, pai_34 in melds]
+
+
 def _pm_xiangting(counts: List[int], meld_count: int) -> int:
     x, _mode, _disc, _wait = PM_XIANGTING.calculate(tuple(counts), 4 - meld_count, 7, False, False)
     return int(x)
@@ -282,6 +286,7 @@ def _pm_has_riichi_discard(counts: List[int], meld_count: int) -> bool:
 def _pm_has_hupai(
     counts: List[int],
     melds: List[Tuple[str, int]],
+    encoded_melds: Optional[List[Tuple[int, int]]],
     win_tile: int,
     is_tsumo: bool,
     is_menqian: bool,
@@ -292,14 +297,12 @@ def _pm_has_hupai(
     is_lingshang: bool = False,
     is_qianggang: bool = False,
 ) -> bool:
-    encoded_melds: List[Tuple[int, int]] = [
-        (MELD_TYPE_TO_PM_CODE[meld_type], pai_34) for meld_type, pai_34 in melds
-    ]
+    pm_melds = encoded_melds if encoded_melds is not None else _encode_pm_melds(melds)
     if PM_FASTAPI_AVAILABLE:
         return bool(
             pm.has_hupai(
                 tuple(counts),
-                encoded_melds,
+                pm_melds,
                 int(win_tile),
                 bool(is_tsumo),
                 bool(is_menqian),
@@ -400,6 +403,7 @@ def _pm_has_hupai_multi(
 def _pm_evaluate_draw(
     counts: List[int],
     melds: List[Tuple[str, int]],
+    encoded_melds: Optional[List[Tuple[int, int]]],
     win_tile: int,
     is_menqian: bool,
     is_riichi: bool,
@@ -410,13 +414,11 @@ def _pm_evaluate_draw(
     is_haidi: bool = False,
     is_lingshang: bool = False,
 ) -> Tuple[bool, bool]:
-    encoded_melds: List[Tuple[int, int]] = [
-        (MELD_TYPE_TO_PM_CODE[meld_type], pai_34) for meld_type, pai_34 in melds
-    ]
+    pm_melds = encoded_melds if encoded_melds is not None else _encode_pm_melds(melds)
     if PM_EVALUATE_DRAW_AVAILABLE:
         can_tsumo, can_riichi_discard = pm.evaluate_draw(
             tuple(counts),
-            encoded_melds,
+            pm_melds,
             int(win_tile),
             bool(is_menqian),
             bool(is_riichi),
@@ -432,6 +434,7 @@ def _pm_evaluate_draw(
     can_tsumo = _pm_has_hupai(
         counts=counts,
         melds=melds,
+        encoded_melds=pm_melds,
         win_tile=win_tile,
         is_tsumo=True,
         is_menqian=is_menqian,
@@ -458,6 +461,7 @@ class PlayerState:
     open_pons: Dict[int, int] = field(default_factory=dict)
     open_pons_red: Dict[int, int] = field(default_factory=dict)
     melds: List[Tuple[str, int]] = field(default_factory=list)
+    encoded_melds_cache: Optional[List[Tuple[int, int]]] = None
     furiten_tiles: Set[int] = field(default_factory=set)
     temporary_furiten: bool = False
     riichi_furiten: bool = False
@@ -781,6 +785,15 @@ class TenhouTokenizer:
     def _invalidate_wait_mask(self, seat: int) -> None:
         self.players[seat].wait_mask_cache = None
 
+    def _invalidate_meld_cache(self, seat: int) -> None:
+        self.players[seat].encoded_melds_cache = None
+
+    def _player_encoded_melds(self, seat: int) -> List[Tuple[int, int]]:
+        p = self.players[seat]
+        if p.encoded_melds_cache is None:
+            p.encoded_melds_cache = _encode_pm_melds(p.melds)
+        return p.encoded_melds_cache
+
     def _wait_mask(self, seat: int) -> int:
         p = self.players[seat]
         if p.wait_mask_cache is None:
@@ -807,6 +820,7 @@ class TenhouTokenizer:
         return _pm_has_hupai(
             counts=counts,
             melds=p.melds,
+            encoded_melds=self._player_encoded_melds(seat),
             win_tile=win_tile,
             is_tsumo=is_tsumo,
             is_menqian=(p.open_melds == 0),
@@ -831,6 +845,7 @@ class TenhouTokenizer:
         return _pm_evaluate_draw(
             counts=p.concealed,
             melds=p.melds,
+            encoded_melds=self._player_encoded_melds(seat),
             win_tile=drawn_tile,
             is_menqian=(p.open_melds == 0),
             is_riichi=p.is_riichi,
@@ -1331,6 +1346,7 @@ class TenhouTokenizer:
         elif action == "minkan":
             tile = meld_tiles[0]
             p.melds.append(("minkan", tile))
+        self._invalidate_meld_cache(actor)
 
         if not had_pending_reaction:
             self.tokens.append(f"take_react_{actor}_{action}")
@@ -1413,6 +1429,7 @@ class TenhouTokenizer:
                     break
             if not replaced:
                 p.melds.append(("minkan", tile))
+        self._invalidate_meld_cache(actor)
         self._invalidate_wait_mask(actor)
 
         reaction: Optional[ReactionDecision] = None

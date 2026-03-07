@@ -47,6 +47,47 @@ def test_cli_tokenizes_single_zip(tmp_path: Path) -> None:
     assert record["source_zip"] == str(zip_path)
 
 
+def test_cli_parallel_workers_preserve_output(tmp_path: Path) -> None:
+    zip_path = tmp_path / "data2023.zip"
+    serial_out = tmp_path / "tokens_serial.jsonl"
+    parallel_out = tmp_path / "tokens_parallel.jsonl"
+
+    members = {
+        "g0.json": minimal_game([qipai_event(jushu=0), pingju_event()]),
+        "g1.json": minimal_game([qipai_event(jushu=1), pingju_event()]),
+        "g2.json": minimal_game([qipai_event(jushu=2), pingju_event()]),
+        "g3.json": minimal_game([qipai_event(jushu=3), pingju_event()]),
+    }
+    _write_zip(zip_path, members)
+
+    serial = _run_cli(
+        "--zip-path",
+        str(zip_path),
+        "--output",
+        str(serial_out),
+        "--progress-every",
+        "0",
+        "--workers",
+        "1",
+    )
+    parallel = _run_cli(
+        "--zip-path",
+        str(zip_path),
+        "--output",
+        str(parallel_out),
+        "--progress-every",
+        "0",
+        "--workers",
+        "2",
+        "--chunk-size",
+        "2",
+    )
+
+    assert serial.returncode == 0, serial.stderr
+    assert parallel.returncode == 0, parallel.stderr
+    assert serial_out.read_text(encoding="utf-8") == parallel_out.read_text(encoding="utf-8")
+
+
 def test_cli_strict_fails_when_any_game_is_skipped(tmp_path: Path) -> None:
     zip_path = tmp_path / "data2023.zip"
     out_path = tmp_path / "tokens.jsonl"
