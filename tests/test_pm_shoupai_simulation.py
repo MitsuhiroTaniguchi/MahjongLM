@@ -10,10 +10,8 @@ import pytest
 
 import tenhou_tokenizer.engine as engine
 from tenhou_tokenizer import TenhouTokenizer
+from tests.dataset_sample import DATASET_2023, get_dataset_2023_sample_zip
 from tests.fixtures.synthetic_logs import minimal_game, pingju_event, qipai_event
-
-ROOT = Path(__file__).resolve().parents[1]
-DATASET_2023 = ROOT / "data" / "raw" / "tenhou" / "data2023.zip"
 
 
 @contextmanager
@@ -116,7 +114,7 @@ def test_shoupai_simulation_matches_python_fallback_on_real_games() -> None:
     if not DATASET_2023.exists():
         pytest.skip(f"missing dataset: {DATASET_2023}")
 
-    with zipfile.ZipFile(DATASET_2023) as zf:
+    with zipfile.ZipFile(get_dataset_2023_sample_zip()) as zf:
         for name in zf.namelist()[:25]:
             game = json.load(zf.open(name))
             baseline = _tokenize(game, simulation_api=False)

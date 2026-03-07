@@ -8,6 +8,7 @@ import pytest
 import pymahjong  # noqa: F401
 
 from tenhou_tokenizer import TenhouTokenizer
+from tests.dataset_sample import DATASET_2023, get_dataset_2023_sample_zip
 from tests.fixtures.synthetic_logs import minimal_game, pingju_event, qipai_event
 from tests.validation_helpers import (
     validate_round_stepwise,
@@ -16,7 +17,6 @@ from tests.validation_helpers import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-DATASET_2023 = ROOT / "data" / "raw" / "tenhou" / "data2023.zip"
 
 
 def test_validation_helpers_accept_minimal_game() -> None:
@@ -63,8 +63,8 @@ def test_dataset_validation_first_500_games() -> None:
     if not DATASET_2023.exists():
         pytest.skip(f"missing dataset: {DATASET_2023}")
 
-    with zipfile.ZipFile(DATASET_2023) as zf:
-        for name in zf.namelist()[:500]:
+    with zipfile.ZipFile(get_dataset_2023_sample_zip()) as zf:
+        for name in zf.namelist():
             game = json.load(zf.open(name))
             tokens = TenhouTokenizer().tokenize_game(game)
             validate_token_stream(tokens)
