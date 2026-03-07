@@ -15,6 +15,13 @@ from tenhou_tokenizer.engine import (
 from tests.fixtures.synthetic_logs import minimal_game, pingju_event, qipai_event, qipai_payload
 
 
+@pytest.fixture(autouse=True)
+def disable_pm_simulation_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(engine, "PM_STATELESS_SIMULATION_API_AVAILABLE", False)
+    monkeypatch.setattr(engine, "PM_SIMULATION_API_AVAILABLE", False)
+    monkeypatch.setattr(engine, "PM_SHOUPAI_SIMULATION_API_AVAILABLE", False)
+
+
 def test_round_index_resets_per_game() -> None:
     game = minimal_game([qipai_event(), pingju_event()])
     tokenizer = TenhouTokenizer()
@@ -354,6 +361,40 @@ def test_kaigang_rejects_when_minkan_was_only_offered() -> None:
 
     with pytest.raises(TokenizeError):
         tokenizer._on_kaigang({"baopai": "p1"})
+
+
+def test_stateless_simulation_path_does_not_require_shoupai_objects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine, "PM_STATELESS_SIMULATION_API_AVAILABLE", True)
+    monkeypatch.setattr(engine, "PM_SHOUPAI_SIMULATION_API_AVAILABLE", False)
+    monkeypatch.setattr(engine, "PM_SIMULATION_API_AVAILABLE", True)
+    monkeypatch.setattr(engine.pm, "Shoupai", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Shoupai should not be used")))
+    monkeypatch.setattr(engine.pm, "Action", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Action should not be used")))
+    monkeypatch.setattr(engine.pm, "compute_self_option_mask", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(engine.pm, "compute_reaction_option_masks", lambda *_args, **_kwargs: [])
+
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer._on_draw({"l": 0, "p": "m1"}, is_gangzimo=False)
+    tokenizer._on_discard({"l": 0, "p": "m1"})
+
+    assert all(player.sim_shoupai is None for player in tokenizer.players)
+
+
+def test_rob_kan_simulation_zero_masks_do_not_create_pending_reaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine, "PM_STATELESS_SIMULATION_API_AVAILABLE", True)
+    monkeypatch.setattr(engine, "PM_SHOUPAI_SIMULATION_API_AVAILABLE", False)
+    monkeypatch.setattr(engine, "PM_SIMULATION_API_AVAILABLE", True)
+    monkeypatch.setattr(engine.pm, "compute_rob_kan_option_masks", lambda *_args, **_kwargs: [(1, 0), (2, 0)])
+
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    assert tokenizer._compute_kakan_reaction_options(actor=0, tile_idx=tile_to_index("m1")) is None
+    assert tokenizer._compute_ankan_reaction_options(actor=0, tile_idx=tile_to_index("m1")) is None
 
 
 def test_reaction_ron_shape_gate_skips_hupai_call(monkeypatch: pytest.MonkeyPatch) -> None:

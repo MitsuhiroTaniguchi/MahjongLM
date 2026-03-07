@@ -12,6 +12,21 @@ PM_FASTAPI_AVAILABLE = all(
 )
 PM_MULTI_HUPAI_AVAILABLE = hasattr(pm, "has_hupai_multi")
 PM_EVALUATE_DRAW_AVAILABLE = hasattr(pm, "evaluate_draw")
+PM_STATELESS_SIMULATION_API_AVAILABLE = all(
+    hasattr(pm, name)
+    for name in ("compute_self_option_mask", "compute_reaction_option_masks", "compute_rob_kan_option_masks")
+)
+PM_SHOUPAI_SIMULATION_API_AVAILABLE = all(
+    hasattr(pm, name)
+    for name in (
+        "compute_self_option_mask_shoupai",
+        "compute_reaction_option_masks_shoupai",
+        "compute_rob_kan_option_masks_shoupai",
+    )
+)
+PM_SIMULATION_API_AVAILABLE = (
+    PM_STATELESS_SIMULATION_API_AVAILABLE or PM_SHOUPAI_SIMULATION_API_AVAILABLE
+)
 
 SUIT_BASE = {"m": 0, "p": 9, "s": 18, "z": 27}
 INDEX_TO_TILE = [
@@ -33,6 +48,15 @@ TENBO_UNITS: Tuple[Tuple[int, str], ...] = (
     (1000, "TENBO_1000"),
     (100, "TENBO_100"),
 )
+SELF_OPT_TSUMO = int(getattr(pm, "SELF_OPT_TSUMO", 1 << 0))
+SELF_OPT_RIICHI = int(getattr(pm, "SELF_OPT_RIICHI", 1 << 1))
+SELF_OPT_ANKAN = int(getattr(pm, "SELF_OPT_ANKAN", 1 << 2))
+SELF_OPT_KAKAN = int(getattr(pm, "SELF_OPT_KAKAN", 1 << 3))
+SELF_OPT_KYUSHUKYUHAI = int(getattr(pm, "SELF_OPT_KYUSHUKYUHAI", 1 << 4))
+REACT_OPT_RON = int(getattr(pm, "REACT_OPT_RON", 1 << 0))
+REACT_OPT_CHI = int(getattr(pm, "REACT_OPT_CHI", 1 << 1))
+REACT_OPT_PON = int(getattr(pm, "REACT_OPT_PON", 1 << 2))
+REACT_OPT_MINKAN = int(getattr(pm, "REACT_OPT_MINKAN", 1 << 3))
 
 
 class TokenizeError(RuntimeError):
@@ -247,6 +271,13 @@ def _pm_wait_tiles(counts: List[int], meld_count: int) -> Set[int]:
     return {i for i in range(34) if (wait_mask >> i) & 1}
 
 
+def _furiten_mask(tiles: Set[int]) -> int:
+    mask = 0
+    for tile in tiles:
+        mask |= 1 << tile
+    return mask
+
+
 def _is_kokushi_agari_shape(counts: List[int], meld_count: int) -> bool:
     if meld_count != 0:
         return False
@@ -455,6 +486,7 @@ class PlayerState:
     concealed: List[int]
     score: int
     red_fives: Dict[str, int] = field(default_factory=lambda: {"m": 0, "p": 0, "s": 0})
+    sim_shoupai: Optional[pm.Shoupai] = None
     is_riichi: bool = False
     open_melds: int = 0
     closed_kans: int = 0
@@ -503,7 +535,7 @@ class TenhouTokenizer:
         self.last_draw_was_gangzimo = False
         self.expected_draw_actor: Optional[int] = None
         self.expected_discard_actor: Optional[int] = None
-        self.awaiting_kaigang = False
+        self.awaiting_kaigang = 0
 
     def tokenize_game(self, game: dict) -> List[str]:
         if not isinstance(game, dict):
@@ -520,7 +552,7 @@ class TenhouTokenizer:
         self.round_index = 0
         self.expected_draw_actor = None
         self.expected_discard_actor = None
-        self.awaiting_kaigang = False
+        self.awaiting_kaigang = 0
         for round_data in log:
             self._process_round(round_data)
         self._flush_pending()
@@ -579,7 +611,7 @@ class TenhouTokenizer:
         self.pending_riichi_actor = None
         self.expected_draw_actor = None
         self.expected_discard_actor = None
-        self.awaiting_kaigang = False
+        self.awaiting_kaigang = 0
         saw_qipai = False
         round_ended = False
 
@@ -794,6 +826,16 @@ class TenhouTokenizer:
             p.encoded_melds_cache = _encode_pm_melds(p.melds)
         return p.encoded_melds_cache
 
+    def _sim_apply(self, seat: int, action_type: object, pai_34: int, red: bool = False, bias: Optional[int] = None) -> None:
+        p = self.players[seat]
+        if p.sim_shoupai is None:
+            return
+        if bias is None:
+            action = pm.Action(action_type, int(pai_34), bool(red))
+        else:
+            action = pm.Action(action_type, int(pai_34), bool(red), int(bias))
+        p.sim_shoupai.apply(action)
+
     def _wait_mask(self, seat: int) -> int:
         p = self.players[seat]
         if p.wait_mask_cache is None:
@@ -890,6 +932,11 @@ class TenhouTokenizer:
                 concealed=list(hand_counts_list[seat]),
                 score=scores[seat],
                 red_fives=dict(hand_red_fives_list[seat]),
+                sim_shoupai=(
+                    pm.Shoupai(tuple(hand_counts_list[seat]))
+                    if PM_SHOUPAI_SIMULATION_API_AVAILABLE
+                    else None
+                ),
             )
             for seat in range(4)
         ]
@@ -906,7 +953,7 @@ class TenhouTokenizer:
         self.last_draw_was_gangzimo = False
         self.expected_draw_actor = None
         self.expected_discard_actor = None
-        self.awaiting_kaigang = False
+        self.awaiting_kaigang = 0
 
         self.tokens.append("round_start")
         self.tokens.append(f"round_seq_{self.round_index}")
@@ -930,7 +977,7 @@ class TenhouTokenizer:
         z = self._require_dict(z, field="draw")
         if self.live_draws_left <= 0:
             raise TokenizeError("no live draws remaining")
-        if self.awaiting_kaigang and not is_gangzimo:
+        if self.awaiting_kaigang > 0 and not is_gangzimo:
             raise TokenizeError("kaigang must occur before the next live draw")
         if self.expected_discard_actor is not None:
             raise TokenizeError("draw is not allowed before discard resolution")
@@ -940,6 +987,7 @@ class TenhouTokenizer:
         tile_str = _strip_tile_suffix(self._require_str(z["p"], field="draw.p"))
         tile_token = token_tile(tile_str)
         tile_idx = self._add_concealed_token(self.players[actor], tile_token)
+        self._sim_apply(actor, pm.ActionType.zimo, tile_idx, red=(tile_token[1] == "0"))
         self.players[actor].temporary_furiten = False
         self._invalidate_wait_mask(actor)
         self.live_draws_left -= 1
@@ -958,6 +1006,58 @@ class TenhouTokenizer:
 
     def _compute_self_options(self, actor: int, drawn_tile: int, is_gangzimo: bool = False) -> Set[str]:
         p = self.players[actor]
+        if PM_SIMULATION_API_AVAILABLE:
+            if PM_SHOUPAI_SIMULATION_API_AVAILABLE and p.sim_shoupai is not None:
+                option_mask = int(
+                    pm.compute_self_option_mask_shoupai(
+                        p.sim_shoupai,
+                        int(drawn_tile),
+                        bool(p.is_riichi),
+                        int(p.score),
+                        int(self.bakaze),
+                        int(self._player_wind(actor)),
+                        int(self.live_draws_left),
+                        int(p.closed_kans),
+                        int(p.open_melds),
+                        [int(tile) for tile in p.open_pons],
+                        bool(p.is_first_turn),
+                        bool(self.first_turn_open_calls_seen),
+                        bool(is_gangzimo),
+                    )
+                )
+            elif PM_STATELESS_SIMULATION_API_AVAILABLE:
+                option_mask = int(
+                    pm.compute_self_option_mask(
+                        tuple(p.concealed),
+                        self._player_encoded_melds(actor),
+                        int(drawn_tile),
+                        bool(p.is_riichi),
+                        int(p.score),
+                        int(self.bakaze),
+                        int(self._player_wind(actor)),
+                        int(self.live_draws_left),
+                        int(p.closed_kans),
+                        int(p.open_melds),
+                        [int(tile) for tile in p.open_pons],
+                        bool(p.is_first_turn),
+                        bool(self.first_turn_open_calls_seen),
+                        bool(is_gangzimo),
+                    )
+                )
+            else:
+                option_mask = 0
+            options: Set[str] = set()
+            if option_mask & SELF_OPT_TSUMO:
+                options.add("tsumo")
+            if option_mask & SELF_OPT_RIICHI:
+                options.add("riichi")
+            if option_mask & SELF_OPT_ANKAN:
+                options.add("ankan")
+            if option_mask & SELF_OPT_KAKAN:
+                options.add("kakan")
+            if option_mask & SELF_OPT_KYUSHUKYUHAI:
+                options.add("kyushukyuhai")
+            return options
         options: Set[str] = set()
         can_riichi = (
             not p.is_riichi
@@ -1049,6 +1149,7 @@ class TenhouTokenizer:
         self._finalize_self(chosen, actor=actor)
 
         self._consume_concealed_token(self.players[actor], tile_token)
+        self._sim_apply(actor, pm.ActionType.lizhi if is_riichi else pm.ActionType.dapai, tile_idx, red=(tile_token[1] == "0"))
         self.players[actor].furiten_tiles.add(tile_idx)
         self._invalidate_wait_mask(actor)
 
@@ -1079,6 +1180,75 @@ class TenhouTokenizer:
             self.expected_draw_actor = (actor + 1) % 4
 
     def _compute_reaction_options(self, discarder: int, tile_idx: int) -> Optional[ReactionDecision]:
+        if PM_SIMULATION_API_AVAILABLE:
+            if PM_SHOUPAI_SIMULATION_API_AVAILABLE and all(p.sim_shoupai is not None for p in self.players):
+                players_payload = [
+                    (
+                        p.sim_shoupai,
+                        bool(p.is_riichi),
+                        bool(p.temporary_furiten),
+                        bool(p.riichi_furiten),
+                        _furiten_mask(p.furiten_tiles),
+                        int(p.open_melds),
+                    )
+                    for p in self.players
+                ]
+                result_pairs = pm.compute_reaction_option_masks_shoupai(
+                    players_payload,
+                    int(discarder),
+                    int(tile_idx),
+                    int(self.bakaze),
+                    int(self.dealer_seat),
+                    int(self.live_draws_left),
+                    bool(self.last_draw_was_gangzimo),
+                )
+            elif PM_STATELESS_SIMULATION_API_AVAILABLE:
+                players_payload = [
+                    (
+                        tuple(p.concealed),
+                        self._player_encoded_melds(seat),
+                        bool(p.is_riichi),
+                        bool(p.temporary_furiten),
+                        bool(p.riichi_furiten),
+                        _furiten_mask(p.furiten_tiles),
+                        int(p.open_melds),
+                    )
+                    for seat, p in enumerate(self.players)
+                ]
+                result_pairs = pm.compute_reaction_option_masks(
+                    players_payload,
+                    int(discarder),
+                    int(tile_idx),
+                    int(self.bakaze),
+                    int(self.dealer_seat),
+                    int(self.live_draws_left),
+                    bool(self.last_draw_was_gangzimo),
+                )
+            else:
+                result_pairs = []
+            if not result_pairs:
+                return None
+            options_by_player: Dict[int, Set[str]] = {}
+            for seat, mask in result_pairs:
+                opts: Set[str] = set()
+                if mask & REACT_OPT_RON:
+                    opts.add("ron")
+                if mask & REACT_OPT_CHI:
+                    opts.add("chi")
+                if mask & REACT_OPT_PON:
+                    opts.add("pon")
+                if mask & REACT_OPT_MINKAN:
+                    opts.add("minkan")
+                if opts:
+                    options_by_player[int(seat)] = opts
+            if not options_by_player:
+                return None
+            return ReactionDecision(
+                discarder=discarder,
+                discard_tile=tile_idx,
+                options_by_player=options_by_player,
+                trigger="discard",
+            )
         options_by_player: Dict[int, Set[str]] = {}
         ron_cases: List[
             Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int, bool, bool, bool]
@@ -1150,6 +1320,61 @@ class TenhouTokenizer:
         )
 
     def _compute_kakan_reaction_options(self, actor: int, tile_idx: int) -> Optional[ReactionDecision]:
+        if PM_SIMULATION_API_AVAILABLE:
+            if PM_SHOUPAI_SIMULATION_API_AVAILABLE and all(p.sim_shoupai is not None for p in self.players):
+                players_payload = [
+                    (
+                        p.sim_shoupai,
+                        bool(p.is_riichi),
+                        bool(p.temporary_furiten),
+                        bool(p.riichi_furiten),
+                        _furiten_mask(p.furiten_tiles),
+                        int(p.open_melds),
+                    )
+                    for p in self.players
+                ]
+                result_pairs = pm.compute_rob_kan_option_masks_shoupai(
+                    players_payload,
+                    int(actor),
+                    int(tile_idx),
+                    int(self.bakaze),
+                    int(self.dealer_seat),
+                    False,
+                )
+            elif PM_STATELESS_SIMULATION_API_AVAILABLE:
+                players_payload = [
+                    (
+                        tuple(p.concealed),
+                        self._player_encoded_melds(seat),
+                        bool(p.is_riichi),
+                        bool(p.temporary_furiten),
+                        bool(p.riichi_furiten),
+                        _furiten_mask(p.furiten_tiles),
+                        int(p.open_melds),
+                    )
+                    for seat, p in enumerate(self.players)
+                ]
+                result_pairs = pm.compute_rob_kan_option_masks(
+                    players_payload,
+                    int(actor),
+                    int(tile_idx),
+                    int(self.bakaze),
+                    int(self.dealer_seat),
+                    False,
+                )
+            else:
+                result_pairs = []
+            options_by_player = {
+                int(seat): {"ron"} for seat, mask in result_pairs if mask & REACT_OPT_RON
+            }
+            if not options_by_player:
+                return None
+            return ReactionDecision(
+                discarder=actor,
+                discard_tile=tile_idx,
+                options_by_player=options_by_player,
+                trigger="kakan",
+            )
         options_by_player: Dict[int, Set[str]] = {}
         ron_cases: List[
             Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int, bool, bool, bool]
@@ -1202,6 +1427,61 @@ class TenhouTokenizer:
         )
 
     def _compute_ankan_reaction_options(self, actor: int, tile_idx: int) -> Optional[ReactionDecision]:
+        if PM_SIMULATION_API_AVAILABLE:
+            if PM_SHOUPAI_SIMULATION_API_AVAILABLE and all(p.sim_shoupai is not None for p in self.players):
+                players_payload = [
+                    (
+                        p.sim_shoupai,
+                        bool(p.is_riichi),
+                        bool(p.temporary_furiten),
+                        bool(p.riichi_furiten),
+                        _furiten_mask(p.furiten_tiles),
+                        int(p.open_melds),
+                    )
+                    for p in self.players
+                ]
+                result_pairs = pm.compute_rob_kan_option_masks_shoupai(
+                    players_payload,
+                    int(actor),
+                    int(tile_idx),
+                    int(self.bakaze),
+                    int(self.dealer_seat),
+                    True,
+                )
+            elif PM_STATELESS_SIMULATION_API_AVAILABLE:
+                players_payload = [
+                    (
+                        tuple(p.concealed),
+                        self._player_encoded_melds(seat),
+                        bool(p.is_riichi),
+                        bool(p.temporary_furiten),
+                        bool(p.riichi_furiten),
+                        _furiten_mask(p.furiten_tiles),
+                        int(p.open_melds),
+                    )
+                    for seat, p in enumerate(self.players)
+                ]
+                result_pairs = pm.compute_rob_kan_option_masks(
+                    players_payload,
+                    int(actor),
+                    int(tile_idx),
+                    int(self.bakaze),
+                    int(self.dealer_seat),
+                    True,
+                )
+            else:
+                result_pairs = []
+            options_by_player = {
+                int(seat): {"ron"} for seat, mask in result_pairs if mask & REACT_OPT_RON
+            }
+            if not options_by_player:
+                return None
+            return ReactionDecision(
+                discarder=actor,
+                discard_tile=tile_idx,
+                options_by_player=options_by_player,
+                trigger="ankan",
+            )
         options_by_player: Dict[int, Set[str]] = {}
         ron_cases: List[
             Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int, bool, bool, bool]
@@ -1336,6 +1616,8 @@ class TenhouTokenizer:
         if action == "chi":
             anchor = min(meld_tiles)
             p.melds.append(("chi", anchor))
+            called_tile = discard_tile if discard_tile is not None else meld_tiles[called_index or 0]
+            self._sim_apply(actor, pm.ActionType.chi, called_tile, bias=called_tile - anchor)
         elif action == "pon":
             tile = meld_tiles[0]
             p.open_pons[tile] = p.open_pons.get(tile, 0) + 1
@@ -1343,9 +1625,11 @@ class TenhouTokenizer:
             if red_in_pon:
                 p.open_pons_red[tile] = p.open_pons_red.get(tile, 0) + red_in_pon
             p.melds.append(("pon", tile))
+            self._sim_apply(actor, pm.ActionType.peng, tile)
         elif action == "minkan":
             tile = meld_tiles[0]
             p.melds.append(("minkan", tile))
+            self._sim_apply(actor, pm.ActionType.minggang, tile)
         self._invalidate_meld_cache(actor)
 
         if not had_pending_reaction:
@@ -1363,7 +1647,7 @@ class TenhouTokenizer:
         if red_choice is not None:
             self.tokens.append(red_choice)
         if action == "minkan":
-            self.awaiting_kaigang = True
+            self.awaiting_kaigang += 1
             self.expected_draw_actor = actor
             self.expected_discard_actor = None
         else:
@@ -1401,6 +1685,7 @@ class TenhouTokenizer:
                     self._consume_unspecified_tile(p, tile_to_index(tile_token), n=1)
             p.closed_kans += 1
             p.melds.append(("ankan", tile))
+            self._sim_apply(actor, pm.ActionType.angang, tile)
         else:
             tile_token = index_to_tile(tile)
             suit = tile_token[0]
@@ -1429,6 +1714,7 @@ class TenhouTokenizer:
                     break
             if not replaced:
                 p.melds.append(("minkan", tile))
+            self._sim_apply(actor, pm.ActionType.jiagang, tile)
         self._invalidate_meld_cache(actor)
         self._invalidate_wait_mask(actor)
 
@@ -1437,7 +1723,7 @@ class TenhouTokenizer:
             reaction = self._compute_kakan_reaction_options(actor, tile)
         elif kind == "ankan":
             reaction = self._compute_ankan_reaction_options(actor, tile)
-        self.awaiting_kaigang = True
+        self.awaiting_kaigang += 1
         if reaction:
             self.pending_reaction = reaction
             for seat, opts in sorted(reaction.options_by_player.items()):
@@ -1447,12 +1733,12 @@ class TenhouTokenizer:
         self.expected_draw_actor = actor
 
     def _on_kaigang(self, k: dict) -> None:
-        if not self.awaiting_kaigang:
+        if self.awaiting_kaigang <= 0:
             raise TokenizeError("kaigang is not expected")
         k = self._require_dict(k, field="kaigang")
         tile = token_tile(_strip_tile_suffix(self._require_str(k["baopai"], field="kaigang.baopai"))).replace("0", "5")
         self.tokens.append(f"dora_{tile}")
-        self.awaiting_kaigang = False
+        self.awaiting_kaigang -= 1
 
     def _on_hule(self, h: dict) -> None:
         self._require_round_initialized()

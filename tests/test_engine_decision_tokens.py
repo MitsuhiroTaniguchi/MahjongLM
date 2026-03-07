@@ -14,6 +14,13 @@ from tenhou_tokenizer.engine import (
 from tests.fixtures.synthetic_logs import minimal_game, pingju_event, qipai_event, qipai_payload
 
 
+@pytest.fixture(autouse=True)
+def disable_pm_simulation_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(engine, "PM_STATELESS_SIMULATION_API_AVAILABLE", False)
+    monkeypatch.setattr(engine, "PM_SIMULATION_API_AVAILABLE", False)
+    monkeypatch.setattr(engine, "PM_SHOUPAI_SIMULATION_API_AVAILABLE", False)
+
+
 def test_permanent_furiten_blocks_ron_for_all_waits(monkeypatch: pytest.MonkeyPatch) -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
@@ -677,6 +684,44 @@ def test_kaigang_after_minkan_discard_keeps_discard_reaction(
     assert "dora_z1" in tokens
     assert "discard_0_p1_tsumogiri" in tokens
     assert "pass_react_1_chi_forced_rule" in tokens
+
+
+def test_multiple_kaigang_reveals_after_consecutive_kans(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: {"ankan", "kakan"})
+    monkeypatch.setattr(TenhouTokenizer, "_compute_ankan_reaction_options", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(TenhouTokenizer, "_compute_kakan_reaction_options", lambda *_args, **_kwargs: None)
+
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(
+        qipai_payload(
+            hands=[
+                "m123456789p1234",
+                "m899p123s123z1111",
+                "m123456789p1234",
+                "m123456789p1234",
+            ]
+        )
+    )
+    p = tokenizer.players[1]
+    p.concealed = parse_hand_counts("m899p123s123z1111")
+    p.open_melds = 1
+    p.open_pons[tile_to_index("m8")] = 1
+    p.melds = [("pon", tile_to_index("m8"))]
+    tokenizer._invalidate_meld_cache(1)
+    tokenizer.pending_self = SelfDecision(actor=1, options={"kakan", "ankan"})
+    tokenizer.expected_discard_actor = 1
+
+    tokenizer._on_gang({"l": 1, "m": "m888=8"})
+    tokenizer.pending_self = SelfDecision(actor=1, options={"ankan"})
+    tokenizer.expected_discard_actor = 1
+    tokenizer._on_gang({"l": 1, "m": "z1111"})
+    tokenizer._on_draw({"l": 1, "p": "m9"}, is_gangzimo=True)
+    tokenizer._on_kaigang({"baopai": "m4"})
+    tokenizer._on_discard({"l": 1, "p": "p1"})
+    tokenizer._on_kaigang({"baopai": "m3"})
+
+    assert tokenizer.tokens.count("dora_m4") == 1
+    assert tokenizer.tokens.count("dora_m3") == 1
 
 
 def test_kyushukyuhai_is_emitted_as_pass_when_not_taken() -> None:
