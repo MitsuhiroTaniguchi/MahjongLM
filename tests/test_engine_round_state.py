@@ -22,16 +22,15 @@ def disable_pm_simulation_api(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(engine, "PM_SHOUPAI_SIMULATION_API_AVAILABLE", False)
 
 
-def test_round_index_resets_per_game() -> None:
+def test_round_start_resets_per_game() -> None:
     game = minimal_game([qipai_event(), pingju_event()])
     tokenizer = TenhouTokenizer()
 
     first = tokenizer.tokenize_game(game)
     second = tokenizer.tokenize_game(game)
 
-    assert first.count("round_seq_0") == 1
-    assert second.count("round_seq_0") == 1
-    assert "round_seq_1" not in second
+    assert first.count("round_start") == 1
+    assert second.count("round_start") == 1
 
 
 def test_dealer_seat_is_not_derived_from_jushu(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -20,11 +20,7 @@ def test_encode_tenbo_tokens_decomposes_by_stick_units() -> None:
         "TENBO_1000",
         "TENBO_1000",
         "TENBO_1000",
-        "TENBO_100",
-        "TENBO_100",
-        "TENBO_100",
-        "TENBO_100",
-        "TENBO_100",
+        "TENBO_500",
         "TENBO_100",
         "TENBO_100",
         "TENBO_100",
@@ -52,6 +48,45 @@ def test_qipai_emits_score_as_tenbo_tokens() -> None:
     ]
 
 
+def test_qipai_emits_honba_and_riichi_sticks_as_tenbo_tokens() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    honba_idx = tokenizer.tokens.index("honba")
+    riichi_idx = tokenizer.tokens.index("riichi_sticks")
+
+    assert tokenizer.tokens[honba_idx : honba_idx + 2] == ["honba", "TENBO_ZERO"]
+    assert tokenizer.tokens[riichi_idx : riichi_idx + 2] == ["riichi_sticks", "TENBO_ZERO"]
+
+
+def test_qipai_emits_nonzero_honba_and_riichi_sticks_as_tenbo_tokens() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(
+        {
+            **qipai_payload(),
+            "changbang": 2,
+            "lizhibang": 3,
+        }
+    )
+
+    honba_idx = tokenizer.tokens.index("honba")
+    riichi_idx = tokenizer.tokens.index("riichi_sticks")
+
+    assert tokenizer.tokens[honba_idx : honba_idx + 4] == [
+        "honba",
+        "TENBO_PLUS",
+        "TENBO_100",
+        "TENBO_100",
+    ]
+    assert tokenizer.tokens[riichi_idx : riichi_idx + 5] == [
+        "riichi_sticks",
+        "TENBO_PLUS",
+        "TENBO_1000",
+        "TENBO_1000",
+        "TENBO_1000",
+    ]
+
+
 def test_result_emits_score_delta_as_tenbo_tokens() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
@@ -59,16 +94,12 @@ def test_result_emits_score_delta_as_tenbo_tokens() -> None:
     tokenizer._on_hule({"l": 0, "fenpei": [-3900, 3900, 0, 0]})
 
     i0 = tokenizer.tokens.index("score_delta_0")
-    assert tokenizer.tokens[i0 + 1 : i0 + 14] == [
+    assert tokenizer.tokens[i0 + 1 : i0 + 10] == [
         "TENBO_MINUS",
         "TENBO_1000",
         "TENBO_1000",
         "TENBO_1000",
-        "TENBO_100",
-        "TENBO_100",
-        "TENBO_100",
-        "TENBO_100",
-        "TENBO_100",
+        "TENBO_500",
         "TENBO_100",
         "TENBO_100",
         "TENBO_100",
@@ -116,17 +147,17 @@ def test_pingju_emits_draw_name_before_score_deltas() -> None:
     tokenizer._on_qipai(qipai_payload())
     tokenizer._on_pingju({"name": "流局", "fenpei": [1000, -1000, 0, 0]})
 
-    draw_idx = tokenizer.tokens.index("draw_ryukyoku")
+    draw_idx = tokenizer.tokens.index("pingju_ryukyoku")
     delta_positions = [tokenizer.tokens.index(f"score_delta_{seat}") for seat in range(4)]
     assert draw_idx < delta_positions[0] < delta_positions[1] < delta_positions[2] < delta_positions[3]
 
 
-def test_pingju_unknown_name_is_normalized() -> None:
+def test_pingju_unknown_name_is_rejected() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
-    tokenizer._on_pingju({"name": "流局 123!", "fenpei": [0, 0, 0, 0]})
 
-    assert "draw_流局_123" in tokenizer.tokens
+    with pytest.raises(TokenizeError):
+        tokenizer._on_pingju({"name": "流局 123!", "fenpei": [0, 0, 0, 0]})
 
 
 def test_normal_pingju_closes_pending_self_before_result_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -143,7 +174,7 @@ def test_normal_pingju_closes_pending_self_before_result_tokens(monkeypatch: pyt
     )
 
     pass_idx = tokens.index("pass_self_0_riichi")
-    draw_idx = tokens.index("draw_ryukyoku")
+    draw_idx = tokens.index("pingju_ryukyoku")
     delta_idx = tokens.index("score_delta_0")
     assert pass_idx < draw_idx < delta_idx
 
@@ -176,7 +207,7 @@ def test_pingju_closes_pending_reaction_before_result_tokens() -> None:
     )
 
     pass_idx = tokens.index("pass_react_1_ron_forced_rule")
-    draw_idx = tokens.index("draw_ryukyoku")
+    draw_idx = tokens.index("pingju_ryukyoku")
     delta_idx = tokens.index("score_delta_0")
     assert pass_idx < draw_idx < delta_idx
 
@@ -243,7 +274,7 @@ def test_pingju_does_not_deduct_riichi_stick_when_closing_ron_window() -> None:
     )
 
     pass_idx = tokens.index("pass_react_1_ron_forced_rule")
-    draw_idx = tokens.index("draw_ryukyoku")
+    draw_idx = tokens.index("pingju_ryukyoku")
     assert pass_idx < draw_idx
     assert tokenizer.players[0].score == 25000
 

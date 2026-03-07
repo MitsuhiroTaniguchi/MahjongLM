@@ -179,17 +179,6 @@ def test_validator_reports_invalid_payload_shapes_without_traceback(tmp_path: Pa
                     {"kaigang": {"baopai": "p1"}},
                 ]]
             },
-            "missing_kaigang.json": {
-                "log": [[
-                    qipai_event(hands=["m666p123s123z1122", "m123456789p1234", "m123456789p1234", "m123456789p1234"]),
-                    {"zimo": {"l": 3, "p": "p1"}},
-                    {"dapai": {"l": 3, "p": "m6"}},
-                    {"fulou": {"l": 0, "m": "m6666-"}},
-                    {"gangzimo": {"l": 0, "p": "p1"}},
-                    {"dapai": {"l": 0, "p": "p1_"}},
-                    {"zimo": {"l": 1, "p": "m1"}},
-                ]]
-            },
         },
     )
 

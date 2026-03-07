@@ -232,17 +232,6 @@ def test_tokenize_game_rejects_non_dict_game() -> None:
                 {"kaigang": {"baopai": "p1"}},
             ]]
         },
-        {
-            "log": [[
-                qipai_event(hands=["m666p123s123z1122", "m123456789p1234", "m123456789p1234", "m123456789p1234"]),
-                {"zimo": {"l": 3, "p": "p1"}},
-                {"dapai": {"l": 3, "p": "m6"}},
-                {"fulou": {"l": 0, "m": "m6666-"}},
-                {"gangzimo": {"l": 0, "p": "p1"}},
-                {"dapai": {"l": 0, "p": "p1_"}},
-                {"zimo": {"l": 1, "p": "m1"}},
-            ]]
-        },
         {"log": [[qipai_event(), {"zimo": {"l": 0, "p": "m1"}}, {"zimo": {"l": 1, "p": "m1"}}]]},
         {"log": [[qipai_event(), {"zimo": {"l": 0, "p": "m1"}}, {"dapai": {"l": 1, "p": "m1"}}]]},
         {"log": [[qipai_event(), {"zimo": {"l": 0, "p": "m1"}}, {"dapai": {"l": 0, "p": "m1_"}}, {"zimo": {"l": 0, "p": "m1"}}]]},
@@ -430,17 +419,6 @@ def test_iter_tokenized_games_raises_for_malformed_round_structure(tmp_path: Pat
                 {"zimo": {"l": 0, "p": "s1"}},
                 {"dapai": {"l": 0, "p": "m1"}},
                 {"kaigang": {"baopai": "p1"}},
-            ]]
-        },
-        {
-            "log": [[
-                qipai_event(hands=["m666p123s123z1122", "m123456789p1234", "m123456789p1234", "m123456789p1234"]),
-                {"zimo": {"l": 3, "p": "p1"}},
-                {"dapai": {"l": 3, "p": "m6"}},
-                {"fulou": {"l": 0, "m": "m6666-"}},
-                {"gangzimo": {"l": 0, "p": "p1"}},
-                {"dapai": {"l": 0, "p": "p1_"}},
-                {"zimo": {"l": 1, "p": "m1"}},
             ]]
         },
         {"log": [[qipai_event(), {"zimo": {"l": 0, "p": "m1"}}, {"zimo": {"l": 1, "p": "m1"}}]]},

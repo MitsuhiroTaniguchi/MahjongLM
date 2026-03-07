@@ -20,7 +20,7 @@ def validate_token_stream(tokens: Sequence[str]) -> None:
     saw_call_in_round = False
 
     for token in tokens:
-        if token.startswith("round_seq_"):
+        if token == "round_start":
             seen_self.clear()
             seen_react.clear()
             saw_call_in_round = False

@@ -421,14 +421,19 @@ def test_reaction_resolution_matrix(
 def test_self_resolution_emits_take_before_pass_in_sorted_order() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
-    tokenizer.pending_self = SelfDecision(actor=0, options={"tsumo", "ankan", "riichi"})
+    tokenizer.pending_self = SelfDecision(
+        actor=0,
+        options={"tsumo", "ankan", "riichi"},
+        option_tiles={"ankan": ["m1"]},
+    )
 
     tokenizer._finalize_self({"riichi"})
 
-    tail = tokenizer.tokens[-3:]
+    tail = tokenizer.tokens[-4:]
     assert tail == [
         "take_self_0_riichi",
         "pass_self_0_ankan",
+        "m1",
         "pass_self_0_tsumo",
     ]
 
@@ -529,7 +534,7 @@ def test_gangzimo_last_tile_draw_eval_uses_lingshang_and_haidi(
     assert "opt_self_0_tsumo" in tokenizer.tokens
 
 
-def test_rinshan_discard_does_not_set_houtei_context(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_last_rinshan_discard_sets_houtei_context(monkeypatch: pytest.MonkeyPatch) -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
     tokenizer.live_draws_left = 1
@@ -548,7 +553,7 @@ def test_rinshan_discard_does_not_set_houtei_context(monkeypatch: pytest.MonkeyP
     tokenizer._on_discard({"l": 0, "p": "m2_"})
 
     assert seen
-    assert all(flags == (False, False, False) for flags in seen)
+    assert all(flags == (True, False, False) for flags in seen)
 
 
 def test_pingju_closes_reaction_as_forced_rule(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -681,8 +686,10 @@ def test_kaigang_after_minkan_discard_keeps_discard_reaction(
 
     assert "opt_react_0_minkan" in tokens
     assert "take_react_0_minkan" in tokens
-    assert "dora_z1" in tokens
-    assert "discard_0_p1_tsumogiri" in tokens
+    dora_tiles = [tokens[i + 1] for i, token in enumerate(tokens[:-1]) if token == "dora"]
+    assert "z1" in dora_tiles
+    assert "discard_0_p1" in tokens
+    assert "tsumogiri" in tokens
     assert "pass_react_1_chi_forced_rule" in tokens
 
 
@@ -720,8 +727,34 @@ def test_multiple_kaigang_reveals_after_consecutive_kans(monkeypatch: pytest.Mon
     tokenizer._on_discard({"l": 1, "p": "p1"})
     tokenizer._on_kaigang({"baopai": "m3"})
 
-    assert tokenizer.tokens.count("dora_m4") == 1
-    assert tokenizer.tokens.count("dora_m3") == 1
+    dora_tiles = [tokenizer.tokens[i + 1] for i, token in enumerate(tokenizer.tokens[:-1]) if token == "dora"]
+    assert dora_tiles.count("m4") == 1
+    assert dora_tiles.count("m3") == 1
+
+
+def test_last_discard_after_rinshan_still_uses_houtei_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.live_draws_left = 0
+    tokenizer.last_draw_was_gangzimo = True
+
+    observed: dict[str, tuple[bool, bool, bool] | None] = {"flags": None}
+
+    def fake_has_hupai_multi(cases: list[tuple[object, ...]]) -> list[bool]:
+        first = cases[0]
+        observed["flags"] = (bool(first[8]), bool(first[9]), bool(first[10]))
+        return [True for _ in cases]
+
+    monkeypatch.setattr(engine, "_pm_wait_mask", lambda *_args, **_kwargs: 1 << tile_to_index("m1"))
+    monkeypatch.setattr(engine, "_pm_has_hupai_multi", fake_has_hupai_multi)
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=tile_to_index("m1"))
+
+    assert reaction is not None
+    assert "ron" in reaction.options_by_player[1]
+    assert observed["flags"] == (True, False, False)
 
 
 def test_kyushukyuhai_is_emitted_as_pass_when_not_taken() -> None:
@@ -818,9 +851,129 @@ def test_red_tiles_are_preserved_in_qipai_draw_and_discard_tokens(
     tokenizer._on_draw({"l": 0, "p": "m0"}, is_gangzimo=False)
     tokenizer._on_discard({"l": 0, "p": "m0_"})
 
-    assert "haipai_0_m0" in tokenizer.tokens
+    haipai_idx = tokenizer.tokens.index("haipai_0")
+    assert tokenizer.tokens[haipai_idx + 1] == "m0"
     assert "draw_0_m0" in tokenizer.tokens
-    assert "discard_0_m0_tsumogiri" in tokenizer.tokens
+    assert "discard_0_m0" in tokenizer.tokens
+    assert "tsumogiri" in tokenizer.tokens
+
+
+def test_discard_emits_no_tedashi_marker_when_choice_does_not_exist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: set())
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(
+        qipai_payload(
+            hands=["m23456789p1234s1", "m123456789p1234", "m123456789p1234", "m123456789p1234"]
+        )
+    )
+
+    tokenizer._on_draw({"l": 0, "p": "m1"}, is_gangzimo=False)
+    tokenizer._on_discard({"l": 0, "p": "m1_"})
+
+    assert "discard_0_m1" in tokenizer.tokens
+    assert "tsumogiri" not in tokenizer.tokens
+    assert "tedashi" not in tokenizer.tokens
+
+
+def test_discard_emits_tedashi_when_same_tile_choice_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: set())
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(
+        qipai_payload(
+            hands=["m167p123s123z1122", "m123456789p1234", "m123456789p1234", "m123456789p1234"]
+        )
+    )
+
+    tokenizer._on_draw({"l": 0, "p": "m1"}, is_gangzimo=False)
+    tokenizer._on_discard({"l": 0, "p": "m1"})
+
+    assert "discard_0_m1" in tokenizer.tokens
+    assert "tedashi" in tokenizer.tokens
+    assert "tsumogiri" not in tokenizer.tokens
+
+
+def test_discard_does_not_emit_marker_when_only_red_five_matches_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: set())
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(
+        qipai_payload(
+            hands=["m067p123s123z1122", "m123456789p1234", "m123456789p1234", "m123456789p1234"]
+        )
+    )
+
+    tokenizer._on_draw({"l": 0, "p": "m5"}, is_gangzimo=False)
+    tokenizer._on_discard({"l": 0, "p": "m5_"})
+
+    assert "discard_0_m5" in tokenizer.tokens
+    assert "tsumogiri" not in tokenizer.tokens
+    assert "tedashi" not in tokenizer.tokens
+
+
+def test_discard_does_not_emit_marker_when_only_normal_five_matches_red_draw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: set())
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(
+        qipai_payload(
+            hands=["m567p123s123z1122", "m123456789p1234", "m123456789p1234", "m123456789p1234"]
+        )
+    )
+
+    tokenizer._on_draw({"l": 0, "p": "m0"}, is_gangzimo=False)
+    tokenizer._on_discard({"l": 0, "p": "m0_"})
+
+    assert "discard_0_m0" in tokenizer.tokens
+    assert "tsumogiri" not in tokenizer.tokens
+    assert "tedashi" not in tokenizer.tokens
+
+
+def test_riichi_discard_emits_tsumogiri_when_same_tile_choice_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: {"riichi"})
+    monkeypatch.setattr(TenhouTokenizer, "_can_win", lambda *_args, **_kwargs: False)
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(
+        qipai_payload(
+            hands=["m167p123s123z1122", "m123456789p1234", "m123456789p1234", "m123456789p1234"]
+        )
+    )
+
+    tokenizer._on_draw({"l": 0, "p": "m1"}, is_gangzimo=False)
+    tokenizer._on_discard({"l": 0, "p": "m1*_"})
+
+    assert "take_self_0_riichi" in tokenizer.tokens
+    assert "discard_0_m1" in tokenizer.tokens
+    assert "tsumogiri" in tokenizer.tokens
+    assert "tedashi" not in tokenizer.tokens
+
+
+def test_riichi_discard_emits_tedashi_when_same_tile_choice_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: {"riichi"})
+    monkeypatch.setattr(TenhouTokenizer, "_can_win", lambda *_args, **_kwargs: False)
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(
+        qipai_payload(
+            hands=["m167p123s123z1122", "m123456789p1234", "m123456789p1234", "m123456789p1234"]
+        )
+    )
+
+    tokenizer._on_draw({"l": 0, "p": "m1"}, is_gangzimo=False)
+    tokenizer._on_discard({"l": 0, "p": "m1*"})
+
+    assert "take_self_0_riichi" in tokenizer.tokens
+    assert "discard_0_m1" in tokenizer.tokens
+    assert "tedashi" in tokenizer.tokens
+    assert "tsumogiri" not in tokenizer.tokens
 
 
 def test_fulou_no_longer_emits_call_token(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -970,12 +1123,14 @@ def test_kakan_no_longer_emits_kan_token(monkeypatch: pytest.MonkeyPatch) -> Non
     p.open_pons[tile] = 1
     p.melds = [("pon", tile)]
     monkeypatch.setattr(TenhouTokenizer, "_compute_kakan_reaction_options", lambda *_args, **_kwargs: None)
-    tokenizer.pending_self = SelfDecision(actor=actor, options={"kakan"})
+    tokenizer.pending_self = SelfDecision(actor=actor, options={"kakan"}, option_tiles={"kakan": ["m5"]})
     tokenizer.expected_discard_actor = actor
 
     tokenizer._on_gang({"l": actor, "m": "m5550+"})
 
     assert "take_self_0_kakan" in tokenizer.tokens
+    take_idx = tokenizer.tokens.index("take_self_0_kakan")
+    assert tokenizer.tokens[take_idx + 1] == "m5"
     assert all(not t.startswith("kan_") for t in tokenizer.tokens)
 
 
@@ -986,12 +1141,14 @@ def test_ankan_no_longer_emits_kan_token() -> None:
     tile = tile_to_index("m5")
     actor = 0
     tokenizer.players[actor].concealed[tile] = 4
-    tokenizer.pending_self = SelfDecision(actor=actor, options={"ankan"})
+    tokenizer.pending_self = SelfDecision(actor=actor, options={"ankan"}, option_tiles={"ankan": ["m5"]})
     tokenizer.expected_discard_actor = actor
 
     tokenizer._on_gang({"l": actor, "m": "m5550"})
 
     assert "take_self_0_ankan" in tokenizer.tokens
+    take_idx = tokenizer.tokens.index("take_self_0_ankan")
+    assert tokenizer.tokens[take_idx + 1] == "m5"
     assert all(not t.startswith("kan_") for t in tokenizer.tokens)
 
 
@@ -1003,7 +1160,7 @@ def test_ankan_generates_reaction_decision_and_rob_kan_take(monkeypatch: pytest.
     actor = 0
     p = tokenizer.players[actor]
     p.concealed[tile] = max(p.concealed[tile], 4)
-    tokenizer.pending_self = SelfDecision(actor=actor, options={"ankan"})
+    tokenizer.pending_self = SelfDecision(actor=actor, options={"ankan"}, option_tiles={"ankan": ["m1"]})
     tokenizer.expected_discard_actor = actor
 
     def fake_ankan_reaction(self: TenhouTokenizer, actor: int, tile_idx: int) -> ReactionDecision:
@@ -1021,9 +1178,52 @@ def test_ankan_generates_reaction_decision_and_rob_kan_take(monkeypatch: pytest.
     tokenizer._flush_pending()
 
     assert "take_self_0_ankan" in tokenizer.tokens
+    take_idx = tokenizer.tokens.index("take_self_0_ankan")
+    assert tokenizer.tokens[take_idx + 1] == "m1"
     assert "opt_react_1_ron" in tokenizer.tokens
     assert tokenizer.tokens.count("take_react_1_ron") == 1
     assert "ron_from_1_0" in tokenizer.tokens
+
+
+def test_multiple_ankan_candidates_emit_tile_qualified_opt_take_and_pass() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    actor = 0
+    tokenizer.players[actor].concealed[tile_to_index("m1")] = 4
+    tokenizer.players[actor].concealed[tile_to_index("z1")] = 4
+    tokenizer.pending_self = SelfDecision(
+        actor=actor,
+        options={"ankan"},
+        option_tiles={"ankan": ["m1", "z1"]},
+    )
+
+    tokenizer._finalize_self({"ankan"}, actor=actor, chosen_tiles={"ankan": "z1"})
+
+    assert tokenizer.tokens[-4:] == [
+        "take_self_0_ankan",
+        "z1",
+        "pass_self_0_ankan",
+        "m1",
+    ]
+
+
+def test_multiple_kakan_candidates_emit_tile_qualified_options_on_draw() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    actor = 0
+    player = tokenizer.players[actor]
+    player.open_pons[tile_to_index("m1")] = 1
+    player.open_pons[tile_to_index("z1")] = 1
+    player.melds = [("pon", tile_to_index("m1")), ("pon", tile_to_index("z1"))]
+    player.concealed[tile_to_index("m1")] = max(player.concealed[tile_to_index("m1")], 1)
+    player.concealed[tile_to_index("z1")] = max(player.concealed[tile_to_index("z1")], 1)
+    tokenizer.expected_discard_actor = None
+
+    tokenizer._on_draw({"l": actor, "p": "p1"}, is_gangzimo=False)
+
+    opt_positions = [i for i, token in enumerate(tokenizer.tokens) if token == "opt_self_0_kakan"]
+    assert len(opt_positions) == 2
+    assert [tokenizer.tokens[i + 1] for i in opt_positions] == ["m1", "z1"]
 
 
 @pytest.mark.parametrize(

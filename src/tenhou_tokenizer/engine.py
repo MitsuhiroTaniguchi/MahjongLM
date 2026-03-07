@@ -46,6 +46,7 @@ TENBO_UNITS: Tuple[Tuple[int, str], ...] = (
     (10000, "TENBO_10000"),
     (5000, "TENBO_5000"),
     (1000, "TENBO_1000"),
+    (500, "TENBO_500"),
     (100, "TENBO_100"),
 )
 SELF_OPT_TSUMO = int(getattr(pm, "SELF_OPT_TSUMO", 1 << 0))
@@ -487,6 +488,7 @@ class PlayerState:
     score: int
     red_fives: Dict[str, int] = field(default_factory=lambda: {"m": 0, "p": 0, "s": 0})
     sim_shoupai: Optional[pm.Shoupai] = None
+    last_draw_tile: Optional[str] = None
     is_riichi: bool = False
     open_melds: int = 0
     closed_kans: int = 0
@@ -509,6 +511,7 @@ class PlayerState:
 class SelfDecision:
     actor: int
     options: Set[str]
+    option_tiles: Dict[str, List[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -956,12 +959,14 @@ class TenhouTokenizer:
         self.awaiting_kaigang = 0
 
         self.tokens.append("round_start")
-        self.tokens.append(f"round_seq_{self.round_index}")
         self.tokens.append(f"bakaze_{bakaze}")
         self.tokens.append(f"kyoku_{kyoku}")
-        self.tokens.append(f"honba_{honba}")
-        self.tokens.append(f"riichi_sticks_{riichi_sticks}")
-        self.tokens.append(f"dora_{_strip_tile_suffix(baopai).replace('0', '5')}")
+        self.tokens.append("honba")
+        self.tokens.extend(encode_tenbo_tokens(honba * 100))
+        self.tokens.append("riichi_sticks")
+        self.tokens.extend(encode_tenbo_tokens(riichi_sticks * 1000))
+        self.tokens.append("dora")
+        self.tokens.append(_strip_tile_suffix(baopai).replace("0", "5"))
 
         for seat, score in enumerate(scores):
             self.tokens.append(f"score_{seat}")
@@ -970,15 +975,14 @@ class TenhouTokenizer:
         for seat, hand in enumerate(shoupai):
             hand_tiles = _parse_tiles(hand, stop_at_comma=True, context="hand")
             for tile in sorted(hand_tiles, key=token_tile_sort_key):
-                self.tokens.append(f"haipai_{seat}_{tile}")
+                self.tokens.append(f"haipai_{seat}")
+                self.tokens.append(tile)
 
     def _on_draw(self, z: dict, is_gangzimo: bool) -> None:
         self._require_round_initialized()
         z = self._require_dict(z, field="draw")
         if self.live_draws_left <= 0:
             raise TokenizeError("no live draws remaining")
-        if self.awaiting_kaigang > 0 and not is_gangzimo:
-            raise TokenizeError("kaigang must occur before the next live draw")
         if self.expected_discard_actor is not None:
             raise TokenizeError("draw is not allowed before discard resolution")
         actor = self._require_seat(z["l"], field="draw.l")
@@ -988,18 +992,18 @@ class TenhouTokenizer:
         tile_token = token_tile(tile_str)
         tile_idx = self._add_concealed_token(self.players[actor], tile_token)
         self._sim_apply(actor, pm.ActionType.zimo, tile_idx, red=(tile_token[1] == "0"))
+        self.players[actor].last_draw_tile = tile_token
         self.players[actor].temporary_furiten = False
         self._invalidate_wait_mask(actor)
         self.live_draws_left -= 1
         self.last_draw_was_gangzimo = is_gangzimo
 
-        action = "gang_draw" if is_gangzimo else "draw"
-        self.tokens.append(f"{action}_{actor}_{tile_token}")
+        self.tokens.append(f"draw_{actor}_{tile_token}")
 
         options = self._compute_self_options(actor, tile_idx, is_gangzimo=is_gangzimo)
-        for opt in sorted(options):
-            self.tokens.append(f"opt_self_{actor}_{opt}")
-        self.pending_self = SelfDecision(actor=actor, options=options)
+        option_tiles = self._self_option_tiles(actor, drawn_tile=tile_idx)
+        self._emit_self_options(actor, options, option_tiles)
+        self.pending_self = SelfDecision(actor=actor, options=options, option_tiles=option_tiles)
         self.players[actor].is_first_turn = False
         self.expected_draw_actor = None
         self.expected_discard_actor = actor
@@ -1101,36 +1105,7 @@ class TenhouTokenizer:
         uniq_yaochu = sum(1 for i in YAOCHU_INDICES if p.concealed[i] > 0)
         return uniq_yaochu >= 9
     def _can_ankan(self, actor: int, drawn_tile: Optional[int] = None) -> bool:
-        p = self.players[actor]
-        candidates = [tile for tile, count in enumerate(p.concealed) if count >= 4]
-        if not candidates:
-            return False
-        if not p.is_riichi:
-            return True
-
-        if drawn_tile is None:
-            return False
-        # Disallow okuri-kan after riichi: only a quad including the drawn tile can be declared.
-        candidates = [tile for tile in candidates if tile == drawn_tile]
-        if not candidates:
-            return False
-
-        pre_draw_counts = list(p.concealed)
-        if pre_draw_counts[drawn_tile] <= 0:
-            return False
-        pre_draw_counts[drawn_tile] -= 1
-
-        waits_before_mask = _pm_wait_mask(pre_draw_counts, p.meld_count)
-        if waits_before_mask == 0:
-            return False
-
-        for tile in candidates:
-            next_counts = list(p.concealed)
-            next_counts[tile] -= 4
-            waits_after_mask = _pm_wait_mask(next_counts, p.meld_count + 1)
-            if waits_after_mask != 0 and waits_after_mask == waits_before_mask:
-                return True
-        return False
+        return bool(self._ankan_candidate_tiles(actor, drawn_tile=drawn_tile))
 
     def _on_discard(self, d: dict) -> None:
         self._require_round_initialized()
@@ -1144,17 +1119,23 @@ class TenhouTokenizer:
         tile_idx = tile_to_index(tile_token)
         is_riichi = "*" in raw_tile
         is_tsumogiri = "_" in raw_tile
+        had_draw_tile_choice = (
+            self.players[actor].last_draw_tile == tile_token
+            and self._has_exact_discard_choice(actor, tile_token)
+        )
 
         chosen: Set[str] = {"riichi"} if is_riichi else set()
         self._finalize_self(chosen, actor=actor)
 
         self._consume_concealed_token(self.players[actor], tile_token)
         self._sim_apply(actor, pm.ActionType.lizhi if is_riichi else pm.ActionType.dapai, tile_idx, red=(tile_token[1] == "0"))
+        self.players[actor].last_draw_tile = None
         self.players[actor].furiten_tiles.add(tile_idx)
         self._invalidate_wait_mask(actor)
 
-        suffix = "_tsumogiri" if is_tsumogiri else ""
-        self.tokens.append(f"discard_{actor}_{tile_token}{suffix}")
+        self.tokens.append(f"discard_{actor}_{tile_token}")
+        if had_draw_tile_choice:
+            self.tokens.append("tsumogiri" if is_tsumogiri else "tedashi")
 
         if is_riichi:
             self.players[actor].is_riichi = True
@@ -1179,8 +1160,21 @@ class TenhouTokenizer:
         else:
             self.expected_draw_actor = (actor + 1) % 4
 
+    def _has_exact_discard_choice(self, actor: int, tile_token: str) -> bool:
+        player = self.players[actor]
+        tile_idx = tile_to_index(tile_token)
+        if tile_token[0] not in {"m", "p", "s"} or tile_token[1] not in {"0", "5"}:
+            return player.concealed[tile_idx] >= 2
+        if tile_token[1] == "0":
+            return player.red_fives[tile_token[0]] >= 2
+        normal_five_count = player.concealed[tile_idx] - player.red_fives[tile_token[0]]
+        return normal_five_count >= 2
+
     def _compute_reaction_options(self, discarder: int, tile_idx: int) -> Optional[ReactionDecision]:
-        if PM_SIMULATION_API_AVAILABLE:
+        use_simulation_api = PM_SIMULATION_API_AVAILABLE and not (
+            self.live_draws_left == 0 and self.last_draw_was_gangzimo
+        )
+        if use_simulation_api:
             if PM_SHOUPAI_SIMULATION_API_AVAILABLE and all(p.sim_shoupai is not None for p in self.players):
                 players_payload = [
                     (
@@ -1254,7 +1248,8 @@ class TenhouTokenizer:
             Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int, bool, bool, bool]
         ] = []
         ron_case_seats: List[int] = []
-        is_haidi = self.live_draws_left == 0 and not self.last_draw_was_gangzimo
+        # A ron on the last discard after a rinshan draw is still houtei.
+        is_haidi = self.live_draws_left == 0
 
         for offset in range(1, 4):
             seat = (discarder + offset) % 4
@@ -1648,9 +1643,11 @@ class TenhouTokenizer:
             self.tokens.append(red_choice)
         if action == "minkan":
             self.awaiting_kaigang += 1
+            p.last_draw_tile = None
             self.expected_draw_actor = actor
             self.expected_discard_actor = None
         else:
+            p.last_draw_tile = None
             self.expected_draw_actor = None
             self.expected_discard_actor = actor
 
@@ -1672,7 +1669,7 @@ class TenhouTokenizer:
 
         chosen = {kind}
         had_pending_self = True
-        self._finalize_self(chosen, actor=actor)
+        self._finalize_self(chosen, actor=actor, chosen_tiles={kind: index_to_tile(tile)})
 
         p = self.players[actor]
 
@@ -1729,6 +1726,7 @@ class TenhouTokenizer:
             for seat, opts in sorted(reaction.options_by_player.items()):
                 for opt in sorted(opts):
                     self.tokens.append(f"opt_react_{seat}_{opt}")
+        p.last_draw_tile = None
         self.expected_discard_actor = None
         self.expected_draw_actor = actor
 
@@ -1737,7 +1735,8 @@ class TenhouTokenizer:
             raise TokenizeError("kaigang is not expected")
         k = self._require_dict(k, field="kaigang")
         tile = token_tile(_strip_tile_suffix(self._require_str(k["baopai"], field="kaigang.baopai"))).replace("0", "5")
-        self.tokens.append(f"dora_{tile}")
+        self.tokens.append("dora")
+        self.tokens.append(tile)
         self.awaiting_kaigang -= 1
 
     def _on_hule(self, h: dict) -> None:
@@ -1781,7 +1780,7 @@ class TenhouTokenizer:
             actor = self._kyushukyuhai_actor(p.get("shoupai"))
             if actor is not None:
                 self._finalize_self({"kyushukyuhai"}, actor=actor)
-        self.tokens.append(f"draw_{self._normalize_name(name)}")
+        self.tokens.append(f"pingju_{self._normalize_pingju_name(name)}")
         deltas = [self._require_score(delta, field=f"pingju.fenpei[{seat}]") for seat, delta in enumerate(fenpei)]
         for seat in range(4):
             self.players[seat].score += deltas[seat]
@@ -1798,7 +1797,7 @@ class TenhouTokenizer:
                 return seat
         return None
 
-    def _normalize_name(self, text: str) -> str:
+    def _normalize_pingju_name(self, text: str) -> str:
         mapping = {
             "流局": "ryukyoku",
             "九種九牌": "kyushukyuhai",
@@ -1810,12 +1809,14 @@ class TenhouTokenizer:
         }
         if text in mapping:
             return mapping[text]
-        out = []
-        for ch in text:
-            out.append(ch if ch.isalnum() else "_")
-        return "".join(out).strip("_") or "unknown"
+        raise TokenizeError(f"unknown pingju.name: {text}")
 
-    def _finalize_self(self, chosen: Set[str], actor: Optional[int] = None) -> None:
+    def _finalize_self(
+        self,
+        chosen: Set[str],
+        actor: Optional[int] = None,
+        chosen_tiles: Optional[Dict[str, str]] = None,
+    ) -> None:
         if not self.pending_self:
             return
         if actor is not None and actor != self.pending_self.actor:
@@ -1827,10 +1828,94 @@ class TenhouTokenizer:
         if self.players[seat].is_riichi and "tsumo" in self.pending_self.options and "tsumo" not in chosen_effective:
             self.players[seat].riichi_furiten = True
         for opt in sorted(chosen_effective):
+            if opt in self.pending_self.option_tiles:
+                chosen_tile = self._resolve_chosen_self_tile(opt, chosen_tiles or {})
+                self.tokens.append(f"take_self_{seat}_{opt}")
+                self.tokens.append(chosen_tile)
+                for tile_token in self.pending_self.option_tiles[opt]:
+                    if tile_token != chosen_tile:
+                        self.tokens.append(f"pass_self_{seat}_{opt}")
+                        self.tokens.append(tile_token)
+                continue
             self.tokens.append(f"take_self_{seat}_{opt}")
         for opt in sorted(self.pending_self.options - chosen_effective):
+            if opt in self.pending_self.option_tiles:
+                for tile_token in self.pending_self.option_tiles[opt]:
+                    self.tokens.append(f"pass_self_{seat}_{opt}")
+                    self.tokens.append(tile_token)
+                continue
             self.tokens.append(f"pass_self_{seat}_{opt}")
         self.pending_self = None
+
+    def _self_option_tiles(self, actor: int, drawn_tile: int) -> Dict[str, List[str]]:
+        option_tiles: Dict[str, List[str]] = {}
+        ankan_tiles = self._ankan_candidate_tiles(actor, drawn_tile=drawn_tile)
+        if ankan_tiles:
+            option_tiles["ankan"] = ankan_tiles
+        kakan_tiles = self._kakan_candidate_tiles(actor)
+        if kakan_tiles:
+            option_tiles["kakan"] = kakan_tiles
+        return option_tiles
+
+    def _emit_self_options(self, actor: int, options: Set[str], option_tiles: Dict[str, List[str]]) -> None:
+        for opt in sorted(options):
+            if opt in option_tiles:
+                for tile_token in option_tiles[opt]:
+                    self.tokens.append(f"opt_self_{actor}_{opt}")
+                    self.tokens.append(tile_token)
+                continue
+            self.tokens.append(f"opt_self_{actor}_{opt}")
+
+    def _ankan_candidate_tiles(self, actor: int, drawn_tile: Optional[int] = None) -> List[str]:
+        p = self.players[actor]
+        candidates = [tile for tile, count in enumerate(p.concealed) if count >= 4]
+        if not candidates:
+            return []
+        if not p.is_riichi:
+            return [index_to_tile(tile) for tile in candidates]
+
+        if drawn_tile is None:
+            return []
+        candidates = [tile for tile in candidates if tile == drawn_tile]
+        if not candidates:
+            return []
+
+        pre_draw_counts = list(p.concealed)
+        if pre_draw_counts[drawn_tile] <= 0:
+            return []
+        pre_draw_counts[drawn_tile] -= 1
+
+        waits_before_mask = _pm_wait_mask(pre_draw_counts, p.meld_count)
+        if waits_before_mask == 0:
+            return []
+
+        allowed: List[str] = []
+        for tile in candidates:
+            next_counts = list(p.concealed)
+            next_counts[tile] -= 4
+            waits_after_mask = _pm_wait_mask(next_counts, p.meld_count + 1)
+            if waits_after_mask != 0 and waits_after_mask == waits_before_mask:
+                allowed.append(index_to_tile(tile))
+        return allowed
+
+    def _kakan_candidate_tiles(self, actor: int) -> List[str]:
+        p = self.players[actor]
+        return [index_to_tile(tile) for tile in sorted(p.open_pons) if p.concealed[tile] > 0]
+
+    def _resolve_chosen_self_tile(self, opt: str, chosen_tiles: Dict[str, str]) -> str:
+        if not self.pending_self:
+            raise TokenizeError("self decision is missing")
+        candidates = self.pending_self.option_tiles.get(opt, [])
+        if not candidates:
+            raise TokenizeError(f"no tile-qualified candidates for self action: {opt}")
+        chosen_tile = chosen_tiles.get(opt)
+        if chosen_tile is None:
+            if len(candidates) == 1:
+                return candidates[0]
+            raise TokenizeError(f"self action {opt} requires an explicit tile choice")
+        if chosen_tile not in candidates:
+            raise TokenizeError(f"self action {opt} tile was not offered: {chosen_tile}")
+        return chosen_tile
 
     def _reaction_pass_reason(self, seat: int, opt: str, close_reason: str) -> str:
         if close_reason == "forced_rule":
