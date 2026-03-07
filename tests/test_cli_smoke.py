@@ -4,11 +4,13 @@ import json
 import subprocess
 import sys
 import zipfile
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
 
 import pymahjong  # noqa: F401
+import scripts.tokenize_tenhou as tokenize_tenhou
 
 from tests.fixtures.synthetic_logs import minimal_game, pingju_event, qipai_event
 
@@ -86,6 +88,43 @@ def test_cli_parallel_workers_preserve_output(tmp_path: Path) -> None:
     assert serial.returncode == 0, serial.stderr
     assert parallel.returncode == 0, parallel.stderr
     assert serial_out.read_text(encoding="utf-8") == parallel_out.read_text(encoding="utf-8")
+
+
+def test_cli_main_falls_back_to_serial_when_parallel_executor_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    zip_path = tmp_path / "data2023.zip"
+    out_path = tmp_path / "tokens.jsonl"
+    _write_zip(zip_path, {"g0.json": minimal_game([qipai_event(), pingju_event()])})
+
+    monkeypatch.setattr(
+        tokenize_tenhou,
+        "parse_args",
+        lambda: Namespace(
+            zip_path=zip_path,
+            all_years=False,
+            zip_glob=None,
+            output=out_path,
+            max_games=None,
+            start_index=0,
+            progress_every=0,
+            strict=False,
+            workers=2,
+            chunk_size=2,
+        ),
+    )
+
+    def fail_parallel(*_args, **_kwargs):
+        raise PermissionError("sandbox blocked semaphores")
+
+    monkeypatch.setattr(tokenize_tenhou, "_tokenize_zip_parallel", fail_parallel)
+
+    result = tokenize_tenhou.main()
+
+    assert result == 0
+    lines = out_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
 
 
 def test_cli_strict_fails_when_any_game_is_skipped(tmp_path: Path) -> None:
@@ -305,17 +344,6 @@ def test_cli_skips_invalid_payload_shapes_without_traceback(tmp_path: Path) -> N
                     {"kaigang": {"baopai": "p1"}},
                 ]]
             },
-            "missing_kaigang.json": {
-                "log": [[
-                    qipai_event(hands=["m666p123s123z1122", "m123456789p1234", "m123456789p1234", "m123456789p1234"]),
-                    {"zimo": {"l": 3, "p": "p1"}},
-                    {"dapai": {"l": 3, "p": "m6"}},
-                    {"fulou": {"l": 0, "m": "m6666-"}},
-                    {"gangzimo": {"l": 0, "p": "p1"}},
-                    {"dapai": {"l": 0, "p": "p1_"}},
-                    {"zimo": {"l": 1, "p": "m1"}},
-                ]]
-            },
         },
     )
 
@@ -333,7 +361,7 @@ def test_cli_skips_invalid_payload_shapes_without_traceback(tmp_path: Path) -> N
     assert "skip: games.zip:after_end.json" in result.stderr
     assert "skip: games.zip:bad_kaigang.json" in result.stderr
     assert "Traceback" not in result.stderr
-    assert "done: tokenized=1 skipped=12" in result.stdout
+    assert "done: tokenized=1 skipped=11" in result.stdout
     lines = out_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 1
 

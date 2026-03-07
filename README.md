@@ -24,6 +24,8 @@ source .venv/bin/activate
 python scripts/tokenize_tenhou.py --max-games 200 --progress-every 50
 ```
 
+`python3 scripts/tokenize_tenhou.py ...` でも同じように動く。
+
 `setup_pymahjong.sh` installs `pymahjong` directly from GitHub.
 Default ref is `main`, and you can override with:
 
@@ -56,6 +58,8 @@ source .venv/bin/activate
 pip install -U pytest
 pytest -m "not slow" -q
 ```
+
+`pytest` の代わりに `python -m pytest` または `python3 -m pytest` でもよい。
 
 `pymahjong` is required for tokenizer and CLI tests.
 

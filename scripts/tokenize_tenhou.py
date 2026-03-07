@@ -113,6 +113,30 @@ def _tokenize_zip_parallel(
                 yield row
 
 
+def _tokenize_zip_parallel_with_fallback(
+    zip_path: Path,
+    names: Sequence[str],
+    workers: int,
+    chunk_size: int,
+    tokenizer,
+    zf,
+) -> Iterator[Tuple[str, Optional[List[str]], Optional[str]]]:
+    try:
+        yield from _tokenize_zip_parallel(
+            zip_path=zip_path,
+            names=names,
+            workers=workers,
+            chunk_size=chunk_size,
+        )
+    except (OSError, PermissionError) as exc:
+        print(
+            f"parallel tokenization unavailable for {zip_path.name}; "
+            f"falling back to serial ({exc})",
+            file=sys.stderr,
+        )
+        yield from _tokenize_zip_serial(names, tokenizer=tokenizer, zf=zf)
+
+
 def _resolve_workers(requested_workers: int, names_count: int) -> int:
     if requested_workers == 1 or names_count <= 1:
         return 1
@@ -233,11 +257,14 @@ def main() -> int:
                     tokenizer = TenhouTokenizer()
                     row_iter = _tokenize_zip_serial(selected_names, tokenizer=tokenizer, zf=zf)
                 else:
-                    row_iter = _tokenize_zip_parallel(
+                    tokenizer = TenhouTokenizer()
+                    row_iter = _tokenize_zip_parallel_with_fallback(
                         zip_path=zip_path,
                         names=selected_names,
                         workers=workers,
                         chunk_size=chunk_size,
+                        tokenizer=tokenizer,
+                        zf=zf,
                     )
 
                 for local_idx, (name, tokens, error_text) in enumerate(row_iter, start=args.start_index):
