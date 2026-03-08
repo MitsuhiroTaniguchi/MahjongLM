@@ -172,6 +172,32 @@ def test_compute_reaction_options_omits_chi_for_non_shimocha(monkeypatch: pytest
     assert reaction.options_by_player == {3: {"pon"}}
 
 
+def test_compute_reaction_options_haitei_allows_only_ron(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(engine, "PM_SIMULATION_API_AVAILABLE", False)
+
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(
+        qipai_payload(
+            hands=[
+                "m123456789p1234",
+                "m23p123456s123z11",
+                "m22p123456s123z11",
+                "m222p123456s123z1",
+            ]
+        )
+    )
+    tokenizer.live_draws_left = 0
+
+    offered = tile_to_index("m1")
+    monkeypatch.setattr(engine, "_pm_wait_mask", lambda *_args, **_kwargs: 1 << offered)
+    monkeypatch.setattr(engine, "_pm_has_hupai_multi", lambda cases: [True for _ in cases])
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=offered)
+
+    assert reaction is not None
+    assert reaction.options_by_player == {1: {"ron"}, 2: {"ron"}, 3: {"ron"}}
+
+
 def test_compute_kakan_reaction_options_seat_matrix(monkeypatch: pytest.MonkeyPatch) -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())

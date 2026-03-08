@@ -55,7 +55,6 @@ def test_hule_with_baojia_is_classified_as_ron() -> None:
     tokenizer._flush_pending()
 
     assert "take_react_2_ron" in tokenizer.tokens
-    assert "ron_from_2_0" in tokenizer.tokens
     assert "win_ron_2_from_0" not in tokenizer.tokens
     assert "win_tsumo_2" not in tokenizer.tokens
 
@@ -216,7 +215,6 @@ def test_kakan_generates_reaction_decision_and_rob_kan_take(monkeypatch: pytest.
     assert "take_self_0_kakan" in tokenizer.tokens
     assert "opt_react_1_ron" in tokenizer.tokens
     assert "take_react_1_ron" in tokenizer.tokens
-    assert "ron_from_1_0" in tokenizer.tokens
 
 
 def test_passing_ron_by_taking_other_call_sets_temporary_furiten() -> None:
@@ -1030,6 +1028,7 @@ def test_fulou_emits_chi_position_token(
 
     assert "take_react_0_chi" in tokenizer.tokens
     assert expected in tokenizer.tokens
+    assert tokenizer.tokens.index("take_react_0_chi") < tokenizer.tokens.index(expected)
 
 
 def test_fulou_emits_red_chi_used_when_choice_exists(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1049,6 +1048,7 @@ def test_fulou_emits_red_chi_used_when_choice_exists(monkeypatch: pytest.MonkeyP
     assert "take_react_0_chi" in tokens
     assert "chi_pos_high" in tokens
     assert "red_chi_used" in tokens
+    assert tokens.index("take_react_0_chi") < tokens.index("chi_pos_high") < tokens.index("red_chi_used")
 
 
 def test_fulou_emits_red_chi_not_used_when_choice_exists(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1067,6 +1067,7 @@ def test_fulou_emits_red_chi_not_used_when_choice_exists(monkeypatch: pytest.Mon
     tokens = TenhouTokenizer().tokenize_game(game)
     assert "take_react_0_chi" in tokens
     assert "red_chi_not_used" in tokens
+    assert tokens.index("take_react_0_chi") < tokens.index("red_chi_not_used")
 
 
 def test_fulou_emits_red_pon_used_and_not_used() -> None:
@@ -1082,6 +1083,7 @@ def test_fulou_emits_red_pon_used_and_not_used() -> None:
     tokenizer._on_fulou({"l": 0, "m": "m05+5"})
     assert "take_react_0_pon" in tokenizer.tokens
     assert "red_pon_used" in tokenizer.tokens
+    assert tokenizer.tokens.index("take_react_0_pon") < tokenizer.tokens.index("red_pon_used")
 
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(
@@ -1095,6 +1097,7 @@ def test_fulou_emits_red_pon_used_and_not_used() -> None:
     tokenizer._on_fulou({"l": 0, "m": "m55+5"})
     assert "take_react_0_pon" in tokenizer.tokens
     assert "red_pon_not_used" in tokenizer.tokens
+    assert tokenizer.tokens.index("take_react_0_pon") < tokenizer.tokens.index("red_pon_not_used")
 
 
 def test_fulou_does_not_emit_red_token_when_no_choice() -> None:
@@ -1182,7 +1185,6 @@ def test_ankan_generates_reaction_decision_and_rob_kan_take(monkeypatch: pytest.
     assert tokenizer.tokens[take_idx + 1] == "m1"
     assert "opt_react_1_ron" in tokenizer.tokens
     assert tokenizer.tokens.count("take_react_1_ron") == 1
-    assert "ron_from_1_0" in tokenizer.tokens
 
 
 def test_multiple_ankan_candidates_emit_tile_qualified_opt_take_and_pass() -> None:
@@ -1221,9 +1223,8 @@ def test_multiple_kakan_candidates_emit_tile_qualified_options_on_draw() -> None
 
     tokenizer._on_draw({"l": actor, "p": "p1"}, is_gangzimo=False)
 
-    opt_positions = [i for i, token in enumerate(tokenizer.tokens) if token == "opt_self_0_kakan"]
-    assert len(opt_positions) == 2
-    assert [tokenizer.tokens[i + 1] for i in opt_positions] == ["m1", "z1"]
+    opt_idx = tokenizer.tokens.index("opt_self_0_kakan")
+    assert tokenizer.tokens[opt_idx + 1 : opt_idx + 3] == ["m1", "z1"]
 
 
 @pytest.mark.parametrize(

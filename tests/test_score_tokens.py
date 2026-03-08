@@ -6,6 +6,7 @@ import pymahjong  # noqa: F401
 import tenhou_tokenizer.engine as engine
 from tenhou_tokenizer.engine import TenhouTokenizer, TokenizeError, encode_tenbo_tokens, tile_to_index
 from tests.fixtures.synthetic_logs import minimal_game, pingju_event, qipai_event, qipai_payload
+from tests.validation_helpers import validate_token_stream
 
 
 def test_encode_tenbo_tokens_decomposes_by_stick_units() -> None:
@@ -120,9 +121,26 @@ def test_hule_emits_ron_then_score_deltas_in_seat_order() -> None:
     )
     tokenizer._on_hule({"l": 2, "baojia": 0, "fenpei": [-1000, 2000, -500, -500]})
 
-    ron_idx = tokenizer.tokens.index("ron_from_2_0")
+    take_idx = tokenizer.tokens.index("take_react_2_ron")
     delta_positions = [tokenizer.tokens.index(f"score_delta_{seat}") for seat in range(4)]
-    assert ron_idx < delta_positions[0] < delta_positions[1] < delta_positions[2] < delta_positions[3]
+    assert take_idx < delta_positions[0] < delta_positions[1] < delta_positions[2] < delta_positions[3]
+
+
+def test_hule_closes_competing_reactions_before_ron_result_tokens() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_reaction = engine.ReactionDecision(
+        discarder=1,
+        discard_tile=tile_to_index("p7"),
+        options_by_player={0: {"ron"}, 2: {"chi"}},
+    )
+
+    tokenizer._on_hule({"l": 0, "baojia": 1, "fenpei": [15600, -12500, 0, 0]})
+
+    pass_idx = tokenizer.tokens.index("pass_react_2_chi_forced_priority")
+    delta_idx = tokenizer.tokens.index("score_delta_0")
+    take_idx = tokenizer.tokens.index("take_react_0_ron")
+    assert take_idx < pass_idx < delta_idx
 
 
 def test_hule_rejects_ron_without_pending_reaction() -> None:
@@ -279,7 +297,7 @@ def test_pingju_does_not_deduct_riichi_stick_when_closing_ron_window() -> None:
     assert tokenizer.players[0].score == 25000
 
 
-def test_multiple_hule_preserves_event_order_until_reaction_finalization(
+def test_multiple_hule_emits_take_before_each_ron(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -305,12 +323,12 @@ def test_multiple_hule_preserves_event_order_until_reaction_finalization(
     tokenizer = TenhouTokenizer()
     tokens = tokenizer.tokenize_game(game)
 
-    first_ron = tokens.index("ron_from_1_0")
-    second_ron = tokens.index("ron_from_2_0")
     take_ron_1 = tokens.index("take_react_1_ron")
     take_ron_2 = tokens.index("take_react_2_ron")
+    first_delta_0 = tokens.index("score_delta_0", take_ron_1)
+    second_delta_0 = tokens.index("score_delta_0", take_ron_2)
 
-    assert first_ron < second_ron < take_ron_1 < take_ron_2
+    assert take_ron_1 < first_delta_0 < take_ron_2 < second_delta_0
 
 
 def test_multiple_hule_emits_score_deltas_immediately_after_each_ron(
@@ -338,13 +356,78 @@ def test_multiple_hule_emits_score_deltas_immediately_after_each_ron(
 
     tokens = TenhouTokenizer().tokenize_game(game)
 
-    first_ron = tokens.index("ron_from_1_0")
-    first_delta_0 = tokens.index("score_delta_0", first_ron)
-    second_ron = tokens.index("ron_from_2_0")
-    second_delta_0 = tokens.index("score_delta_0", second_ron)
+    take_ron_1 = tokens.index("take_react_1_ron")
+    first_delta_0 = tokens.index("score_delta_0", take_ron_1)
+    take_ron_2 = tokens.index("take_react_2_ron")
+    second_delta_0 = tokens.index("score_delta_0", take_ron_2)
     take_ron_1 = tokens.index("take_react_1_ron")
 
-    assert first_ron < first_delta_0 < second_ron < second_delta_0 < take_ron_1
+    assert take_ron_1 < first_delta_0 < take_ron_2 < second_delta_0
+
+
+def test_multiple_hule_emits_declined_ron_pass_before_first_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        TenhouTokenizer,
+        "_compute_reaction_options",
+        lambda _self, discarder, tile_idx: engine.ReactionDecision(
+            discarder=discarder,
+            discard_tile=tile_idx,
+            options_by_player={1: {"ron"}, 2: {"ron"}, 3: {"ron"}},
+            trigger="discard",
+        ),
+    )
+    game = minimal_game(
+        [
+            qipai_event(),
+            {"zimo": {"l": 0, "p": "m1"}},
+            {"dapai": {"l": 0, "p": "m1"}},
+            {"hule": {"l": 1, "baojia": 0, "fenpei": [0, -1000, 1000, 0]}},
+            {"hule": {"l": 2, "baojia": 0, "fenpei": [0, 0, 1000, -1000]}},
+        ]
+    )
+
+    tokens = TenhouTokenizer().tokenize_game(game)
+
+    pass_idx = tokens.index("pass_react_3_ron_voluntary")
+    second_take = tokens.index("take_react_2_ron")
+    first_take = tokens.index("take_react_1_ron")
+    assert first_take < pass_idx < second_take
+    validate_token_stream(tokens)
+
+
+def test_multiple_hule_delays_later_winner_non_ron_pass_until_their_ron(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        TenhouTokenizer,
+        "_compute_reaction_options",
+        lambda _self, discarder, tile_idx: engine.ReactionDecision(
+            discarder=discarder,
+            discard_tile=tile_idx,
+            options_by_player={1: {"ron"}, 2: {"pon", "ron"}, 3: {"ron"}},
+            trigger="discard",
+        ),
+    )
+    game = minimal_game(
+        [
+            qipai_event(),
+            {"zimo": {"l": 0, "p": "m1"}},
+            {"dapai": {"l": 0, "p": "m1"}},
+            {"hule": {"l": 1, "baojia": 0, "fenpei": [0, -1000, 1000, 0]}},
+            {"hule": {"l": 2, "baojia": 0, "fenpei": [0, 0, 1000, -1000]}},
+        ]
+    )
+
+    tokens = TenhouTokenizer().tokenize_game(game)
+
+    take_ron_2 = tokens.index("take_react_2_ron")
+    pass_pon_2 = tokens.index("pass_react_2_pon_voluntary")
+    first_delta_0 = tokens.index("score_delta_0", tokens.index("take_react_1_ron"))
+    second_delta_0 = tokens.index("score_delta_0", take_ron_2)
+    assert first_delta_0 < take_ron_2 < pass_pon_2 < second_delta_0
+    assert "pass_react_2_pon_forced_priority" not in tokens
 
 
 def test_multiple_hule_requires_same_baojia_for_continuation(
@@ -372,6 +455,542 @@ def test_multiple_hule_requires_same_baojia_for_continuation(
 
     with pytest.raises(engine.TokenizeError):
         TenhouTokenizer().tokenize_game(game)
+
+
+def test_validate_token_stream_rejects_score_block_without_take_ron() -> None:
+    with pytest.raises(AssertionError):
+        validate_token_stream(
+            [
+                "game_start",
+                "round_start",
+                "opt_react_0_ron",
+                "score_delta_0",
+                "TENBO_ZERO",
+                "score_delta_1",
+                "TENBO_ZERO",
+                "score_delta_2",
+                "TENBO_ZERO",
+                "score_delta_3",
+                "TENBO_ZERO",
+                "game_end",
+            ]
+        )
+
+
+def test_validate_token_stream_rejects_pass_react_after_result_start() -> None:
+    with pytest.raises(AssertionError):
+        validate_token_stream(
+            [
+                "game_start",
+                "round_start",
+                "opt_react_0_ron",
+                "opt_react_2_chi",
+                "take_react_0_ron",
+                "score_delta_0",
+                "TENBO_ZERO",
+                "pass_react_2_chi_forced_priority",
+                "game_end",
+            ]
+        )
+
+
+def test_validate_token_stream_rejects_draw_between_take_ron_and_ron_from() -> None:
+    with pytest.raises(AssertionError):
+        validate_token_stream(
+            [
+                "game_start",
+                "round_start",
+                "bakaze_0",
+                "kyoku_0",
+                "honba",
+                "TENBO_ZERO",
+                "riichi_sticks",
+                "TENBO_ZERO",
+                "dora",
+                "m1",
+                "score_0",
+                "TENBO_ZERO",
+                "score_1",
+                "TENBO_ZERO",
+                "score_2",
+                "TENBO_ZERO",
+                "score_3",
+                "TENBO_ZERO",
+                "haipai_0",
+                *["m1"] * 13,
+                "haipai_1",
+                *["m1"] * 13,
+                "haipai_2",
+                *["m1"] * 13,
+                "haipai_3",
+                *["m1"] * 13,
+                "opt_react_1_ron",
+                "take_react_1_ron",
+                "draw_0_m1",
+                "score_delta_0",
+                "TENBO_ZERO",
+                "score_delta_1",
+                "TENBO_ZERO",
+                "score_delta_2",
+                "TENBO_ZERO",
+                "score_delta_3",
+                "TENBO_ZERO",
+                "game_end",
+            ]
+        )
+
+
+def test_validate_token_stream_rejects_duplicate_score_block_without_new_take() -> None:
+    with pytest.raises(AssertionError):
+        validate_token_stream(
+            [
+                "game_start",
+                "round_start",
+                "bakaze_0",
+                "kyoku_0",
+                "honba",
+                "TENBO_ZERO",
+                "riichi_sticks",
+                "TENBO_ZERO",
+                "dora",
+                "m1",
+                "score_0",
+                "TENBO_ZERO",
+                "score_1",
+                "TENBO_ZERO",
+                "score_2",
+                "TENBO_ZERO",
+                "score_3",
+                "TENBO_ZERO",
+                "haipai_0",
+                *["m1"] * 13,
+                "haipai_1",
+                *["m1"] * 13,
+                "haipai_2",
+                *["m1"] * 13,
+                "haipai_3",
+                *["m1"] * 13,
+                "opt_react_1_ron",
+                "take_react_1_ron",
+                "score_delta_0",
+                "TENBO_ZERO",
+                "score_delta_1",
+                "TENBO_ZERO",
+                "score_delta_2",
+                "TENBO_ZERO",
+                "score_delta_3",
+                "TENBO_ZERO",
+                "score_delta_0",
+                "TENBO_ZERO",
+                "score_delta_1",
+                "TENBO_ZERO",
+                "score_delta_2",
+                "TENBO_ZERO",
+                "score_delta_3",
+                "TENBO_ZERO",
+                "game_end",
+            ]
+        )
+
+
+def test_validate_token_stream_rejects_mid_round_score_delta_block() -> None:
+    with pytest.raises(AssertionError):
+        validate_token_stream(
+            [
+                "game_start",
+                "round_start",
+                "bakaze_0",
+                "kyoku_0",
+                "honba",
+                "TENBO_ZERO",
+                "riichi_sticks",
+                "TENBO_ZERO",
+                "dora",
+                "m1",
+                "score_0",
+                "TENBO_ZERO",
+                "score_1",
+                "TENBO_ZERO",
+                "score_2",
+                "TENBO_ZERO",
+                "score_3",
+                "TENBO_ZERO",
+                "haipai_0",
+                *["m1"] * 13,
+                "haipai_1",
+                *["m1"] * 13,
+                "haipai_2",
+                *["m1"] * 13,
+                "haipai_3",
+                *["m1"] * 13,
+                "draw_0_m1",
+                "score_delta_0",
+                "TENBO_ZERO",
+                "game_end",
+            ]
+        )
+
+
+def test_validate_token_stream_rejects_mid_round_haipai_block() -> None:
+    with pytest.raises(AssertionError):
+        validate_token_stream(
+            [
+                "game_start",
+                "round_start",
+                "bakaze_0",
+                "kyoku_0",
+                "honba",
+                "TENBO_ZERO",
+                "riichi_sticks",
+                "TENBO_ZERO",
+                "dora",
+                "m1",
+                "score_0",
+                "TENBO_ZERO",
+                "score_1",
+                "TENBO_ZERO",
+                "score_2",
+                "TENBO_ZERO",
+                "score_3",
+                "TENBO_ZERO",
+                "haipai_0",
+                *["m1"] * 13,
+                "haipai_1",
+                *["m1"] * 13,
+                "haipai_2",
+                *["m1"] * 13,
+                "haipai_3",
+                *["m1"] * 13,
+                "discard_0_m1",
+                "haipai_0",
+                *["m1"] * 13,
+                "game_end",
+            ]
+        )
+
+
+def test_validate_token_stream_rejects_mid_round_bakaze_token() -> None:
+    with pytest.raises(AssertionError):
+        validate_token_stream(
+            [
+                "game_start",
+                "round_start",
+                "bakaze_0",
+                "kyoku_0",
+                "honba",
+                "TENBO_ZERO",
+                "riichi_sticks",
+                "TENBO_ZERO",
+                "dora",
+                "m1",
+                "score_0",
+                "TENBO_ZERO",
+                "score_1",
+                "TENBO_ZERO",
+                "score_2",
+                "TENBO_ZERO",
+                "score_3",
+                "TENBO_ZERO",
+                "haipai_0",
+                *["m1"] * 13,
+                "haipai_1",
+                *["m1"] * 13,
+                "haipai_2",
+                *["m1"] * 13,
+                "haipai_3",
+                *["m1"] * 13,
+                "draw_0_m1",
+                "bakaze_1",
+                "pingju_ryukyoku",
+                "score_delta_0",
+                "TENBO_ZERO",
+                "score_delta_1",
+                "TENBO_ZERO",
+                "score_delta_2",
+                "TENBO_ZERO",
+                "score_delta_3",
+                "TENBO_ZERO",
+                "game_end",
+            ]
+        )
+
+
+def test_validate_token_stream_rejects_mid_round_dora_block() -> None:
+    with pytest.raises(AssertionError):
+        validate_token_stream(
+            [
+                "game_start",
+                "round_start",
+                "bakaze_0",
+                "kyoku_0",
+                "honba",
+                "TENBO_ZERO",
+                "riichi_sticks",
+                "TENBO_ZERO",
+                "dora",
+                "m1",
+                "score_0",
+                "TENBO_ZERO",
+                "score_1",
+                "TENBO_ZERO",
+                "score_2",
+                "TENBO_ZERO",
+                "score_3",
+                "TENBO_ZERO",
+                "haipai_0",
+                *["m1"] * 13,
+                "haipai_1",
+                *["m1"] * 13,
+                "haipai_2",
+                *["m1"] * 13,
+                "haipai_3",
+                *["m1"] * 13,
+                "draw_0_m1",
+                "dora",
+                "m2",
+                "pingju_ryukyoku",
+                "score_delta_0",
+                "TENBO_ZERO",
+                "score_delta_1",
+                "TENBO_ZERO",
+                "score_delta_2",
+                "TENBO_ZERO",
+                "score_delta_3",
+                "TENBO_ZERO",
+                "game_end",
+            ]
+        )
+
+
+def test_validate_token_stream_rejects_next_round_before_result_completes() -> None:
+    with pytest.raises(AssertionError):
+        validate_token_stream(
+            [
+                "game_start",
+                "round_start",
+                "bakaze_0",
+                "kyoku_0",
+                "honba",
+                "TENBO_ZERO",
+                "riichi_sticks",
+                "TENBO_ZERO",
+                "dora",
+                "m1",
+                "score_0",
+                "TENBO_ZERO",
+                "score_1",
+                "TENBO_ZERO",
+                "score_2",
+                "TENBO_ZERO",
+                "score_3",
+                "TENBO_ZERO",
+                "haipai_0",
+                *["m1"] * 13,
+                "haipai_1",
+                *["m1"] * 13,
+                "haipai_2",
+                *["m1"] * 13,
+                "haipai_3",
+                *["m1"] * 13,
+                "pingju_ryukyoku",
+                "score_delta_0",
+                "TENBO_ZERO",
+                "round_start",
+                "game_end",
+            ]
+        )
+
+
+def test_validate_token_stream_rejects_game_end_before_round_result() -> None:
+    with pytest.raises(AssertionError):
+        validate_token_stream(
+            [
+                "game_start",
+                "round_start",
+                "bakaze_0",
+                "kyoku_0",
+                "honba",
+                "TENBO_ZERO",
+                "riichi_sticks",
+                "TENBO_ZERO",
+                "dora",
+                "m1",
+                "score_0",
+                "TENBO_ZERO",
+                "score_1",
+                "TENBO_ZERO",
+                "score_2",
+                "TENBO_ZERO",
+                "score_3",
+                "TENBO_ZERO",
+                "haipai_0",
+                *["m1"] * 13,
+                "haipai_1",
+                *["m1"] * 13,
+                "haipai_2",
+                *["m1"] * 13,
+                "haipai_3",
+                *["m1"] * 13,
+                "draw_0_m1",
+                "game_end",
+            ]
+        )
+
+
+@pytest.mark.parametrize(
+    "tokens",
+    [
+        [
+            "game_start",
+            "round_start",
+            "bakaze_0",
+            "kyoku_0",
+            "honba",
+            "TENBO_ZERO",
+            "riichi_sticks",
+            "TENBO_ZERO",
+            "dora",
+            "m1",
+            "score_0",
+            "TENBO_ZERO",
+            "score_1",
+            "TENBO_ZERO",
+            "score_2",
+            "TENBO_ZERO",
+            "score_3",
+            "TENBO_ZERO",
+            "haipai_0",
+            *["m1"] * 13,
+            "haipai_1",
+            *["m1"] * 13,
+            "haipai_2",
+            *["m1"] * 13,
+            "haipai_3",
+            *["m1"] * 13,
+            "pingju_ryukyoku",
+            "score_delta_1",
+            "TENBO_ZERO",
+            "game_end",
+        ],
+        [
+            "game_start",
+            "round_start",
+            "bakaze_0",
+            "kyoku_0",
+            "honba",
+            "TENBO_ZERO",
+            "riichi_sticks",
+            "TENBO_ZERO",
+            "dora",
+            "m1",
+            "score_0",
+            "TENBO_ZERO",
+            "score_1",
+            "TENBO_ZERO",
+            "score_2",
+            "TENBO_ZERO",
+            "score_3",
+            "TENBO_ZERO",
+            "haipai_0",
+            *["m1"] * 13,
+            "haipai_1",
+            *["m1"] * 13,
+            "haipai_2",
+            *["m1"] * 13,
+            "haipai_3",
+            *["m1"] * 13,
+            "pingju_ryukyoku",
+            "score_delta_0",
+            "TENBO_ZERO",
+            "score_delta_2",
+            "TENBO_ZERO",
+            "game_end",
+        ],
+    ],
+)
+def test_validate_token_stream_rejects_malformed_score_delta_blocks(tokens: list[str]) -> None:
+    with pytest.raises(AssertionError):
+        validate_token_stream(tokens)
+
+
+@pytest.mark.parametrize(
+    "tokens",
+    [
+        ["game_start", "round_start", "dora", "round_start", "game_end"],
+        ["game_start", "round_start", "score_0", "round_start", "game_end"],
+        ["game_start", "round_start", "haipai_0", "m1", "round_start", "game_end"],
+        ["game_start", "round_start", "discard_0_m1", "round_start", "tedashi", "game_end"],
+        ["game_start", "round_start", "take_react_2_chi", "game_end"],
+        ["game_start", "round_start", "opt_self_0_ankan", "round_start", "game_end"],
+        ["game_start", "round_start", "take_self_0_kakan", "game_end"],
+    ],
+)
+def test_validate_token_stream_rejects_malformed_payload_sequences(tokens: list[str]) -> None:
+    with pytest.raises(AssertionError):
+        validate_token_stream(tokens)
+
+
+@pytest.mark.parametrize(
+    "tokens",
+    [
+        ["game_start", "bakaze_0", "game_end"],
+        ["game_start", "round_start", "kyoku_0", "game_end"],
+        ["game_start", "round_start", "bakaze_0", "honba", "TENBO_ZERO", "game_end"],
+        [
+            "game_start",
+            "round_start",
+            "bakaze_0",
+            "kyoku_0",
+            "honba",
+            "TENBO_ZERO",
+            "riichi_sticks",
+            "TENBO_ZERO",
+            "dora",
+            "m1",
+            "score_1",
+            "TENBO_ZERO",
+            "game_end",
+        ],
+        [
+            "game_start",
+            "round_start",
+            "bakaze_0",
+            "kyoku_0",
+            "honba",
+            "TENBO_ZERO",
+            "riichi_sticks",
+            "TENBO_ZERO",
+            "dora",
+            "m1",
+            "score_0",
+            "TENBO_ZERO",
+            "score_1",
+            "TENBO_ZERO",
+            "score_2",
+            "TENBO_ZERO",
+            "score_3",
+            "TENBO_ZERO",
+            "haipai_1",
+            "m1",
+            "m1",
+            "m1",
+            "m1",
+            "m1",
+            "m1",
+            "m1",
+            "m1",
+            "m1",
+            "m1",
+            "m1",
+            "m1",
+            "m1",
+            "game_end",
+        ],
+    ],
+)
+def test_validate_token_stream_rejects_malformed_round_prelude(tokens: list[str]) -> None:
+    with pytest.raises(AssertionError):
+        validate_token_stream(tokens)
 
 
 def test_round_rejects_non_hule_event_after_ron_end(
