@@ -55,6 +55,15 @@ def _is_final_rank_token(token: str) -> bool:
     )
 
 
+def _is_rule_token(token: str) -> bool:
+    return token in {
+        "rule_player_3",
+        "rule_player_4",
+        "rule_length_tonpu",
+        "rule_length_hanchan",
+    }
+
+
 def _consume_tenbo_payload(tokens: Sequence[str], start: int) -> int:
     assert start < len(tokens)
     head = tokens[start]
@@ -135,12 +144,15 @@ class TokenStreamFSM:
         assert self.tokens[-1] == "game_end"
         assert not any(token.startswith("event_unknown") for token in self.tokens)
         assert len(self.tokens) >= 3
-        assert self.tokens[1] == "round_start"
 
         while self.idx < len(self.tokens):
             token = self.tokens[self.idx]
             if token == "game_start":
                 assert self.idx == 0
+                self.idx += 1
+                continue
+            if _is_rule_token(token):
+                assert not self.started_round
                 self.idx += 1
                 continue
             if token == "round_start":

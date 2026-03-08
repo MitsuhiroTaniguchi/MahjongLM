@@ -43,6 +43,26 @@ def test_qipai_emits_score_as_tenbo_tokens() -> None:
     ]
 
 
+def test_tokenize_game_emits_rule_tokens_after_game_start() -> None:
+    tokens = TenhouTokenizer().tokenize_game(
+        {
+            "title": "四鳳東喰赤速",
+            "log": [[qipai_event(), pingju_event()]],
+        }
+    )
+    assert tokens[:4] == ["game_start", "rule_player_4", "rule_length_tonpu", "round_start"]
+
+
+def test_tokenize_game_emits_three_player_rule_token_from_title() -> None:
+    tokens = TenhouTokenizer().tokenize_game(
+        {
+            "title": "三鳳南喰赤",
+            "log": [[qipai_event(), pingju_event()]],
+        }
+    )
+    assert tokens[:4] == ["game_start", "rule_player_3", "rule_length_hanchan", "round_start"]
+
+
 def test_qipai_emits_honba_and_riichi_sticks_as_tenbo_tokens() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
@@ -1035,6 +1055,7 @@ def test_validate_token_stream_rejects_malformed_score_delta_blocks(tokens: list
 @pytest.mark.parametrize(
     "tokens",
     [
+        ["game_start", "rule_player_4", "dora", "round_start", "game_end"],
         ["game_start", "round_start", "dora", "round_start", "game_end"],
         ["game_start", "round_start", "score_0", "round_start", "game_end"],
         ["game_start", "round_start", "haipai_0", "m1", "round_start", "game_end"],

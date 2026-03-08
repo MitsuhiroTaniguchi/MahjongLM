@@ -563,6 +563,7 @@ class TenhouTokenizer:
         if not log:
             raise TokenizeError("game log cannot be empty")
         self.tokens = ["game_start"]
+        self.tokens.extend(self._build_game_rule_block(game))
         self.pending_self = None
         self.pending_reaction = None
         self.pending_riichi_actor = None
@@ -748,6 +749,22 @@ class TenhouTokenizer:
 
     def _build_dora_block(self, tile: str) -> List[str]:
         return ["dora", tile]
+
+    def _build_game_rule_block(self, game: dict) -> List[str]:
+        title = game.get("title")
+        if title is None:
+            return []
+        title = self._require_str(title, field="game.title")
+        block: List[str] = []
+        if "三" in title:
+            block.append("rule_player_3")
+        elif "四" in title:
+            block.append("rule_player_4")
+        if "東" in title:
+            block.append("rule_length_tonpu")
+        elif "南" in title:
+            block.append("rule_length_hanchan")
+        return block
 
     def _build_score_delta_block(self, deltas: List[int]) -> List[str]:
         block: List[str] = []

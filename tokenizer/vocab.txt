@@ -3,6 +3,10 @@
 <bos>
 <eos>
 game_start
+rule_player_3
+rule_player_4
+rule_length_tonpu
+rule_length_hanchan
 game_end
 round_start
 bakaze_0
