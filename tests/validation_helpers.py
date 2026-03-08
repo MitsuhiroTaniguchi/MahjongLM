@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from enum import Enum
 from typing import Sequence
 
 from tenhou_tokenizer.engine import (
@@ -10,41 +12,293 @@ from tenhou_tokenizer.engine import (
 )
 
 
-def validate_token_stream(tokens: Sequence[str]) -> None:
-    assert tokens.count("game_start") == 1
-    assert tokens.count("game_end") == 1
-    assert not any(token.startswith("event_unknown") for token in tokens)
+TENBO_TOKENS = {"TENBO_PLUS", "TENBO_MINUS", "TENBO_ZERO", "TENBO_10000", "TENBO_5000", "TENBO_1000", "TENBO_500", "TENBO_100"}
+TILE_TOKENS = {
+    *(f"m{i}" for i in range(10)),
+    *(f"p{i}" for i in range(10)),
+    *(f"s{i}" for i in range(10)),
+    *(f"z{i}" for i in range(1, 8)),
+}
+RED_CHOICE_TOKENS = {"red_chi_used", "red_chi_not_used", "red_pon_used", "red_pon_not_used"}
+DISCARD_MARKER_TOKENS = {"tedashi", "tsumogiri"}
+REACTION_PASS_SUFFIXES = ("_voluntary", "_forced_rule", "_forced_priority")
 
-    seen_self: set[str] = set()
-    seen_react: set[str] = set()
-    saw_call_in_round = False
 
-    for token in tokens:
-        if token == "round_start":
-            seen_self.clear()
-            seen_react.clear()
-            saw_call_in_round = False
-            continue
+def _consume_tenbo_payload(tokens: Sequence[str], start: int) -> int:
+    assert start < len(tokens)
+    head = tokens[start]
+    if head == "TENBO_ZERO":
+        return start + 1
+    assert head in {"TENBO_PLUS", "TENBO_MINUS"}
+    idx = start + 1
+    assert idx < len(tokens)
+    saw_unit = False
+    while idx < len(tokens) and tokens[idx] in TENBO_TOKENS - {"TENBO_PLUS", "TENBO_MINUS", "TENBO_ZERO"}:
+        saw_unit = True
+        idx += 1
+    assert saw_unit
+    return idx
 
+
+def _consume_tile_payload(tokens: Sequence[str], start: int, *, minimum: int, exact: int | None = None) -> int:
+    idx = start
+    count = 0
+    while idx < len(tokens) and tokens[idx] in TILE_TOKENS:
+        count += 1
+        idx += 1
+    if exact is not None:
+        assert count == exact
+    else:
+        assert count >= minimum
+    return idx
+
+
+def _consume_round_prelude(tokens: Sequence[str], start: int) -> int:
+    idx = start
+    assert idx < len(tokens) and tokens[idx].startswith("bakaze_")
+    idx += 1
+    assert idx < len(tokens) and tokens[idx].startswith("kyoku_")
+    idx += 1
+    assert idx < len(tokens) and tokens[idx] == "honba"
+    idx = _consume_tenbo_payload(tokens, idx + 1)
+    assert idx < len(tokens) and tokens[idx] == "riichi_sticks"
+    idx = _consume_tenbo_payload(tokens, idx + 1)
+    assert idx < len(tokens) and tokens[idx] == "dora"
+    idx = _consume_tile_payload(tokens, idx + 1, minimum=1, exact=1)
+    for seat in range(4):
+        assert idx < len(tokens) and tokens[idx] == f"score_{seat}"
+        idx = _consume_tenbo_payload(tokens, idx + 1)
+    for seat in range(4):
+        assert idx < len(tokens) and tokens[idx] == f"haipai_{seat}"
+        idx = _consume_tile_payload(tokens, idx + 1, minimum=13, exact=13)
+    return idx
+
+
+class StreamPhase(str, Enum):
+    ACTIONS = "actions"
+    RESULT = "result"
+
+
+@dataclass
+class TokenStreamFSM:
+    tokens: Sequence[str]
+    idx: int = 0
+    phase: StreamPhase = StreamPhase.ACTIONS
+    seen_self: set[str] = field(default_factory=set)
+    seen_react: set[str] = field(default_factory=set)
+    saw_call_in_round: bool = False
+    expected_score_delta_seat: int | None = None
+    allow_post_tsumo_pass_self: bool = False
+    started_round: bool = False
+    pending_kaigang_reveals: int = 0
+    awaiting_ron_score_block: bool = False
+
+    def validate(self) -> None:
+        assert self.tokens.count("game_start") == 1
+        assert self.tokens.count("game_end") == 1
+        assert self.tokens[0] == "game_start"
+        assert self.tokens[-1] == "game_end"
+        assert not any(token.startswith("event_unknown") for token in self.tokens)
+        assert len(self.tokens) >= 3
+        assert self.tokens[1] == "round_start"
+
+        while self.idx < len(self.tokens):
+            token = self.tokens[self.idx]
+            if token == "game_start":
+                assert self.idx == 0
+                self.idx += 1
+                continue
+            if token == "round_start":
+                if self.started_round:
+                    self._assert_round_closed()
+                self._start_round()
+                continue
+            if token == "game_end":
+                self._assert_round_closed()
+                assert self.idx == len(self.tokens) - 1
+                self.idx += 1
+                continue
+            if self.phase is StreamPhase.RESULT or self.awaiting_ron_score_block:
+                if self._consume_result_token(token):
+                    continue
+            if self._consume_action_token(token):
+                continue
+            self._fail_unexpected_token(token)
+
+    def _start_round(self) -> None:
+        self.started_round = True
+        self.seen_self.clear()
+        self.seen_react.clear()
+        self.saw_call_in_round = False
+        self.phase = StreamPhase.ACTIONS
+        self.expected_score_delta_seat = None
+        self.allow_post_tsumo_pass_self = False
+        self.pending_kaigang_reveals = 0
+        self.awaiting_ron_score_block = False
+        self.idx = _consume_round_prelude(self.tokens, self.idx + 1)
+
+    def _assert_round_closed(self) -> None:
+        assert self.phase is StreamPhase.RESULT
+        assert self.expected_score_delta_seat is None
+        assert not self.allow_post_tsumo_pass_self
+        assert not self.awaiting_ron_score_block
+
+    def _enter_result_phase(self, *, allow_post_tsumo_pass_self: bool) -> None:
+        self.phase = StreamPhase.RESULT
+        self.expected_score_delta_seat = 0
+        self.allow_post_tsumo_pass_self = allow_post_tsumo_pass_self
+
+    def _consume_result_token(self, token: str) -> bool:
+        assert not token.startswith("opt_self_")
+        assert not token.startswith("opt_react_")
+        if token.startswith("take_self_"):
+            raise AssertionError(f"take_self token is not allowed in result phase: {token}")
+        if token.startswith("take_react_"):
+            assert self.expected_score_delta_seat is None
+            assert token.endswith("_ron")
+            self.awaiting_ron_score_block = True
+            self.idx += 1
+            return True
+        if token.startswith("pass_self_"):
+            assert self.allow_post_tsumo_pass_self
+            parts = token.split("_")
+            if parts[-1] in {"ankan", "kakan"}:
+                self.idx = _consume_tile_payload(self.tokens, self.idx + 1, minimum=1, exact=1)
+            else:
+                self.idx += 1
+            if self.idx >= len(self.tokens) or not self.tokens[self.idx].startswith("pass_self_"):
+                self.allow_post_tsumo_pass_self = False
+            return True
+        if token.startswith("pass_react_"):
+            assert self.expected_score_delta_seat is None
+            pass_key = token.replace("pass_react_", "", 1)
+            matched = False
+            for suffix in REACTION_PASS_SUFFIXES:
+                if pass_key.endswith(suffix):
+                    assert pass_key[: -len(suffix)] in self.seen_react
+                    matched = True
+                    break
+            assert matched
+            self.idx += 1
+            return True
+        assert not token.startswith("draw_")
+        assert not token.startswith("discard_")
+        assert token not in DISCARD_MARKER_TOKENS
+        assert not token.startswith("chi_pos_")
+        assert token not in RED_CHOICE_TOKENS
+        if token.startswith("score_delta_"):
+            if self.expected_score_delta_seat is None:
+                assert self.awaiting_ron_score_block
+                self.phase = StreamPhase.RESULT
+                self.expected_score_delta_seat = 0
+                self.awaiting_ron_score_block = False
+            seat = int(token.split("_")[2])
+            assert seat == self.expected_score_delta_seat
+            self.idx = _consume_tenbo_payload(self.tokens, self.idx + 1)
+            self.allow_post_tsumo_pass_self = False
+            if self.expected_score_delta_seat == 3:
+                self.expected_score_delta_seat = None
+            else:
+                self.expected_score_delta_seat += 1
+            return True
+        return False
+
+    def _consume_action_token(self, token: str) -> bool:
+        if self.awaiting_ron_score_block:
+            assert token.startswith("take_react_") or token.startswith("pass_react_") or token.startswith("score_delta_")
         if token.startswith("opt_self_"):
             key = token.replace("opt_self_", "", 1)
             if key.endswith("_kyushukyuhai"):
-                assert not saw_call_in_round
-            seen_self.add(key)
-            continue
-
+                assert not self.saw_call_in_round
+            self.seen_self.add(key)
+            if key.endswith("_ankan") or key.endswith("_kakan"):
+                self.idx = _consume_tile_payload(self.tokens, self.idx + 1, minimum=1)
+            else:
+                self.idx += 1
+            return True
         if token.startswith("opt_react_"):
-            seen_react.add(token.replace("opt_react_", "", 1))
-            continue
-
+            self.seen_react.add(token.replace("opt_react_", "", 1))
+            self.idx += 1
+            return True
         if token.startswith("take_self_"):
-            assert token.replace("take_self_", "", 1) in seen_self
-            continue
-
+            assert token.replace("take_self_", "", 1) in self.seen_self
+            parts = token.split("_")
+            if parts[-1] == "tsumo":
+                self._enter_result_phase(allow_post_tsumo_pass_self=True)
+            if parts[-1] in {"ankan", "kakan"}:
+                self.pending_kaigang_reveals += 1
+            if parts[-1] in {"ankan", "kakan"}:
+                self.idx = _consume_tile_payload(self.tokens, self.idx + 1, minimum=1, exact=1)
+            else:
+                self.idx += 1
+            return True
+        if token.startswith("pass_self_"):
+            assert token.replace("pass_self_", "", 1) in self.seen_self
+            parts = token.split("_")
+            if parts[-1] in {"ankan", "kakan"}:
+                self.idx = _consume_tile_payload(self.tokens, self.idx + 1, minimum=1, exact=1)
+            else:
+                self.idx += 1
+            return True
         if token.startswith("take_react_"):
-            assert token.replace("take_react_", "", 1) in seen_react
-            saw_call_in_round = True
+            assert token.replace("take_react_", "", 1) in self.seen_react
+            parts = token.split("_")
+            if parts[-1] == "ron":
+                self.awaiting_ron_score_block = True
+            if parts[-1] == "minkan":
+                self.pending_kaigang_reveals += 1
+            self.saw_call_in_round = True
+            self.idx += 1
+            if parts[-1] == "chi":
+                if self.idx < len(self.tokens) and self.tokens[self.idx].startswith("chi_pos_"):
+                    self.idx += 1
+                if self.idx < len(self.tokens) and self.tokens[self.idx] in RED_CHOICE_TOKENS:
+                    self.idx += 1
+            elif parts[-1] == "pon":
+                if self.idx < len(self.tokens) and self.tokens[self.idx] in RED_CHOICE_TOKENS:
+                    self.idx += 1
+            return True
+        if token.startswith("pass_react_"):
+            pass_key = token.replace("pass_react_", "", 1)
+            matched = False
+            for suffix in REACTION_PASS_SUFFIXES:
+                if pass_key.endswith(suffix):
+                    assert pass_key[: -len(suffix)] in self.seen_react
+                    matched = True
+                    break
+            assert matched
+            self.idx += 1
+            return True
+        if token.startswith("pingju_"):
+            self._enter_result_phase(allow_post_tsumo_pass_self=False)
+            self.idx += 1
+            return True
+        if token == "dora":
+            assert self.pending_kaigang_reveals > 0
+            self.idx = _consume_tile_payload(self.tokens, self.idx + 1, minimum=1, exact=1)
+            self.pending_kaigang_reveals -= 1
+            return True
+        if token.startswith("discard_"):
+            self.idx += 1
+            if self.idx < len(self.tokens) and self.tokens[self.idx] in DISCARD_MARKER_TOKENS:
+                self.idx += 1
+            return True
+        if token.startswith("draw_"):
+            self.idx += 1
+            return True
+        return False
 
+    def _fail_unexpected_token(self, token: str) -> None:
+        assert token not in TILE_TOKENS
+        assert token not in TENBO_TOKENS
+        assert token not in DISCARD_MARKER_TOKENS
+        assert token not in RED_CHOICE_TOKENS
+        assert not token.startswith("chi_pos_")
+        raise AssertionError(f"unexpected token in stream validator: {token}")
+
+
+def validate_token_stream(tokens: Sequence[str]) -> None:
+    TokenStreamFSM(tokens).validate()
 
 def validate_score_rotation(game: dict) -> None:
     tokenizer = TenhouTokenizer()
@@ -93,13 +347,139 @@ def validate_player_state_invariants(tokenizer: TenhouTokenizer) -> None:
             assert player.open_pons_red.get(tile, 0) <= count + 2
 
 
-def validate_round_stepwise(round_data: list[dict]) -> None:
+def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
+    if event_key == "qipai":
+        assert emitted
+        assert emitted[0] == "round_start"
+        assert _consume_round_prelude(emitted, 1) == len(emitted)
+        return
+
+    if event_key in {"zimo", "gangzimo"}:
+        draw_positions = [i for i, token in enumerate(emitted) if token.startswith("draw_")]
+        assert len(draw_positions) == 1
+        draw_idx = draw_positions[0]
+        assert all(
+            token.startswith("pass_self_") or token.startswith("pass_react_")
+            for token in emitted[:draw_idx]
+        )
+        idx = draw_idx + 1
+        while idx < len(emitted):
+            token = emitted[idx]
+            assert token.startswith("opt_self_")
+            idx += 1
+            if token.endswith("_ankan") or token.endswith("_kakan"):
+                saw_tile = False
+                while idx < len(emitted) and emitted[idx] in TILE_TOKENS:
+                    saw_tile = True
+                    idx += 1
+                assert saw_tile
+        return
+
+    if event_key == "dapai":
+        discard_positions = [i for i, token in enumerate(emitted) if token.startswith("discard_")]
+        assert len(discard_positions) == 1
+        discard_idx = discard_positions[0]
+        prefix = emitted[:discard_idx]
+        idx = 0
+        while idx < len(prefix):
+            token = prefix[idx]
+            if token.startswith("take_self_"):
+                idx += 1
+                continue
+            if token.startswith("pass_self_"):
+                idx += 1
+                if token.endswith("_ankan") or token.endswith("_kakan"):
+                    assert idx < len(prefix) and prefix[idx] in TILE_TOKENS
+                    idx += 1
+                continue
+            if token.startswith("pass_react_"):
+                idx += 1
+                continue
+            raise AssertionError(f"unexpected discard-prefix token: {token}")
+        idx = discard_idx + 1
+        if idx < len(emitted) and emitted[idx] in DISCARD_MARKER_TOKENS:
+            idx += 1
+        assert all(token.startswith("opt_react_") for token in emitted[idx:])
+        return
+
+    if event_key == "fulou":
+        take_positions = [i for i, token in enumerate(emitted) if token.startswith("take_react_")]
+        assert len(take_positions) == 1
+        take_idx = take_positions[0]
+        assert all(token.startswith("pass_react_") for token in emitted[:take_idx])
+        idx = take_idx + 1
+        while idx < len(emitted) and (
+            emitted[idx].startswith("chi_pos_") or emitted[idx] in RED_CHOICE_TOKENS
+        ):
+            idx += 1
+        assert all(token.startswith("pass_react_") for token in emitted[idx:])
+        return
+
+    if event_key == "gang":
+        take_positions = [i for i, token in enumerate(emitted) if token.startswith("take_self_")]
+        assert len(take_positions) == 1
+        take_idx = take_positions[0]
+        assert all(token.startswith("pass_self_") for token in emitted[:take_idx])
+        idx = take_idx + 1
+        assert idx < len(emitted) and emitted[idx] in TILE_TOKENS
+        idx += 1
+        while idx < len(emitted) and emitted[idx].startswith("pass_self_"):
+            token = emitted[idx]
+            idx += 1
+            if token.endswith("_ankan") or token.endswith("_kakan"):
+                assert idx < len(emitted) and emitted[idx] in TILE_TOKENS
+                idx += 1
+        assert all(token.startswith("opt_react_") for token in emitted[idx:])
+        return
+
+    if event_key == "kaigang":
+        assert len(emitted) == 2
+        assert emitted[0] == "dora"
+        assert emitted[1] in TILE_TOKENS
+        return
+
+    if event_key == "hule":
+        if any(token.startswith("take_react_") and token.endswith("_ron") for token in emitted):
+            first_delta_idx = next(i for i, token in enumerate(emitted) if token.startswith("score_delta_"))
+            assert all(
+                token.startswith("take_react_") or token.startswith("pass_react_")
+                for token in emitted[:first_delta_idx]
+            )
+        elif any(token.startswith("score_delta_") for token in emitted):
+            first_delta_idx = next(i for i, token in enumerate(emitted) if token.startswith("score_delta_"))
+            assert any(token.startswith("take_self_") and token.endswith("_tsumo") for token in emitted[:first_delta_idx])
+            assert all(
+                token.startswith("take_self_") or token.startswith("pass_self_") or token in TILE_TOKENS
+                for token in emitted[:first_delta_idx]
+            )
+        delta_positions = [i for i, token in enumerate(emitted) if token.startswith("score_delta_")]
+        if delta_positions:
+            assert len(delta_positions) == 4
+        return
+
+    if event_key == "pingju":
+        pingju_positions = [i for i, token in enumerate(emitted) if token.startswith("pingju_")]
+        assert len(pingju_positions) == 1
+        pingju_idx = pingju_positions[0]
+        assert all(
+            token.startswith("pass_self_")
+            or token.startswith("pass_react_")
+            or token.endswith("_kyushukyuhai") and token.startswith("take_self_")
+            for token in emitted[:pingju_idx]
+        )
+        assert len([token for token in emitted if token.startswith("score_delta_")]) == 4
+        return
+
+
+def trace_round_token_slices(round_data: list[dict]) -> tuple[TenhouTokenizer, list[dict]]:
     assert isinstance(round_data, list)
     assert round_data
     tokenizer = TenhouTokenizer()
     saw_qipai = False
+    round_ended = False
+    traces: list[dict] = []
 
-    for event in round_data:
+    for event_index, event in enumerate(round_data):
         assert isinstance(event, dict)
         assert event
         key, value = next(iter(event.items()))
@@ -108,8 +488,18 @@ def validate_round_stepwise(round_data: list[dict]) -> None:
             saw_qipai = True
         else:
             assert key != "qipai"
+            if round_ended:
+                is_multi_ron_continuation = (
+                    key == "hule"
+                    and isinstance(value, dict)
+                    and tokenizer.pending_reaction is not None
+                    and value.get("baojia") == tokenizer.pending_reaction.discarder
+                )
+                assert is_multi_ron_continuation, "round already ended"
+
         before_live_draws = tokenizer.live_draws_left
         before_concealed = [sum(player.concealed) for player in tokenizer.players]
+        before_token_count = len(tokenizer.tokens)
 
         if tokenizer.pending_reaction and not tokenizer._is_reaction_continuation(key, value):
             close_reason = "forced_rule" if key == "pingju" else "voluntary"
@@ -132,19 +522,71 @@ def validate_round_stepwise(round_data: list[dict]) -> None:
         elif key == "kaigang":
             tokenizer._on_kaigang(value)
         elif key == "hule":
-            tokenizer._on_hule(value)
+            remaining_ron_winners: set[int] | None = None
+            more_ron_expected = False
+            if isinstance(value, dict) and value.get("baojia") is not None:
+                remaining_ron_winners = set()
+                lookahead_index = event_index
+                expected_baojia = value.get("baojia")
+                while lookahead_index < len(round_data):
+                    lookahead_event = round_data[lookahead_index]
+                    if not isinstance(lookahead_event, dict) or "hule" not in lookahead_event:
+                        break
+                    lookahead_hule = lookahead_event["hule"]
+                    if not isinstance(lookahead_hule, dict) or lookahead_hule.get("baojia") != expected_baojia:
+                        break
+                    winner = lookahead_hule.get("l")
+                    if isinstance(winner, int) and not isinstance(winner, bool):
+                        remaining_ron_winners.add(winner)
+                    lookahead_index += 1
+                more_ron_expected = len(remaining_ron_winners) > 1
+            tokenizer._on_hule(
+                value,
+                more_ron_expected=more_ron_expected,
+                remaining_ron_winners=remaining_ron_winners,
+            )
         elif key == "pingju":
             tokenizer._on_pingju(value)
         else:
             tokenizer.tokens.append(f"event_unknown_{key}")
 
-        after_concealed = [sum(player.concealed) for player in tokenizer.players]
+        emitted = tokenizer.tokens[before_token_count:]
         validate_player_state_invariants(tokenizer)
+        traces.append(
+            {
+                "event_index": event_index,
+                "event_key": key,
+                "event_value": value,
+                "tokens": emitted,
+                "before_live_draws": before_live_draws,
+                "after_live_draws": tokenizer.live_draws_left,
+                "before_concealed": before_concealed,
+                "after_concealed": [sum(player.concealed) for player in tokenizer.players],
+            }
+        )
+        if key in {"hule", "pingju"}:
+            round_ended = True
+
+    return tokenizer, traces
+
+
+def validate_round_stepwise(round_data: list[dict]) -> None:
+    tokenizer, traces = trace_round_token_slices(round_data)
+
+    for trace in traces:
+        key = trace["event_key"]
+        value = trace["event_value"]
+        before_live_draws = trace["before_live_draws"]
+        after_live_draws = trace["after_live_draws"]
+        before_concealed = trace["before_concealed"]
+        after_concealed = trace["after_concealed"]
+
+        validate_event_token_slice(key, trace["tokens"])
 
         if key in {"zimo", "gangzimo"}:
             actor = value["l"]
             assert after_concealed[actor] == before_concealed[actor] + 1
-            assert tokenizer.live_draws_left == before_live_draws - 1
+            assert after_live_draws == before_live_draws - 1
         elif key == "dapai":
             actor = value["l"]
             assert after_concealed[actor] == before_concealed[actor] - 1

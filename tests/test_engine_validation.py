@@ -8,9 +8,12 @@ import pytest
 import pymahjong  # noqa: F401
 
 from tenhou_tokenizer import TenhouTokenizer
+from tenhou_tokenizer import engine
 from tests.dataset_sample import DATASET_2023, get_dataset_2023_sample_zip
 from tests.fixtures.synthetic_logs import minimal_game, pingju_event, qipai_event
 from tests.validation_helpers import (
+    trace_round_token_slices,
+    validate_event_token_slice,
     validate_round_stepwise,
     validate_score_rotation,
     validate_token_stream,
@@ -56,6 +59,151 @@ def test_stepwise_validation_accepts_ankan_and_rinshan_round() -> None:
     )
 
     validate_round_stepwise(game["log"][0])
+
+
+def test_event_token_slice_rejects_fulou_detail_after_pass() -> None:
+    with pytest.raises(AssertionError):
+        validate_event_token_slice(
+            "fulou",
+            [
+                "take_react_1_chi",
+                "pass_react_2_pon_voluntary",
+                "chi_pos_mid",
+            ],
+        )
+
+
+def test_event_token_slice_rejects_discard_options_before_discard() -> None:
+    with pytest.raises(AssertionError):
+        validate_event_token_slice(
+            "dapai",
+            [
+                "opt_react_1_ron",
+                "discard_0_m1",
+            ],
+        )
+
+
+def test_event_token_slice_rejects_bare_tile_after_draw() -> None:
+    with pytest.raises(AssertionError):
+        validate_event_token_slice(
+            "zimo",
+            [
+                "draw_0_m1",
+                "m2",
+            ],
+        )
+
+
+def test_event_token_slice_rejects_ron_result_without_take() -> None:
+    with pytest.raises(AssertionError):
+        validate_event_token_slice(
+            "hule",
+            [
+                "pass_react_2_ron_voluntary",
+                "score_delta_0",
+                "TENBO_ZERO",
+                "score_delta_1",
+                "TENBO_ZERO",
+                "score_delta_2",
+                "TENBO_ZERO",
+                "score_delta_3",
+                "TENBO_ZERO",
+            ],
+        )
+
+
+def test_event_token_slice_rejects_tsumo_result_without_take() -> None:
+    with pytest.raises(AssertionError):
+        validate_event_token_slice(
+            "hule",
+            [
+                "pass_self_0_ankan",
+                "m1",
+                "score_delta_0",
+                "TENBO_ZERO",
+                "score_delta_1",
+                "TENBO_ZERO",
+                "score_delta_2",
+                "TENBO_ZERO",
+                "score_delta_3",
+                "TENBO_ZERO",
+            ],
+        )
+
+
+def test_trace_round_token_slices_emits_event_ordered_blocks() -> None:
+    round_data = [
+        qipai_event(),
+        {"zimo": {"l": 0, "p": "m1"}},
+        {"dapai": {"l": 0, "p": "m1"}},
+        pingju_event(),
+    ]
+
+    tokenizer, traces = trace_round_token_slices(round_data)
+
+    assert len(traces) == 4
+    assert [trace["event_key"] for trace in traces] == ["qipai", "zimo", "dapai", "pingju"]
+    assert traces[0]["tokens"][0] == "round_start"
+    assert any(token.startswith("draw_0_") for token in traces[1]["tokens"])
+    assert any(token.startswith("discard_0_") for token in traces[2]["tokens"])
+    assert any(token.startswith("pingju_") for token in traces[3]["tokens"])
+    assert any(token == "score_delta_3" for token in traces[3]["tokens"])
+    assert tokenizer.tokens[-1] == "TENBO_ZERO"
+
+
+def test_trace_round_token_slices_matches_multi_ron_declined_pass_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        TenhouTokenizer,
+        "_compute_reaction_options",
+        lambda _self, discarder, tile_idx: engine.ReactionDecision(
+            discarder=discarder,
+            discard_tile=tile_idx,
+            options_by_player={1: {"ron"}, 2: {"ron"}, 3: {"ron"}},
+            trigger="discard",
+        ),
+    )
+    round_data = [
+        qipai_event(),
+        {"zimo": {"l": 0, "p": "m1"}},
+        {"dapai": {"l": 0, "p": "m1"}},
+        {"hule": {"l": 1, "baojia": 0, "fenpei": [0, -1000, 1000, 0]}},
+        {"hule": {"l": 2, "baojia": 0, "fenpei": [0, 0, 1000, -1000]}},
+    ]
+
+    tokenizer, traces = trace_round_token_slices(round_data)
+
+    first_hule_tokens = traces[3]["tokens"]
+    assert "pass_react_3_ron_voluntary" in first_hule_tokens
+    assert first_hule_tokens.index("take_react_1_ron") < first_hule_tokens.index("pass_react_3_ron_voluntary")
+    validate_token_stream(["game_start", *tokenizer.tokens, "game_end"])
+
+
+def test_trace_round_token_slices_rejects_event_after_round_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        TenhouTokenizer,
+        "_compute_reaction_options",
+        lambda _self, discarder, tile_idx: engine.ReactionDecision(
+            discarder=discarder,
+            discard_tile=tile_idx,
+            options_by_player={1: {"ron"}},
+            trigger="discard",
+        ),
+    )
+    round_data = [
+        qipai_event(),
+        {"zimo": {"l": 0, "p": "m1"}},
+        {"dapai": {"l": 0, "p": "m1"}},
+        {"hule": {"l": 1, "baojia": 0, "fenpei": [0, -1000, 1000, 0]}},
+        pingju_event(),
+    ]
+
+    with pytest.raises(AssertionError, match="round already ended"):
+        trace_round_token_slices(round_data)
 
 
 @pytest.mark.slow
