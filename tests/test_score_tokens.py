@@ -12,19 +12,14 @@ from tests.validation_helpers import validate_token_stream
 def test_encode_tenbo_tokens_decomposes_by_stick_units() -> None:
     assert encode_tenbo_tokens(25000) == [
         "TENBO_PLUS",
-        "TENBO_10000",
-        "TENBO_10000",
+        "TENBO_20000",
         "TENBO_5000",
     ]
     assert encode_tenbo_tokens(-3900) == [
         "TENBO_MINUS",
-        "TENBO_1000",
-        "TENBO_1000",
-        "TENBO_1000",
+        "TENBO_3000",
         "TENBO_500",
-        "TENBO_100",
-        "TENBO_100",
-        "TENBO_100",
+        "TENBO_300",
         "TENBO_100",
     ]
     assert encode_tenbo_tokens(0) == ["TENBO_ZERO"]
@@ -40,11 +35,10 @@ def test_qipai_emits_score_as_tenbo_tokens() -> None:
     tokenizer._on_qipai(qipai_payload())
 
     i = tokenizer.tokens.index("score_0")
-    assert tokenizer.tokens[i : i + 5] == [
+    assert tokenizer.tokens[i : i + 4] == [
         "score_0",
         "TENBO_PLUS",
-        "TENBO_10000",
-        "TENBO_10000",
+        "TENBO_20000",
         "TENBO_5000",
     ]
 
@@ -73,18 +67,15 @@ def test_qipai_emits_nonzero_honba_and_riichi_sticks_as_tenbo_tokens() -> None:
     honba_idx = tokenizer.tokens.index("honba")
     riichi_idx = tokenizer.tokens.index("riichi_sticks")
 
-    assert tokenizer.tokens[honba_idx : honba_idx + 4] == [
+    assert tokenizer.tokens[honba_idx : honba_idx + 3] == [
         "honba",
         "TENBO_PLUS",
-        "TENBO_100",
-        "TENBO_100",
+        "TENBO_200",
     ]
-    assert tokenizer.tokens[riichi_idx : riichi_idx + 5] == [
+    assert tokenizer.tokens[riichi_idx : riichi_idx + 3] == [
         "riichi_sticks",
         "TENBO_PLUS",
-        "TENBO_1000",
-        "TENBO_1000",
-        "TENBO_1000",
+        "TENBO_3000",
     ]
 
 
@@ -95,15 +86,11 @@ def test_result_emits_score_delta_as_tenbo_tokens() -> None:
     tokenizer._on_hule({"l": 0, "fenpei": [-3900, 3900, 0, 0]})
 
     i0 = tokenizer.tokens.index("score_delta_0")
-    assert tokenizer.tokens[i0 + 1 : i0 + 10] == [
+    assert tokenizer.tokens[i0 + 1 : i0 + 6] == [
         "TENBO_MINUS",
-        "TENBO_1000",
-        "TENBO_1000",
-        "TENBO_1000",
+        "TENBO_3000",
         "TENBO_500",
-        "TENBO_100",
-        "TENBO_100",
-        "TENBO_100",
+        "TENBO_300",
         "TENBO_100",
     ]
 
@@ -224,7 +211,7 @@ def test_pingju_closes_pending_reaction_before_result_tokens() -> None:
         )
     )
 
-    pass_idx = tokens.index("pass_react_1_ron_forced_rule")
+    pass_idx = tokens.index("pass_react_1_ron_voluntary")
     draw_idx = tokens.index("pingju_ryukyoku")
     delta_idx = tokens.index("score_delta_0")
     assert pass_idx < draw_idx < delta_idx
@@ -264,7 +251,7 @@ def test_next_draw_closes_riichi_ron_window_before_draw_token() -> None:
     assert tokenizer.players[0].score == 24000
 
 
-def test_pingju_does_not_deduct_riichi_stick_when_closing_ron_window() -> None:
+def test_pingju_deducts_riichi_stick_when_closing_ron_window_without_win() -> None:
     def fake_reaction(
         _self: TenhouTokenizer,
         discarder: int,
@@ -291,10 +278,10 @@ def test_pingju_does_not_deduct_riichi_stick_when_closing_ron_window() -> None:
         )
     )
 
-    pass_idx = tokens.index("pass_react_1_ron_forced_rule")
+    pass_idx = tokens.index("pass_react_1_ron_voluntary")
     draw_idx = tokens.index("pingju_ryukyoku")
     assert pass_idx < draw_idx
-    assert tokenizer.players[0].score == 25000
+    assert tokenizer.players[0].score == 24000
 
 
 def test_multiple_hule_emits_take_before_each_ron(

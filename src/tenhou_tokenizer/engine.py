@@ -43,10 +43,16 @@ MELD_TYPE_TO_PM_CODE = {
     "ankan": 3,
 }
 TENBO_UNITS: Tuple[Tuple[int, str], ...] = (
+    (30000, "TENBO_30000"),
+    (20000, "TENBO_20000"),
     (10000, "TENBO_10000"),
     (5000, "TENBO_5000"),
+    (3000, "TENBO_3000"),
+    (2000, "TENBO_2000"),
     (1000, "TENBO_1000"),
     (500, "TENBO_500"),
+    (300, "TENBO_300"),
+    (200, "TENBO_200"),
     (100, "TENBO_100"),
 )
 SELF_OPT_TSUMO = int(getattr(pm, "SELF_OPT_TSUMO", 1 << 0))
@@ -199,7 +205,7 @@ def encode_tenbo_tokens(value: int) -> List[str]:
     remaining = abs(value)
     if remaining % 100 != 0:
         raise TokenizeError(f"score value must be a multiple of 100: {value}")
-    tokens = [sign]
+    tokens: List[str] = [sign]
     for unit_value, unit_token in TENBO_UNITS:
         count, remaining = divmod(remaining, unit_value)
         if count:
@@ -227,6 +233,10 @@ def _remove_tiles(concealed: List[int], tile: int, n: int) -> None:
     if concealed[tile] < n:
         raise TokenizeError(f"cannot remove tile {index_to_tile(tile)} x{n}")
     concealed[tile] -= n
+
+
+def _has_legal_post_call_discard(concealed: List[int], forbidden_tiles: Set[int]) -> bool:
+    return any(count > 0 and tile_idx not in forbidden_tiles for tile_idx, count in enumerate(concealed))
 
 
 def _make_pm_shoupai(counts: List[int], melds: List[Tuple[str, int]]):
@@ -643,8 +653,8 @@ class TenhouTokenizer:
                     raise TokenizeError("round already ended")
 
             if self.pending_reaction and not self._is_reaction_continuation(key, value):
-                close_reason = "forced_rule" if key == "pingju" else "voluntary"
-                self._finalize_reaction(close_reason=close_reason)
+                if key != "pingju":
+                    self._finalize_reaction(close_reason="voluntary")
 
             if self.pending_self and not self._is_self_resolution(key, value):
                 self._finalize_self(set())
@@ -1338,6 +1348,13 @@ class TenhouTokenizer:
                     options_by_player[int(seat)] = opts
             if not options_by_player:
                 return None
+            options_by_player = self._filter_reaction_call_options(
+                discarder=discarder,
+                tile_idx=tile_idx,
+                options_by_player=options_by_player,
+            )
+            if not options_by_player:
+                return None
             return ReactionDecision(
                 discarder=discarder,
                 discard_tile=tile_idx,
@@ -1408,12 +1425,36 @@ class TenhouTokenizer:
 
         if not options_by_player:
             return None
+        options_by_player = self._filter_reaction_call_options(
+            discarder=discarder,
+            tile_idx=tile_idx,
+            options_by_player=options_by_player,
+        )
+        if not options_by_player:
+            return None
         return ReactionDecision(
             discarder=discarder,
             discard_tile=tile_idx,
             options_by_player=options_by_player,
             trigger="discard",
         )
+
+    def _filter_reaction_call_options(
+        self,
+        discarder: int,
+        tile_idx: int,
+        options_by_player: Dict[int, Set[str]],
+    ) -> Dict[int, Set[str]]:
+        filtered: Dict[int, Set[str]] = {}
+        for seat, opts in options_by_player.items():
+            seat_filtered = set(opts)
+            if "chi" in seat_filtered and not self._can_chi_with_tenhou_kuikae(seat, tile_idx):
+                seat_filtered.remove("chi")
+            if "pon" in seat_filtered and not self._can_pon_with_tenhou_kuikae(seat, tile_idx):
+                seat_filtered.remove("pon")
+            if seat_filtered:
+                filtered[seat] = seat_filtered
+        return filtered
 
     def _compute_kakan_reaction_options(self, actor: int, tile_idx: int) -> Optional[ReactionDecision]:
         if PM_SIMULATION_API_AVAILABLE:
@@ -1647,6 +1688,43 @@ class TenhouTokenizer:
             if concealed[ai] > 0 and concealed[bi] > 0:
                 return True
         return False
+
+    def _can_chi_with_tenhou_kuikae(self, seat: int, tile_idx: int) -> bool:
+        concealed = self.players[seat].concealed
+        if tile_idx >= 27:
+            return False
+        suit_base = (tile_idx // 9) * 9
+        n = tile_idx % 9 + 1
+
+        patterns = ((n - 2, n - 1), (n - 1, n + 1), (n + 1, n + 2))
+        for a, b in patterns:
+            if a < 1 or b > 9:
+                continue
+            ai = suit_base + (a - 1)
+            bi = suit_base + (b - 1)
+            if concealed[ai] <= 0 or concealed[bi] <= 0:
+                continue
+            remaining = list(concealed)
+            remaining[ai] -= 1
+            remaining[bi] -= 1
+            seq_low = min(ai, bi, tile_idx)
+            seq_high = max(ai, bi, tile_idx)
+            forbidden = {tile_idx}
+            if tile_idx == seq_low and seq_high + 1 < suit_base + 9:
+                forbidden.add(seq_high + 1)
+            elif tile_idx == seq_high and seq_low - 1 >= suit_base:
+                forbidden.add(seq_low - 1)
+            if _has_legal_post_call_discard(remaining, forbidden):
+                return True
+        return False
+
+    def _can_pon_with_tenhou_kuikae(self, seat: int, tile_idx: int) -> bool:
+        concealed = self.players[seat].concealed
+        if concealed[tile_idx] < 2:
+            return False
+        remaining = list(concealed)
+        remaining[tile_idx] -= 2
+        return _has_legal_post_call_discard(remaining, {tile_idx})
 
     def _on_fulou(self, f: dict) -> None:
         self._require_round_initialized()
@@ -1925,11 +2003,24 @@ class TenhouTokenizer:
         if not isinstance(name, str):
             raise TokenizeError("pingju.name must be a string")
         fenpei = self._require_four(p["fenpei"], field="pingju.fenpei")
+        normalized_name = self._normalize_pingju_name(name)
+        if self.pending_reaction:
+            if normalized_name == "sanchahou":
+                ron_seats = [
+                    seat
+                    for seat, opts in sorted(self.pending_reaction.options_by_player.items())
+                    if "ron" in opts
+                ]
+                if len(ron_seats) != 3:
+                    raise TokenizeError("sanchahou requires exactly three ron takers")
+                for seat in ron_seats:
+                    self.pending_reaction.chosen[seat] = "ron"
+            self._finalize_reaction(close_reason="voluntary")
         if name == "九種九牌":
             actor = self._kyushukyuhai_actor(p.get("shoupai"))
             if actor is not None:
                 self._finalize_self({"kyushukyuhai"}, actor=actor)
-        self.tokens.append(f"pingju_{self._normalize_pingju_name(name)}")
+        self.tokens.append(f"pingju_{normalized_name}")
         deltas = [self._require_score(delta, field=f"pingju.fenpei[{seat}]") for seat, delta in enumerate(fenpei)]
         for seat in range(4):
             self.players[seat].score += deltas[seat]
@@ -2085,7 +2176,7 @@ class TenhouTokenizer:
 
     def _reaction_pass_reason(self, seat: int, opt: str, close_reason: str) -> str:
         if close_reason == "forced_rule":
-            return "forced_rule"
+            raise TokenizeError("forced_rule reaction close is not valid for Tenhou logs")
         if not self.pending_reaction:
             return "voluntary"
 
@@ -2134,7 +2225,7 @@ class TenhouTokenizer:
             and self.pending_reaction.trigger == "discard"
             and self.pending_riichi_actor == self.pending_reaction.discarder
         ):
-            if close_reason != "forced_rule" and not had_ron_winner:
+            if not had_ron_winner:
                 self._apply_riichi_stick(self.pending_riichi_actor)
             self.pending_riichi_actor = None
 

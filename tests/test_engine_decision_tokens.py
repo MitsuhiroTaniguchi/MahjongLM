@@ -160,7 +160,6 @@ def test_riichi_stick_is_deducted_when_ron_options_all_pass() -> None:
     [
         ({1: "ron"}, "voluntary", 25000),
         ({}, "voluntary", 24000),
-        ({}, "forced_rule", 25000),
     ],
 )
 def test_riichi_stick_resolution_matrix(
@@ -250,7 +249,7 @@ def test_pass_react_forced_priority_when_pon_blocks_chi() -> None:
     assert "pass_react_0_chi_forced_priority" in tokenizer.tokens
 
 
-def test_pass_react_forced_rule_does_not_set_furiten() -> None:
+def test_forced_rule_close_is_rejected_for_reactions() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
 
@@ -259,11 +258,8 @@ def test_pass_react_forced_rule_does_not_set_furiten() -> None:
         discard_tile=tile_to_index("m1"),
         options_by_player={1: {"ron"}},
     )
-    tokenizer._finalize_reaction(close_reason="forced_rule")
-
-    assert "pass_react_1_ron_forced_rule" in tokenizer.tokens
-    assert not tokenizer.players[1].temporary_furiten
-    assert not tokenizer.players[1].riichi_furiten
+    with pytest.raises(engine.TokenizeError, match="forced_rule reaction close"):
+        tokenizer._finalize_reaction(close_reason="forced_rule")
 
 
 @pytest.mark.parametrize(
@@ -554,14 +550,14 @@ def test_last_rinshan_discard_sets_houtei_context(monkeypatch: pytest.MonkeyPatc
     assert all(flags == (True, False, False) for flags in seen)
 
 
-def test_pingju_closes_reaction_as_forced_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sanchahou_takes_all_offered_ron(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: set())
 
     def fake_reaction(_self: TenhouTokenizer, _discarder: int, _tile_idx: int) -> ReactionDecision:
         return ReactionDecision(
             discarder=0,
             discard_tile=tile_to_index("m1"),
-            options_by_player={1: {"ron"}},
+            options_by_player={0: {"chi", "ron"}, 1: {"ron"}, 2: {"ron"}},
         )
 
     monkeypatch.setattr(TenhouTokenizer, "_compute_reaction_options", fake_reaction)
@@ -576,7 +572,11 @@ def test_pingju_closes_reaction_as_forced_rule(monkeypatch: pytest.MonkeyPatch) 
     )
 
     tokens = TenhouTokenizer().tokenize_game(game)
-    assert "pass_react_1_ron_forced_rule" in tokens
+    assert "take_react_0_ron" in tokens
+    assert "take_react_1_ron" in tokens
+    assert "take_react_2_ron" in tokens
+    assert "pass_react_0_chi_voluntary" in tokens
+    assert "pingju_sanchahou" in tokens
 
 
 def test_riichi_ankan_requires_waits_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -688,7 +688,7 @@ def test_kaigang_after_minkan_discard_keeps_discard_reaction(
     assert "z1" in dora_tiles
     assert "discard_0_p1" in tokens
     assert "tsumogiri" in tokens
-    assert "pass_react_1_chi_forced_rule" in tokens
+    assert "pass_react_1_chi_voluntary" in tokens
 
 
 def test_multiple_kaigang_reveals_after_consecutive_kans(monkeypatch: pytest.MonkeyPatch) -> None:

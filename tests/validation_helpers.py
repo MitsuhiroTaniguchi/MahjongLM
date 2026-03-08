@@ -12,7 +12,22 @@ from tenhou_tokenizer.engine import (
 )
 
 
-TENBO_TOKENS = {"TENBO_PLUS", "TENBO_MINUS", "TENBO_ZERO", "TENBO_10000", "TENBO_5000", "TENBO_1000", "TENBO_500", "TENBO_100"}
+TENBO_TOKENS = {
+    "TENBO_PLUS",
+    "TENBO_MINUS",
+    "TENBO_ZERO",
+    "TENBO_100",
+    "TENBO_200",
+    "TENBO_300",
+    "TENBO_500",
+    "TENBO_1000",
+    "TENBO_2000",
+    "TENBO_3000",
+    "TENBO_5000",
+    "TENBO_10000",
+    "TENBO_20000",
+    "TENBO_30000",
+}
 TILE_TOKENS = {
     *(f"m{i}" for i in range(10)),
     *(f"p{i}" for i in range(10)),
@@ -21,7 +36,7 @@ TILE_TOKENS = {
 }
 RED_CHOICE_TOKENS = {"red_chi_used", "red_chi_not_used", "red_pon_used", "red_pon_not_used"}
 DISCARD_MARKER_TOKENS = {"tedashi", "tsumogiri"}
-REACTION_PASS_SUFFIXES = ("_voluntary", "_forced_rule", "_forced_priority")
+REACTION_PASS_SUFFIXES = ("_voluntary", "_forced_priority")
 
 
 def _consume_tenbo_payload(tokens: Sequence[str], start: int) -> int:
@@ -34,8 +49,8 @@ def _consume_tenbo_payload(tokens: Sequence[str], start: int) -> int:
     assert idx < len(tokens)
     saw_unit = False
     while idx < len(tokens) and tokens[idx] in TENBO_TOKENS - {"TENBO_PLUS", "TENBO_MINUS", "TENBO_ZERO"}:
-        saw_unit = True
         idx += 1
+        saw_unit = True
     assert saw_unit
     return idx
 
@@ -147,6 +162,7 @@ class TokenStreamFSM:
         self.phase = StreamPhase.RESULT
         self.expected_score_delta_seat = 0
         self.allow_post_tsumo_pass_self = allow_post_tsumo_pass_self
+        self.awaiting_ron_score_block = False
 
     def _consume_result_token(self, token: str) -> bool:
         assert not token.startswith("opt_self_")
@@ -205,7 +221,12 @@ class TokenStreamFSM:
 
     def _consume_action_token(self, token: str) -> bool:
         if self.awaiting_ron_score_block:
-            assert token.startswith("take_react_") or token.startswith("pass_react_") or token.startswith("score_delta_")
+            assert (
+                token.startswith("take_react_")
+                or token.startswith("pass_react_")
+                or token.startswith("score_delta_")
+                or token == "pingju_sanchahou"
+            )
         if token.startswith("opt_self_"):
             key = token.replace("opt_self_", "", 1)
             if key.endswith("_kyushukyuhai"):
@@ -465,6 +486,10 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
             token.startswith("pass_self_")
             or token.startswith("pass_react_")
             or token.endswith("_kyushukyuhai") and token.startswith("take_self_")
+            or token == "take_react_0_ron"
+            or token == "take_react_1_ron"
+            or token == "take_react_2_ron"
+            or token == "take_react_3_ron"
             for token in emitted[:pingju_idx]
         )
         assert len([token for token in emitted if token.startswith("score_delta_")]) == 4
@@ -502,8 +527,8 @@ def trace_round_token_slices(round_data: list[dict]) -> tuple[TenhouTokenizer, l
         before_token_count = len(tokenizer.tokens)
 
         if tokenizer.pending_reaction and not tokenizer._is_reaction_continuation(key, value):
-            close_reason = "forced_rule" if key == "pingju" else "voluntary"
-            tokenizer._finalize_reaction(close_reason=close_reason)
+            if key != "pingju":
+                tokenizer._finalize_reaction(close_reason="voluntary")
         if tokenizer.pending_self and not tokenizer._is_self_resolution(key, value):
             tokenizer._finalize_self(set())
 

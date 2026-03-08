@@ -198,6 +198,309 @@ def test_compute_reaction_options_haitei_allows_only_ron(monkeypatch: pytest.Mon
     assert reaction.options_by_player == {1: {"ron"}, 2: {"ron"}, 3: {"ron"}}
 
 
+def test_compute_reaction_options_rejects_chi_when_kuikae_leaves_no_legal_discard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine, "PM_SIMULATION_API_AVAILABLE", False)
+
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    p = tokenizer.players[1]
+    p.concealed = [0] * 34
+    p.concealed[tile_to_index("m1")] = 1
+    p.concealed[tile_to_index("m2")] = 2
+    p.concealed[tile_to_index("m3")] = 1
+
+    monkeypatch.setattr(engine, "_pm_wait_mask", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(engine, "_pm_has_hupai_multi", lambda cases: [False] * len(cases))
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=tile_to_index("m2"))
+
+    assert reaction is not None
+    assert "chi" not in reaction.options_by_player.get(1, set())
+
+
+def test_compute_reaction_options_allows_chi_when_only_outer_tile_remains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine, "PM_SIMULATION_API_AVAILABLE", False)
+
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    p = tokenizer.players[1]
+    p.concealed = [0] * 34
+    p.concealed[tile_to_index("m2")] = 1
+    p.concealed[tile_to_index("m3")] = 1
+    p.concealed[tile_to_index("m5")] = 1
+
+    monkeypatch.setattr(engine, "_pm_wait_mask", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(engine, "_pm_has_hupai_multi", lambda cases: [False] * len(cases))
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=tile_to_index("m4"))
+
+    assert reaction is not None
+    assert "chi" in reaction.options_by_player.get(1, set())
+
+
+def test_compute_reaction_options_rejects_high_side_chi_when_only_opposite_outer_tile_remains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine, "PM_SIMULATION_API_AVAILABLE", False)
+
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    p = tokenizer.players[1]
+    p.concealed = [0] * 34
+    p.concealed[tile_to_index("m2")] = 1
+    p.concealed[tile_to_index("m3")] = 1
+    p.concealed[tile_to_index("m1")] = 1
+
+    monkeypatch.setattr(engine, "_pm_wait_mask", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(engine, "_pm_has_hupai_multi", lambda cases: [False] * len(cases))
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=tile_to_index("m4"))
+
+    assert reaction is None or "chi" not in reaction.options_by_player.get(1, set())
+
+
+def test_compute_reaction_options_rejects_low_side_chi_when_only_opposite_outer_tile_remains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine, "PM_SIMULATION_API_AVAILABLE", False)
+
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    p = tokenizer.players[1]
+    p.concealed = [0] * 34
+    p.concealed[tile_to_index("m2")] = 1
+    p.concealed[tile_to_index("m3")] = 1
+    p.concealed[tile_to_index("m4")] = 1
+
+    monkeypatch.setattr(engine, "_pm_wait_mask", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(engine, "_pm_has_hupai_multi", lambda cases: [False] * len(cases))
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=tile_to_index("m1"))
+
+    assert reaction is None or "chi" not in reaction.options_by_player.get(1, set())
+
+
+def test_compute_reaction_options_rejects_pon_when_kuikae_leaves_no_legal_discard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine, "PM_SIMULATION_API_AVAILABLE", False)
+
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    p = tokenizer.players[2]
+    p.concealed = [0] * 34
+    p.concealed[tile_to_index("m2")] = 3
+
+    monkeypatch.setattr(engine, "_pm_wait_mask", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(engine, "_pm_has_hupai_multi", lambda cases: [False] * len(cases))
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=tile_to_index("m2"))
+
+    assert reaction is not None
+    assert "pon" not in reaction.options_by_player.get(2, set())
+
+
+def test_compute_reaction_options_filters_illegal_chi_from_simulation_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine, "PM_SIMULATION_API_AVAILABLE", True)
+    monkeypatch.setattr(engine, "PM_SHOUPAI_SIMULATION_API_AVAILABLE", False)
+    monkeypatch.setattr(engine, "PM_STATELESS_SIMULATION_API_AVAILABLE", True)
+
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    p = tokenizer.players[1]
+    p.concealed = [0] * 34
+    p.concealed[tile_to_index("m1")] = 1
+    p.concealed[tile_to_index("m2")] = 2
+    p.concealed[tile_to_index("m3")] = 1
+
+    monkeypatch.setattr(
+        engine.pm,
+        "compute_reaction_option_masks",
+        lambda *_args, **_kwargs: [(1, engine.REACT_OPT_CHI)],
+    )
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=tile_to_index("m2"))
+
+    assert reaction is None
+
+
+def test_compute_reaction_options_keeps_legal_outer_tile_chi_from_simulation_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine, "PM_SIMULATION_API_AVAILABLE", True)
+    monkeypatch.setattr(engine, "PM_SHOUPAI_SIMULATION_API_AVAILABLE", False)
+    monkeypatch.setattr(engine, "PM_STATELESS_SIMULATION_API_AVAILABLE", True)
+
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    p = tokenizer.players[1]
+    p.concealed = [0] * 34
+    p.concealed[tile_to_index("m2")] = 1
+    p.concealed[tile_to_index("m3")] = 1
+    p.concealed[tile_to_index("m5")] = 1
+
+    monkeypatch.setattr(
+        engine.pm,
+        "compute_reaction_option_masks",
+        lambda *_args, **_kwargs: [(1, engine.REACT_OPT_CHI)],
+    )
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=tile_to_index("m4"))
+
+    assert reaction is not None
+    assert reaction.options_by_player == {1: {"chi"}}
+
+
+def test_compute_reaction_options_filters_illegal_edge_kuikae_chi_from_simulation_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine, "PM_SIMULATION_API_AVAILABLE", True)
+    monkeypatch.setattr(engine, "PM_SHOUPAI_SIMULATION_API_AVAILABLE", False)
+    monkeypatch.setattr(engine, "PM_STATELESS_SIMULATION_API_AVAILABLE", True)
+
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    p = tokenizer.players[1]
+    p.concealed = [0] * 34
+    p.concealed[tile_to_index("m2")] = 1
+    p.concealed[tile_to_index("m3")] = 1
+    p.concealed[tile_to_index("m1")] = 1
+
+    monkeypatch.setattr(
+        engine.pm,
+        "compute_reaction_option_masks",
+        lambda *_args, **_kwargs: [(1, engine.REACT_OPT_CHI)],
+    )
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=tile_to_index("m4"))
+
+    assert reaction is None
+
+
+def test_compute_reaction_options_pm_stateless_enforces_kuikae_without_tokenizer_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine, "PM_SIMULATION_API_AVAILABLE", True)
+    monkeypatch.setattr(engine, "PM_SHOUPAI_SIMULATION_API_AVAILABLE", False)
+    monkeypatch.setattr(engine, "PM_STATELESS_SIMULATION_API_AVAILABLE", True)
+
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    monkeypatch.setattr(
+        tokenizer,
+        "_filter_reaction_call_options",
+        lambda discarder, tile_idx, options_by_player: options_by_player,
+    )
+
+    p = tokenizer.players[1]
+    p.concealed = [0] * 34
+    p.concealed[tile_to_index("m1")] = 1
+    p.concealed[tile_to_index("m2")] = 2
+    p.concealed[tile_to_index("m3")] = 1
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=tile_to_index("m2"))
+    assert reaction is not None
+    assert reaction.options_by_player == {1: {"pon"}}
+
+    p.concealed = [0] * 34
+    p.concealed[tile_to_index("m2")] = 1
+    p.concealed[tile_to_index("m3")] = 1
+    p.concealed[tile_to_index("m5")] = 1
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=tile_to_index("m4"))
+    assert reaction is not None
+    assert reaction.options_by_player == {1: {"chi"}}
+
+
+def test_compute_reaction_options_pm_shoupai_enforces_kuikae_without_tokenizer_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine, "PM_SIMULATION_API_AVAILABLE", True)
+    monkeypatch.setattr(engine, "PM_SHOUPAI_SIMULATION_API_AVAILABLE", True)
+    monkeypatch.setattr(engine, "PM_STATELESS_SIMULATION_API_AVAILABLE", True)
+
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    monkeypatch.setattr(
+        tokenizer,
+        "_filter_reaction_call_options",
+        lambda discarder, tile_idx, options_by_player: options_by_player,
+    )
+
+    p = tokenizer.players[1]
+    p.concealed = [0] * 34
+    p.concealed[tile_to_index("m1")] = 1
+    p.concealed[tile_to_index("m2")] = 2
+    p.concealed[tile_to_index("m3")] = 1
+    p.sim_shoupai = engine.pm.Shoupai(tuple(p.concealed))
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=tile_to_index("m2"))
+    assert reaction is not None
+    assert reaction.options_by_player == {1: {"pon"}}
+
+    p.concealed = [0] * 34
+    p.concealed[tile_to_index("m2")] = 1
+    p.concealed[tile_to_index("m3")] = 1
+    p.concealed[tile_to_index("m5")] = 1
+    p.sim_shoupai = engine.pm.Shoupai(tuple(p.concealed))
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=tile_to_index("m4"))
+    assert reaction is not None
+    assert reaction.options_by_player == {1: {"chi"}}
+
+
+def test_compute_reaction_options_allows_red_five_outer_tile_chi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine, "PM_SIMULATION_API_AVAILABLE", False)
+
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    p = tokenizer.players[1]
+    p.concealed = [0] * 34
+    p.concealed[tile_to_index("p4")] = 1
+    p.concealed[tile_to_index("p5")] = 1
+    p.concealed[tile_to_index("p7")] = 1
+    p.red_fives["p"] = 1
+
+    monkeypatch.setattr(engine, "_pm_wait_mask", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(engine, "_pm_has_hupai_multi", lambda cases: [False] * len(cases))
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=tile_to_index("p6"))
+
+    assert reaction is not None
+    assert reaction.options_by_player == {1: {"chi"}}
+
+
+def test_compute_reaction_options_keeps_multiple_legal_chi_shapes_when_one_survives_kuikae(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine, "PM_SIMULATION_API_AVAILABLE", False)
+
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    p = tokenizer.players[1]
+    p.concealed = [0] * 34
+    p.concealed[tile_to_index("m1")] = 1
+    p.concealed[tile_to_index("m2")] = 1
+    p.concealed[tile_to_index("m4")] = 1
+    p.concealed[tile_to_index("m5")] = 1
+
+    monkeypatch.setattr(engine, "_pm_wait_mask", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(engine, "_pm_has_hupai_multi", lambda cases: [False] * len(cases))
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=tile_to_index("m3"))
+
+    assert reaction is not None
+    assert reaction.options_by_player == {1: {"chi"}}
+
+
 def test_compute_kakan_reaction_options_seat_matrix(monkeypatch: pytest.MonkeyPatch) -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
@@ -576,7 +879,7 @@ def test_is_self_resolution_matrix(key: str, value: dict, expected: bool) -> Non
     assert tokenizer._is_self_resolution(key, value) is expected
 
 
-def test_pending_riichi_actor_clears_on_ron_and_forced_rule() -> None:
+def test_pending_riichi_actor_clears_on_ron_and_voluntary_close() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
     tokenizer.pending_reaction = ReactionDecision(
@@ -598,9 +901,9 @@ def test_pending_riichi_actor_clears_on_ron_and_forced_rule() -> None:
         trigger="discard",
     )
     tokenizer.pending_riichi_actor = 0
-    tokenizer._finalize_reaction(close_reason="forced_rule")
+    tokenizer._finalize_reaction(close_reason="voluntary")
     assert tokenizer.pending_riichi_actor is None
-    assert tokenizer.players[0].score == 25000
+    assert tokenizer.players[0].score == 24000
 
 
 def test_pm_has_hupai_multi_uses_context_enabled_has_hupai_multi(monkeypatch: pytest.MonkeyPatch) -> None:
