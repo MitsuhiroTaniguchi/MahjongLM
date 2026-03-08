@@ -547,6 +547,7 @@ class TenhouTokenizer:
         self.kyoku = 0
         self.dealer_seat = 0
         self.initial_qijia = 0
+        self.has_initial_qijia = False
         self.first_turn_open_calls_seen = False
         self.last_draw_was_gangzimo = False
         self.expected_draw_actor: Optional[int] = None
@@ -570,27 +571,28 @@ class TenhouTokenizer:
         self.expected_discard_actor = None
         self.awaiting_kaigang = 0
         self.initial_qijia = 0
+        self.has_initial_qijia = False
         if "qijia" in game:
             self.initial_qijia = self._require_seat(game["qijia"], field="game.qijia")
+            self.has_initial_qijia = True
         for round_data in log:
             self._process_round(round_data)
         self._flush_pending()
-        final_scores = self._current_game_order_scores()
         if "defen" in game:
             final_scores = [
                 self._require_score(score, field=f"game.defen[{seat}]")
                 for seat, score in enumerate(self._require_four(game["defen"], field="game.defen"))
             ]
-        final_ranks = self._compute_final_rank_places(final_scores)
-        if "rank" in game:
-            expected_final_ranks = [
-                self._require_rank_place(rank, field=f"game.rank[{seat}]")
-                for seat, rank in enumerate(self._require_four(game["rank"], field="game.rank"))
-            ]
-            if expected_final_ranks != final_ranks:
-                raise TokenizeError("game.rank does not match reconstructed final ranks")
-        self.tokens.extend(self._build_final_score_block(final_scores))
-        self.tokens.extend(self._build_final_rank_block(final_ranks))
+            final_ranks = self._compute_final_rank_places(final_scores)
+            if "rank" in game:
+                expected_final_ranks = [
+                    self._require_rank_place(rank, field=f"game.rank[{seat}]")
+                    for seat, rank in enumerate(self._require_four(game["rank"], field="game.rank"))
+                ]
+                if expected_final_ranks != final_ranks:
+                    raise TokenizeError("game.rank does not match reconstructed final ranks")
+            self.tokens.extend(self._build_final_score_block(final_scores))
+            self.tokens.extend(self._build_final_rank_block(final_ranks))
         self.tokens.append("game_end")
         return self.tokens
 
@@ -867,6 +869,8 @@ class TenhouTokenizer:
         return scores
 
     def _compute_final_rank_places(self, scores: List[int]) -> List[int]:
+        if not self.has_initial_qijia and len(set(scores)) != len(scores):
+            raise TokenizeError("game.qijia is required to reconstruct tied final ranks")
         order_keys = [((seat - self.initial_qijia) % 4) for seat in range(4)]
         return self._compute_rank_places(scores, order_keys)
 
@@ -2061,7 +2065,8 @@ class TenhouTokenizer:
         for seat in range(4):
             self.players[seat].score += deltas[seat]
         self.tokens.extend(self._build_score_delta_block(deltas))
-        self.tokens.extend(self._build_rank_block(self._compute_round_rank_places()))
+        if baojia is None or not more_ron_expected:
+            self.tokens.extend(self._build_rank_block(self._compute_round_rank_places()))
 
     def _on_pingju(self, p: dict) -> None:
         self._require_round_initialized()

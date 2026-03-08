@@ -224,6 +224,24 @@ def test_tokenize_game_uses_top_level_final_defen_for_final_score_block() -> Non
     assert "TENBO_1000" in tokens[final_score_idx : tokens.index("final_score_1")]
 
 
+def test_tokenize_game_omits_final_suffix_without_top_level_defen() -> None:
+    tokens = TenhouTokenizer().tokenize_game({"log": [[qipai_event(), pingju_event()]]})
+    assert "final_score_0" not in tokens
+    assert "final_rank_0_1" not in tokens
+    assert tokens[-1] == "game_end"
+
+
+def test_tokenize_game_requires_qijia_for_tied_final_rank_reconstruction() -> None:
+    with pytest.raises(TokenizeError, match="game.qijia"):
+        TenhouTokenizer().tokenize_game(
+            {
+                "defen": [25000, 25000, 24000, 26000],
+                "rank": [2, 3, 4, 1],
+                "log": [[qipai_event(), pingju_event()]],
+            }
+        )
+
+
 def test_tokenize_game_validates_top_level_final_rank() -> None:
     with pytest.raises(TokenizeError, match="game.rank"):
         TenhouTokenizer().tokenize_game(
@@ -244,6 +262,31 @@ def test_round_rank_tie_break_uses_rotated_seat_order() -> None:
 
     rank_tokens = tokenizer.tokens[-4:]
     assert rank_tokens == ["rank_0_3", "rank_1_4", "rank_2_1", "rank_3_2"]
+
+
+def test_multi_ron_emits_round_rank_tokens_only_after_last_hule() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_reaction = engine.ReactionDecision(
+        discarder=0,
+        discard_tile=tile_to_index("m1"),
+        options_by_player={1: {"ron"}, 2: {"ron"}},
+        trigger="discard",
+    )
+
+    tokenizer._on_hule(
+        {"l": 1, "baojia": 0, "fenpei": [0, -1000, 1000, 0]},
+        more_ron_expected=True,
+        remaining_ron_winners={1, 2},
+    )
+    assert not any(token.startswith("rank_") for token in tokenizer.tokens)
+
+    tokenizer._on_hule(
+        {"l": 2, "baojia": 0, "fenpei": [0, 0, 1000, -1000]},
+        more_ron_expected=False,
+        remaining_ron_winners={2},
+    )
+    assert tokenizer.tokens[-4:] == ["rank_0_2", "rank_1_3", "rank_2_1", "rank_3_4"]
 
 
 def test_pingju_unknown_name_is_rejected() -> None:

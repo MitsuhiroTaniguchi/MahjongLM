@@ -406,11 +406,16 @@ def validate_score_rotation(game: dict) -> None:
         )
     if rounds:
         tokenizer = TenhouTokenizer()
-        tokenizer.initial_qijia = int(game.get("qijia", 0))
+        if "qijia" in game:
+            tokenizer.initial_qijia = int(game["qijia"])
+            tokenizer.has_initial_qijia = True
         for round_data in rounds:
             tokenizer._process_round(round_data)
-        final_scores = game["defen"] if "defen" in game else tokenizer._current_game_order_scores()
-        if "rank" in game:
+        if "defen" in game:
+            final_scores = game["defen"]
+        else:
+            final_scores = None
+        if final_scores is not None and "rank" in game:
             assert tokenizer._compute_final_rank_places(final_scores) == game["rank"]
 
 
@@ -554,8 +559,9 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
         if delta_positions:
             assert len(delta_positions) == 4
             rank_positions = [i for i, token in enumerate(emitted) if _is_rank_token(token)]
-            assert len(rank_positions) == 4
-            assert rank_positions[0] > delta_positions[-1]
+            assert len(rank_positions) in {0, 4}
+            if rank_positions:
+                assert rank_positions[0] > delta_positions[-1]
         return
 
     if event_key == "pingju":
