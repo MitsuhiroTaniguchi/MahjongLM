@@ -39,6 +39,22 @@ DISCARD_MARKER_TOKENS = {"tedashi", "tsumogiri"}
 REACTION_PASS_SUFFIXES = ("_voluntary", "_forced_priority")
 
 
+def _is_rank_token(token: str) -> bool:
+    parts = token.split("_")
+    return len(parts) == 3 and parts[0] == "rank" and parts[1] in {"0", "1", "2", "3"} and parts[2] in {"1", "2", "3", "4"}
+
+
+def _is_final_rank_token(token: str) -> bool:
+    parts = token.split("_")
+    return (
+        len(parts) == 4
+        and parts[0] == "final"
+        and parts[1] == "rank"
+        and parts[2] in {"0", "1", "2", "3"}
+        and parts[3] in {"1", "2", "3", "4"}
+    )
+
+
 def _consume_tenbo_payload(tokens: Sequence[str], start: int) -> int:
     assert start < len(tokens)
     head = tokens[start]
@@ -103,10 +119,14 @@ class TokenStreamFSM:
     seen_react: set[str] = field(default_factory=set)
     saw_call_in_round: bool = False
     expected_score_delta_seat: int | None = None
+    expected_rank_seat: int | None = None
     allow_post_tsumo_pass_self: bool = False
     started_round: bool = False
     pending_kaigang_reveals: int = 0
     awaiting_ron_score_block: bool = False
+    expected_final_score_seat: int | None = None
+    expected_final_rank_seat: int | None = None
+    saw_final_suffix: bool = False
 
     def validate(self) -> None:
         assert self.tokens.count("game_start") == 1
@@ -130,8 +150,12 @@ class TokenStreamFSM:
                 continue
             if token == "game_end":
                 self._assert_round_closed()
+                if self.expected_final_score_seat is not None or self.expected_final_rank_seat is not None:
+                    raise AssertionError("final suffix is incomplete before game_end")
                 assert self.idx == len(self.tokens) - 1
                 self.idx += 1
+                continue
+            if self._consume_final_token(token):
                 continue
             if self.phase is StreamPhase.RESULT or self.awaiting_ron_score_block:
                 if self._consume_result_token(token):
@@ -147,6 +171,7 @@ class TokenStreamFSM:
         self.saw_call_in_round = False
         self.phase = StreamPhase.ACTIONS
         self.expected_score_delta_seat = None
+        self.expected_rank_seat = None
         self.allow_post_tsumo_pass_self = False
         self.pending_kaigang_reveals = 0
         self.awaiting_ron_score_block = False
@@ -155,6 +180,7 @@ class TokenStreamFSM:
     def _assert_round_closed(self) -> None:
         assert self.phase is StreamPhase.RESULT
         assert self.expected_score_delta_seat is None
+        assert self.expected_rank_seat is None
         assert not self.allow_post_tsumo_pass_self
         assert not self.awaiting_ron_score_block
 
@@ -214,8 +240,19 @@ class TokenStreamFSM:
             self.allow_post_tsumo_pass_self = False
             if self.expected_score_delta_seat == 3:
                 self.expected_score_delta_seat = None
+                self.expected_rank_seat = 0
             else:
                 self.expected_score_delta_seat += 1
+            return True
+        if _is_rank_token(token):
+            assert self.expected_rank_seat is not None
+            seat = int(token.split("_")[1])
+            assert seat == self.expected_rank_seat
+            self.idx += 1
+            if self.expected_rank_seat == 3:
+                self.expected_rank_seat = None
+            else:
+                self.expected_rank_seat += 1
             return True
         return False
 
@@ -309,12 +346,44 @@ class TokenStreamFSM:
             return True
         return False
 
+    def _consume_final_token(self, token: str) -> bool:
+        if token.startswith("final_score_"):
+            assert self.started_round
+            self._assert_round_closed()
+            if self.expected_final_score_seat is None and self.expected_final_rank_seat is None:
+                self.expected_final_score_seat = 0
+                self.saw_final_suffix = True
+            assert self.expected_final_score_seat is not None
+            seat = int(token.split("_")[2])
+            assert seat == self.expected_final_score_seat
+            self.idx = _consume_tenbo_payload(self.tokens, self.idx + 1)
+            if self.expected_final_score_seat == 3:
+                self.expected_final_score_seat = None
+                self.expected_final_rank_seat = 0
+            else:
+                self.expected_final_score_seat += 1
+            return True
+        if _is_final_rank_token(token):
+            assert self.expected_final_score_seat is None
+            assert self.expected_final_rank_seat is not None
+            seat = int(token.split("_")[2])
+            assert seat == self.expected_final_rank_seat
+            self.idx += 1
+            if self.expected_final_rank_seat == 3:
+                self.expected_final_rank_seat = None
+            else:
+                self.expected_final_rank_seat += 1
+            return True
+        return False
+
     def _fail_unexpected_token(self, token: str) -> None:
         assert token not in TILE_TOKENS
         assert token not in TENBO_TOKENS
         assert token not in DISCARD_MARKER_TOKENS
         assert token not in RED_CHOICE_TOKENS
         assert not token.startswith("chi_pos_")
+        assert not _is_rank_token(token)
+        assert not _is_final_rank_token(token)
         raise AssertionError(f"unexpected token in stream validator: {token}")
 
 
@@ -335,6 +404,14 @@ def validate_score_rotation(game: dict) -> None:
             internal_scores[offset:] + internal_scores[:offset] == expected_scores
             for offset in range(4)
         )
+    if rounds:
+        tokenizer = TenhouTokenizer()
+        tokenizer.initial_qijia = int(game.get("qijia", 0))
+        for round_data in rounds:
+            tokenizer._process_round(round_data)
+        final_scores = game["defen"] if "defen" in game else tokenizer._current_game_order_scores()
+        if "rank" in game:
+            assert tokenizer._compute_final_rank_places(final_scores) == game["rank"]
 
 
 def validate_player_state_invariants(tokenizer: TenhouTokenizer) -> None:
@@ -476,6 +553,9 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
         delta_positions = [i for i, token in enumerate(emitted) if token.startswith("score_delta_")]
         if delta_positions:
             assert len(delta_positions) == 4
+            rank_positions = [i for i, token in enumerate(emitted) if _is_rank_token(token)]
+            assert len(rank_positions) == 4
+            assert rank_positions[0] > delta_positions[-1]
         return
 
     if event_key == "pingju":
@@ -493,6 +573,7 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
             for token in emitted[:pingju_idx]
         )
         assert len([token for token in emitted if token.startswith("score_delta_")]) == 4
+        assert len([token for token in emitted if _is_rank_token(token)]) == 4
         return
 
 

@@ -544,7 +544,9 @@ class TenhouTokenizer:
         self.round_index = 0
         self.live_draws_left = 70
         self.bakaze = 0
+        self.kyoku = 0
         self.dealer_seat = 0
+        self.initial_qijia = 0
         self.first_turn_open_calls_seen = False
         self.last_draw_was_gangzimo = False
         self.expected_draw_actor: Optional[int] = None
@@ -567,9 +569,28 @@ class TenhouTokenizer:
         self.expected_draw_actor = None
         self.expected_discard_actor = None
         self.awaiting_kaigang = 0
+        self.initial_qijia = 0
+        if "qijia" in game:
+            self.initial_qijia = self._require_seat(game["qijia"], field="game.qijia")
         for round_data in log:
             self._process_round(round_data)
         self._flush_pending()
+        final_scores = self._current_game_order_scores()
+        if "defen" in game:
+            final_scores = [
+                self._require_score(score, field=f"game.defen[{seat}]")
+                for seat, score in enumerate(self._require_four(game["defen"], field="game.defen"))
+            ]
+        final_ranks = self._compute_final_rank_places(final_scores)
+        if "rank" in game:
+            expected_final_ranks = [
+                self._require_rank_place(rank, field=f"game.rank[{seat}]")
+                for seat, rank in enumerate(self._require_four(game["rank"], field="game.rank"))
+            ]
+            if expected_final_ranks != final_ranks:
+                raise TokenizeError("game.rank does not match reconstructed final ranks")
+        self.tokens.extend(self._build_final_score_block(final_scores))
+        self.tokens.extend(self._build_final_rank_block(final_ranks))
         self.tokens.append("game_end")
         return self.tokens
 
@@ -614,6 +635,12 @@ class TenhouTokenizer:
         if value % 100 != 0:
             raise TokenizeError(f"score value must be a multiple of 100: {value}")
         return value
+
+    def _require_rank_place(self, value: object, *, field: str) -> int:
+        value_int = self._require_int(value, field=field)
+        if value_int < 1 or value_int > 4:
+            raise TokenizeError(f"{field} must be an integer between 1 and 4")
+        return value_int
 
     def _process_round(self, round_data: list) -> None:
         if not isinstance(round_data, list):
@@ -727,6 +754,19 @@ class TenhouTokenizer:
             block.extend(encode_tenbo_tokens(deltas[seat]))
         return block
 
+    def _build_rank_block(self, places: List[int]) -> List[str]:
+        return [f"rank_{seat}_{place}" for seat, place in enumerate(places)]
+
+    def _build_final_score_block(self, scores: List[int]) -> List[str]:
+        block: List[str] = []
+        for seat, score in enumerate(scores):
+            block.append(f"final_score_{seat}")
+            block.extend(encode_tenbo_tokens(score))
+        return block
+
+    def _build_final_rank_block(self, places: List[int]) -> List[str]:
+        return [f"final_rank_{seat}_{place}" for seat, place in enumerate(places)]
+
     def _build_reaction_detail_block(
         self,
         *,
@@ -804,6 +844,31 @@ class TenhouTokenizer:
             block.append(f"haipai_{seat}")
             block.extend(sorted(hand_tiles, key=token_tile_sort_key))
         return block
+
+    def _game_seat_for_round_seat(self, seat: int) -> int:
+        return (self.initial_qijia + self.kyoku + seat) % 4
+
+    def _compute_rank_places(self, scores: List[int], order_keys: List[int]) -> List[int]:
+        sorted_seats = sorted(range(4), key=lambda seat: (-scores[seat], order_keys[seat]))
+        places = [0] * 4
+        for place, seat in enumerate(sorted_seats, start=1):
+            places[seat] = place
+        return places
+
+    def _compute_round_rank_places(self) -> List[int]:
+        scores = [player.score for player in self.players]
+        order_keys = [(self.kyoku + seat) % 4 for seat in range(4)]
+        return self._compute_rank_places(scores, order_keys)
+
+    def _current_game_order_scores(self) -> List[int]:
+        scores = [0] * 4
+        for seat, player in enumerate(self.players):
+            scores[self._game_seat_for_round_seat(seat)] = player.score
+        return scores
+
+    def _compute_final_rank_places(self, scores: List[int]) -> List[int]:
+        order_keys = [((seat - self.initial_qijia) % 4) for seat in range(4)]
+        return self._compute_rank_places(scores, order_keys)
 
     def _can_consume_concealed_token(
         self,
@@ -1071,6 +1136,7 @@ class TenhouTokenizer:
 
         self.live_draws_left = 70
         self.bakaze = bakaze
+        self.kyoku = kyoku
         # Tenhou JSON used here is seat-rotated so dealer is always seat 0.
         self.dealer_seat = 0
         self.first_turn_open_calls_seen = False
@@ -1995,6 +2061,7 @@ class TenhouTokenizer:
         for seat in range(4):
             self.players[seat].score += deltas[seat]
         self.tokens.extend(self._build_score_delta_block(deltas))
+        self.tokens.extend(self._build_rank_block(self._compute_round_rank_places()))
 
     def _on_pingju(self, p: dict) -> None:
         self._require_round_initialized()
@@ -2025,6 +2092,7 @@ class TenhouTokenizer:
         for seat in range(4):
             self.players[seat].score += deltas[seat]
         self.tokens.extend(self._build_score_delta_block(deltas))
+        self.tokens.extend(self._build_rank_block(self._compute_round_rank_places()))
 
     def _kyushukyuhai_actor(self, shoupai: object) -> Optional[int]:
         if self.pending_self and "kyushukyuhai" in self.pending_self.options:

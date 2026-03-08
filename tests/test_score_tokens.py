@@ -98,6 +98,17 @@ def test_result_emits_score_delta_as_tenbo_tokens() -> None:
     assert tokenizer.tokens[i2 + 1] == "TENBO_ZERO"
 
 
+def test_result_emits_round_rank_tokens_after_score_deltas() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_self = engine.SelfDecision(actor=0, options={"tsumo"})
+    tokenizer._on_hule({"l": 0, "fenpei": [-3900, 3900, 0, 0]})
+
+    delta_idx = tokenizer.tokens.index("score_delta_3")
+    rank_tokens = tokenizer.tokens[delta_idx + 2 : delta_idx + 6]
+    assert rank_tokens == ["rank_0_4", "rank_1_1", "rank_2_2", "rank_3_3"]
+
+
 def test_hule_emits_ron_then_score_deltas_in_seat_order() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
@@ -155,6 +166,84 @@ def test_pingju_emits_draw_name_before_score_deltas() -> None:
     draw_idx = tokenizer.tokens.index("pingju_ryukyoku")
     delta_positions = [tokenizer.tokens.index(f"score_delta_{seat}") for seat in range(4)]
     assert draw_idx < delta_positions[0] < delta_positions[1] < delta_positions[2] < delta_positions[3]
+
+
+def test_pingju_emits_round_rank_tokens_after_score_deltas() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer._on_pingju({"name": "流局", "fenpei": [1000, -1000, 0, 0]})
+
+    delta_idx = tokenizer.tokens.index("score_delta_3")
+    rank_tokens = tokenizer.tokens[delta_idx + 2 : delta_idx + 6]
+    assert rank_tokens == ["rank_0_1", "rank_1_4", "rank_2_2", "rank_3_3"]
+
+
+def test_tokenize_game_emits_final_scores_and_final_ranks_before_game_end() -> None:
+    tokens = TenhouTokenizer().tokenize_game(
+        {
+            "qijia": 0,
+            "defen": [25000, 25000, 25000, 25000],
+            "rank": [1, 2, 3, 4],
+            "log": [[qipai_event(), pingju_event()]],
+        }
+    )
+
+    final_score_idx = tokens.index("final_score_0")
+    final_rank_idx = tokens.index("final_rank_0_1")
+    assert tokens[final_score_idx : final_score_idx + 3] == [
+        "final_score_0",
+        "TENBO_PLUS",
+        "TENBO_20000",
+    ]
+    assert final_score_idx < final_rank_idx < len(tokens) - 1
+    assert tokens[final_rank_idx : final_rank_idx + 4] == [
+        "final_rank_0_1",
+        "final_rank_1_2",
+        "final_rank_2_3",
+        "final_rank_3_4",
+    ]
+    assert tokens[-1] == "game_end"
+
+
+def test_tokenize_game_uses_top_level_final_defen_for_final_score_block() -> None:
+    tokens = TenhouTokenizer().tokenize_game(
+        {
+            "qijia": 0,
+            "defen": [26000, 24000, 25000, 25000],
+            "rank": [1, 4, 2, 3],
+            "log": [[qipai_event(), pingju_event()]],
+        }
+    )
+    final_score_idx = tokens.index("final_score_0")
+    assert tokens[final_score_idx : final_score_idx + 4] == [
+        "final_score_0",
+        "TENBO_PLUS",
+        "TENBO_20000",
+        "TENBO_5000",
+    ]
+    assert "TENBO_1000" in tokens[final_score_idx : tokens.index("final_score_1")]
+
+
+def test_tokenize_game_validates_top_level_final_rank() -> None:
+    with pytest.raises(TokenizeError, match="game.rank"):
+        TenhouTokenizer().tokenize_game(
+            {
+                "qijia": 0,
+                "defen": [25000, 25000, 25000, 25000],
+                "rank": [4, 3, 2, 1],
+                "log": [[qipai_event(), pingju_event()]],
+            }
+        )
+
+
+def test_round_rank_tie_break_uses_rotated_seat_order() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer.initial_qijia = 1
+    tokenizer._on_qipai(qipai_payload(jushu=2))
+    tokenizer._on_pingju({"name": "流局", "fenpei": [0, 0, 0, 0]})
+
+    rank_tokens = tokenizer.tokens[-4:]
+    assert rank_tokens == ["rank_0_3", "rank_1_4", "rank_2_1", "rank_3_2"]
 
 
 def test_pingju_unknown_name_is_rejected() -> None:

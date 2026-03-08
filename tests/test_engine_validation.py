@@ -149,7 +149,7 @@ def test_trace_round_token_slices_emits_event_ordered_blocks() -> None:
     assert any(token.startswith("discard_0_") for token in traces[2]["tokens"])
     assert any(token.startswith("pingju_") for token in traces[3]["tokens"])
     assert any(token == "score_delta_3" for token in traces[3]["tokens"])
-    assert tokenizer.tokens[-1] == "TENBO_ZERO"
+    assert tokenizer.tokens[-1] == "rank_3_4"
 
 
 def test_trace_round_token_slices_matches_multi_ron_declined_pass_order(
