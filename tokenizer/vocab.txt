@@ -33,6 +33,11 @@ TENBO_10000
 TENBO_20000
 TENBO_30000
 dora
+ura_dora
+opened_hand_0
+opened_hand_1
+opened_hand_2
+opened_hand_3
 m1
 m2
 m3

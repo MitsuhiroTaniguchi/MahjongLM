@@ -23,6 +23,7 @@ from tests.validation_helpers import (
 ROOT = Path(__file__).resolve().parents[1]
 SANMA_RAW = ROOT / "tests" / "fixtures" / "tenhou" / "2014091101gm-00b9-0000-5ca6b487.txt"
 CONVERT = ROOT / "scripts" / "paifu_scraping" / "convert.pl"
+KAN_MULTI_URA_GAME_ID = "2023/2023112600gm-00a9-0000-1bc26cca.txt"
 
 
 def _convert_sanma_sample() -> dict:
@@ -62,6 +63,25 @@ def test_converted_sanma_game_emits_hule_detail_tokens() -> None:
     assert "yaku_menzen_tsumo" in tokens
     assert "han_6" in tokens
     assert "fu_30" in tokens
+
+
+def test_dataset_game_with_kan_emits_multiple_ura_dora_reveals() -> None:
+    if not DATASET_2023.exists():
+        pytest.skip(f"missing dataset: {DATASET_2023}")
+
+    with zipfile.ZipFile(DATASET_2023) as zf:
+        game = json.load(zf.open(KAN_MULTI_URA_GAME_ID))
+
+    assert any(
+        isinstance(event, dict) and ("gang" in event or "kaigang" in event)
+        for event in game["log"][4]
+    )
+
+    tokens = TenhouTokenizer().tokenize_game(game)
+
+    ura_idx = tokens.index("ura_dora")
+    assert tokens[ura_idx : ura_idx + 4] == ["ura_dora", "p2", "s2", "m4"]
+    assert tokens.count("yaku_ura_dora") == 7
 
 
 def test_stepwise_validation_accepts_call_then_discard_round() -> None:

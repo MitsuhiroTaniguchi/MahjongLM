@@ -65,6 +65,11 @@ def _is_rule_token(token: str) -> bool:
 
 
 def _is_hule_detail_token(token: str) -> bool:
+    if token.startswith("opened_hand_"):
+        parts = token.split("_")
+        return len(parts) == 3 and parts[2].isdigit()
+    if token == "ura_dora":
+        return True
     if token.startswith("yaku_"):
         return True
     if token.startswith("han_") or token.startswith("fu_") or token.startswith("yakuman_"):
@@ -258,7 +263,10 @@ class TokenStreamFSM:
         if _is_hule_detail_token(token):
             assert self.expected_rank_seat is None
             assert self.expected_score_delta_seat in {None, 0}
-            self.idx += 1
+            if token == "ura_dora" or token.startswith("opened_hand_"):
+                self.idx = _consume_tile_payload(self.tokens, self.idx + 1, minimum=1)
+            else:
+                self.idx += 1
             return True
         if token.startswith("score_delta_"):
             if self.expected_score_delta_seat is None:
@@ -589,20 +597,31 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
     if event_key == "hule":
         if any(token.startswith("take_react_") and token.endswith("_ron") for token in emitted):
             first_delta_idx = next(i for i, token in enumerate(emitted) if token.startswith("score_delta_"))
-            assert all(
-                token.startswith("take_react_") or token.startswith("pass_react_") or _is_hule_detail_token(token)
-                for token in emitted[:first_delta_idx]
-            )
+            idx = 0
+            while idx < first_delta_idx:
+                token = emitted[idx]
+                if token.startswith("take_react_") or token.startswith("pass_react_"):
+                    idx += 1
+                    continue
+                if token == "ura_dora" or token.startswith("opened_hand_"):
+                    idx = _consume_tile_payload(emitted, idx + 1, minimum=1)
+                    continue
+                assert _is_hule_detail_token(token)
+                idx += 1
         elif any(token.startswith("score_delta_") for token in emitted):
             first_delta_idx = next(i for i, token in enumerate(emitted) if token.startswith("score_delta_"))
             assert any(token.startswith("take_self_") and token.endswith("_tsumo") for token in emitted[:first_delta_idx])
-            assert all(
-                token.startswith("take_self_")
-                or token.startswith("pass_self_")
-                or token in TILE_TOKENS
-                or _is_hule_detail_token(token)
-                for token in emitted[:first_delta_idx]
-            )
+            idx = 0
+            while idx < first_delta_idx:
+                token = emitted[idx]
+                if token.startswith("take_self_") or token.startswith("pass_self_") or token in TILE_TOKENS:
+                    idx += 1
+                    continue
+                if token == "ura_dora" or token.startswith("opened_hand_"):
+                    idx = _consume_tile_payload(emitted, idx + 1, minimum=1)
+                    continue
+                assert _is_hule_detail_token(token)
+                idx += 1
         delta_positions = [i for i, token in enumerate(emitted) if token.startswith("score_delta_")]
         if delta_positions:
             seat_count = len(delta_positions)
@@ -627,6 +646,12 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
         delta_count = len([token for token in emitted if token.startswith("score_delta_")])
         assert delta_count in {3, 4}
         assert len([token for token in emitted if _is_rank_token(token)]) == delta_count
+        first_delta_idx = next(i for i, token in enumerate(emitted) if token.startswith("score_delta_"))
+        idx = pingju_idx + 1
+        while idx < first_delta_idx:
+            token = emitted[idx]
+            assert token.startswith("opened_hand_")
+            idx = _consume_tile_payload(emitted, idx + 1, minimum=1)
         return
 
 

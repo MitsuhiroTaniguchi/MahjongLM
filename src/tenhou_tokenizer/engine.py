@@ -112,6 +112,8 @@ HUPAI_TOKEN_BY_NAME = {
     "裏ドラ": "yaku_ura_dora",
     "赤ドラ": "yaku_aka_dora",
 }
+DORA_HUPAI_NAMES = frozenset({"ドラ", "裏ドラ", "赤ドラ"})
+RIICHI_HUPAI_NAMES = frozenset({"立直", "両立直"})
 SELF_OPT_TSUMO = int(getattr(pm, "SELF_OPT_TSUMO", 1 << 0))
 SELF_OPT_RIICHI = int(getattr(pm, "SELF_OPT_RIICHI", 1 << 1))
 SELF_OPT_ANKAN = int(getattr(pm, "SELF_OPT_ANKAN", 1 << 2))
@@ -271,6 +273,24 @@ def encode_tenbo_tokens(value: int) -> List[str]:
     if remaining != 0:
         raise TokenizeError(f"score value cannot be represented by tenbo units: {value}")
     return tokens
+
+
+def _opened_hand_tokens(seat: int, hand_text: str) -> List[str]:
+    tiles = sorted(_parse_tiles(hand_text, stop_at_comma=True, context="opened_hand"), key=token_tile_sort_key)
+    if not tiles:
+        return []
+    return [f"opened_hand_{seat}", *tiles]
+
+
+def _opened_hule_hand_tokens(seat: int, hand_text: str) -> List[str]:
+    tiles = _parse_tiles(hand_text, stop_at_comma=True, context="hule_opened_hand")
+    if not tiles:
+        return []
+    # Tenhou hule.shoupai includes the winning tile as the last concealed tile.
+    concealed_tiles = sorted(tiles[:-1], key=token_tile_sort_key)
+    if not concealed_tiles:
+        return []
+    return [f"opened_hand_{seat}", *concealed_tiles]
 
 
 def classify_fulou(meld_tiles: List[int]) -> str:
@@ -2277,7 +2297,7 @@ class TenhouTokenizer:
                 raise TokenizeError("tsumo action was not offered")
             self._finalize_self({"tsumo"}, actor=winner)
 
-        detail_tokens = self._build_hule_detail_block(h)
+        detail_tokens = self._build_hule_detail_block(h, winner=winner)
         deltas = [self._require_score(delta, field=f"hule.fenpei[{seat}]") for seat, delta in enumerate(fenpei)]
         self.tokens.extend(detail_tokens)
         for seat in range(self.seat_count):
@@ -2294,6 +2314,9 @@ class TenhouTokenizer:
             raise TokenizeError("pingju.name must be a string")
         fenpei = self._require_seat_list(p["fenpei"], field="pingju.fenpei")
         normalized_name = self._normalize_pingju_name(name)
+        kyushukyuhai_actor = None
+        if name == "九種九牌":
+            kyushukyuhai_actor = self._kyushukyuhai_actor(p.get("shoupai"))
         if self.pending_reaction:
             if normalized_name == "sanchahou":
                 ron_seats = [
@@ -2306,11 +2329,10 @@ class TenhouTokenizer:
                 for seat in ron_seats:
                     self.pending_reaction.chosen[seat] = "ron"
             self._finalize_reaction(close_reason="voluntary")
-        if name == "九種九牌":
-            actor = self._kyushukyuhai_actor(p.get("shoupai"))
-            if actor is not None:
-                self._finalize_self({"kyushukyuhai"}, actor=actor)
+        if name == "九種九牌" and kyushukyuhai_actor is not None:
+            self._finalize_self({"kyushukyuhai"}, actor=kyushukyuhai_actor)
         self.tokens.append(f"pingju_{normalized_name}")
+        self.tokens.extend(self._build_pingju_opened_hand_block(p, kyushukyuhai_actor=kyushukyuhai_actor))
         deltas = [self._require_score(delta, field=f"pingju.fenpei[{seat}]") for seat, delta in enumerate(fenpei)]
         for seat in range(self.seat_count):
             self.players[seat].score += deltas[seat]
@@ -2341,9 +2363,49 @@ class TenhouTokenizer:
             return mapping[text]
         raise TokenizeError(f"unknown pingju.name: {text}")
 
-    def _build_hule_detail_block(self, h: dict) -> List[str]:
+    def _build_pingju_opened_hand_block(self, p: dict, *, kyushukyuhai_actor: int | None = None) -> List[str]:
+        name = p.get("name")
+        if name in {"流し満貫", "四風連打", "四槓散了"}:
+            return []
+        shoupai = p.get("shoupai")
+        if shoupai is None:
+            return []
+        if not isinstance(shoupai, list):
+            raise TokenizeError("pingju.shoupai must be a list")
         block: List[str] = []
+        for seat, hand in enumerate(shoupai):
+            if not isinstance(hand, str):
+                raise TokenizeError(f"pingju.shoupai[{seat}] must be a string")
+            if kyushukyuhai_actor is not None and seat != kyushukyuhai_actor:
+                continue
+            block.extend(_opened_hand_tokens(seat, hand))
+        return block
+
+    def _build_hule_detail_block(self, h: dict, *, winner: int) -> List[str]:
+        block: List[str] = []
+        shoupai = h.get("shoupai")
+        if shoupai is not None:
+            if not isinstance(shoupai, str):
+                raise TokenizeError("hule.shoupai must be a string")
+            block.extend(_opened_hule_hand_tokens(winner, shoupai))
         hupai = h.get("hupai")
+        has_riichi_yaku = False
+        if isinstance(hupai, list):
+            for idx, entry in enumerate(hupai):
+                if not isinstance(entry, dict):
+                    raise TokenizeError(f"hule.hupai[{idx}] must be a dict")
+                name = entry.get("name")
+                if isinstance(name, str) and name in RIICHI_HUPAI_NAMES:
+                    has_riichi_yaku = True
+                    break
+        fubaopai = h.get("fubaopai")
+        if fubaopai is not None:
+            if not isinstance(fubaopai, list):
+                raise TokenizeError("hule.fubaopai must be a list")
+            if has_riichi_yaku:
+                block.append("ura_dora")
+                for idx, tile in enumerate(fubaopai):
+                    block.append(token_tile(_strip_tile_suffix(self._require_str(tile, field=f"hule.fubaopai[{idx}]"))))
         if hupai is not None:
             if not isinstance(hupai, list):
                 raise TokenizeError("hule.hupai must be a list")
@@ -2362,7 +2424,10 @@ class TenhouTokenizer:
                 token = HUPAI_TOKEN_BY_NAME.get(name)
                 if token is None:
                     raise TokenizeError(f"unknown hule.hupai name: {name}")
-                block.append(token)
+                repeat = 1
+                if name in DORA_HUPAI_NAMES and isinstance(fanshu_value, int):
+                    repeat = fanshu_value
+                block.extend([token] * repeat)
 
         damanguan = h.get("damanguan")
         if damanguan is not None:

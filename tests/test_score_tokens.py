@@ -196,7 +196,318 @@ def test_hule_emits_yaku_summary_tokens_before_score_deltas() -> None:
     delta_idx = tokenizer.tokens.index("score_delta_0")
     assert tsumo_idx < yaku_idx < han_idx < fu_idx < delta_idx
     assert "yaku_menzen_tsumo" in tokenizer.tokens
-    assert "yaku_dora" in tokenizer.tokens
+    assert tokenizer.tokens.count("yaku_dora") == 2
+
+
+def test_hule_repeats_each_dora_family_token_by_fanshu() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_self = engine.SelfDecision(actor=0, options={"tsumo"})
+
+    tokenizer._on_hule(
+        {
+            "l": 0,
+            "fenpei": [-3900, 3900, 0, 0],
+            "hupai": [
+                {"name": "立直", "fanshu": 1},
+                {"name": "ドラ", "fanshu": 2},
+                {"name": "赤ドラ", "fanshu": 2},
+                {"name": "裏ドラ", "fanshu": 3},
+            ],
+            "fanshu": 8,
+            "fu": 30,
+        }
+    )
+
+    assert tokenizer.tokens.count("yaku_riichi") == 1
+    assert tokenizer.tokens.count("yaku_dora") == 2
+    assert tokenizer.tokens.count("yaku_aka_dora") == 2
+    assert tokenizer.tokens.count("yaku_ura_dora") == 3
+
+
+def test_hule_emits_ura_dora_reveal_tiles_for_riichi_win() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_self = engine.SelfDecision(actor=0, options={"tsumo"})
+
+    tokenizer._on_hule(
+        {
+            "l": 0,
+            "fenpei": [-3900, 3900, 0, 0],
+            "hupai": [
+                {"name": "立直", "fanshu": 1},
+                {"name": "ドラ", "fanshu": 1},
+                {"name": "裏ドラ", "fanshu": 2},
+            ],
+            "fubaopai": ["m1", "p9"],
+            "fanshu": 4,
+            "fu": 30,
+        }
+    )
+
+    ura_idx = tokenizer.tokens.index("ura_dora")
+    assert tokenizer.tokens[ura_idx : ura_idx + 3] == ["ura_dora", "m1", "p9"]
+    assert tokenizer.tokens.count("yaku_ura_dora") == 2
+
+
+def test_hule_emits_opened_winning_hand_without_meld_tiles() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_self = engine.SelfDecision(actor=0, options={"tsumo"})
+
+    tokenizer._on_hule(
+        {
+            "l": 0,
+            "fenpei": [-3900, 3900, 0, 0],
+            "hupai": [{"name": "立直", "fanshu": 1}],
+            "shoupai": "p40888s34099z333p3,b,z111=,s9999-",
+            "fanshu": 1,
+            "fu": 30,
+        }
+    )
+
+    opened_idx = tokenizer.tokens.index("opened_hand_0")
+    assert tokenizer.tokens[opened_idx : opened_idx + 14] == [
+        "opened_hand_0",
+        "p4",
+        "p0",
+        "p8",
+        "p8",
+        "p8",
+        "s3",
+        "s4",
+        "s0",
+        "s9",
+        "s9",
+        "z3",
+        "z3",
+        "z3",
+    ]
+    assert "z1" not in tokenizer.tokens[opened_idx : opened_idx + 20]
+    assert "p3" not in tokenizer.tokens[opened_idx : opened_idx + 20]
+
+
+def test_hule_emits_opened_ron_hand_without_winning_tile() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_reaction = engine.ReactionDecision(
+        discarder=0,
+        discard_tile=tile_to_index("m1"),
+        options_by_player={1: {"ron"}},
+    )
+
+    tokenizer._on_hule(
+        {
+            "l": 1,
+            "baojia": 0,
+            "fenpei": [-3900, 3900, 0, 0],
+            "hupai": [{"name": "立直", "fanshu": 1}],
+            "shoupai": "p1123445678p3,z666-",
+            "fanshu": 1,
+            "fu": 30,
+        }
+    )
+
+    opened_idx = tokenizer.tokens.index("opened_hand_1")
+    assert tokenizer.tokens[opened_idx : opened_idx + 11] == [
+        "opened_hand_1",
+        "p1",
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "p4",
+        "p5",
+        "p6",
+        "p7",
+        "p8",
+    ]
+
+
+def test_hule_does_not_emit_ura_dora_reveal_without_riichi() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_self = engine.SelfDecision(actor=0, options={"tsumo"})
+
+    tokenizer._on_hule(
+        {
+            "l": 0,
+            "fenpei": [-3900, 3900, 0, 0],
+            "hupai": [
+                {"name": "門前清自摸和", "fanshu": 1},
+                {"name": "裏ドラ", "fanshu": 2},
+            ],
+            "fubaopai": ["m1", "p9"],
+            "fanshu": 3,
+            "fu": 30,
+        }
+    )
+
+    assert "ura_dora" not in tokenizer.tokens
+    assert tokenizer.tokens.count("yaku_ura_dora") == 2
+
+
+def test_pingju_emits_opened_hands_for_non_empty_shoupai_entries_only() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    tokenizer._on_pingju(
+        {
+            "name": "流局",
+            "fenpei": [1000, -1000, 0, 0],
+            "shoupai": ["m123p456s789z11,p777-", "", "p4067z123,b", ""],
+        }
+    )
+
+    first_idx = tokenizer.tokens.index("opened_hand_0")
+    second_idx = tokenizer.tokens.index("opened_hand_2")
+    assert first_idx < second_idx
+    assert tokenizer.tokens[first_idx : first_idx + 12] == [
+        "opened_hand_0",
+        "m1",
+        "m2",
+        "m3",
+        "p4",
+        "p5",
+        "p6",
+        "s7",
+        "s8",
+        "s9",
+        "z1",
+        "z1",
+    ]
+    assert tokenizer.tokens[second_idx : second_idx + 8] == [
+        "opened_hand_2",
+        "p4",
+        "p0",
+        "p6",
+        "p7",
+        "z1",
+        "z2",
+        "z3",
+    ]
+    assert "opened_hand_1" not in tokenizer.tokens
+    assert "opened_hand_3" not in tokenizer.tokens
+
+
+def test_nagashimangan_does_not_emit_opened_hands() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    tokenizer._on_pingju(
+        {
+            "name": "流し満貫",
+            "fenpei": [4000, -2000, -1000, -1000],
+            "shoupai": ["m123p456s789z11", "", "", ""],
+        }
+    )
+
+    assert "pingju_nagashimangan" in tokenizer.tokens
+    assert all(not token.startswith("opened_hand_") for token in tokenizer.tokens)
+
+
+def test_suufonrenda_does_not_emit_opened_hands() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    tokenizer._on_pingju(
+        {
+            "name": "四風連打",
+            "fenpei": [0, 0, 0, 0],
+            "shoupai": ["m123", "p456", "", ""],
+        }
+    )
+
+    assert "pingju_sufonrenda" in tokenizer.tokens
+    assert all(not token.startswith("opened_hand_") for token in tokenizer.tokens)
+
+
+def test_sukantsu_does_not_emit_opened_hands() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    tokenizer._on_pingju(
+        {
+            "name": "四槓散了",
+            "fenpei": [0, 0, 0, 0],
+            "shoupai": ["m123", "", "s789", ""],
+        }
+    )
+
+    assert "pingju_sukantsu" in tokenizer.tokens
+    assert all(not token.startswith("opened_hand_") for token in tokenizer.tokens)
+
+
+def test_suuchariichi_still_emits_opened_hands() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+
+    tokenizer._on_pingju(
+        {
+            "name": "四家立直",
+            "fenpei": [0, 0, 0, 0],
+            "shoupai": [
+                "p22245679s56777",
+                "m333340567s3367",
+                "m44p40678s340,s8888",
+                "p1233388999s123",
+            ],
+        }
+    )
+
+    assert "pingju_suuchariichi" in tokenizer.tokens
+    assert tokenizer.tokens.count("opened_hand_0") == 1
+    assert tokenizer.tokens.count("opened_hand_1") == 1
+    assert tokenizer.tokens.count("opened_hand_2") == 1
+    assert tokenizer.tokens.count("opened_hand_3") == 1
+
+
+def test_kyushukyuhai_emits_opened_hand_when_shoupai_is_present() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_self = engine.SelfDecision(actor=1, options={"kyushukyuhai"})
+
+    tokenizer._on_pingju(
+        {
+            "name": "九種九牌",
+            "fenpei": [0, 0, 0, 0],
+            "shoupai": ["", "m19p19s19z1234", "", ""],
+        }
+    )
+
+    opened_idx = tokenizer.tokens.index("opened_hand_1")
+    assert tokenizer.tokens[opened_idx : opened_idx + 11] == [
+        "opened_hand_1",
+        "m1",
+        "m9",
+        "p1",
+        "p9",
+        "s1",
+        "s9",
+        "z1",
+        "z2",
+        "z3",
+        "z4",
+    ]
+
+
+def test_kyushukyuhai_opened_hand_uses_only_declaring_actor_on_converter_variant() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_self = engine.SelfDecision(actor=2, options={"kyushukyuhai"})
+
+    tokenizer._on_pingju(
+        {
+            "name": "九種九牌",
+            "fenpei": [0, 0, 0, 0],
+            "shoupai": ["m1", "", "m19p19s19z1234", ""],
+        }
+    )
+
+    assert "opened_hand_0" not in tokenizer.tokens
+    assert "opened_hand_1" not in tokenizer.tokens
+    assert tokenizer.tokens.count("opened_hand_2") == 1
+    assert "opened_hand_3" not in tokenizer.tokens
 
 
 def test_hule_emits_yakuman_summary_token() -> None:
@@ -290,6 +601,7 @@ def test_hule_skips_zero_han_hupai_entries() -> None:
 
     assert "yaku_riichi" in tokenizer.tokens
     assert "yaku_ura_dora" not in tokenizer.tokens
+    assert "ura_dora" not in tokenizer.tokens
 
 
 def test_hule_skips_blank_converter_placeholder_name() -> None:
