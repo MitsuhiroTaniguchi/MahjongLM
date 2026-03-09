@@ -1077,5 +1077,5 @@ def test_penuki_replacement_draw_is_treated_as_dead_wall_draw() -> None:
     )
     tokenizer.pending_dead_wall_draw = False
 
-    assert tokenizer.live_draws_left == 55
+    assert tokenizer.live_draws_left == 54
     assert tokenizer.last_draw_was_gangzimo is True

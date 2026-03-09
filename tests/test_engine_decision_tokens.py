@@ -487,6 +487,24 @@ def test_kakan_ron_option_uses_qianggang_context(monkeypatch: pytest.MonkeyPatch
     assert "ron" in reaction.options_by_player.get(1, set())
 
 
+def test_penuki_ron_option_uses_qianggang_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer.seat_count = 3
+    tokenizer._on_qipai(qipai_payload(seat_count=3))
+    offered = tile_to_index("z4")
+
+    monkeypatch.setattr(engine, "_pm_wait_mask", lambda *_args, **_kwargs: 1 << offered)
+    monkeypatch.setattr(
+        engine,
+        "_pm_has_hupai_multi",
+        lambda cases: [bool(case[10]) for case in cases],  # is_qianggang
+    )
+
+    reaction = tokenizer._compute_penuki_reaction_options(actor=0, tile_idx=offered)
+    assert reaction is not None
+    assert "ron" in reaction.options_by_player.get(1, set())
+
+
 def test_ankan_ron_option_requires_kokushi_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
@@ -546,6 +564,34 @@ def test_last_rinshan_discard_sets_houtei_context(monkeypatch: pytest.MonkeyPatc
     tokenizer._on_draw({"l": 0, "p": "m2"}, is_gangzimo=True)
     tokenizer._on_discard({"l": 0, "p": "m2_"})
 
+    assert seen
+    assert all(flags == (True, False, False) for flags in seen)
+
+
+def test_last_penuki_replacement_discard_sets_houtei_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer.seat_count = 3
+    tokenizer._on_qipai(qipai_payload(seat_count=3))
+    tokenizer.live_draws_left = 1
+    tokenizer.players[0].concealed[tile_to_index("z4")] += 1
+    tokenizer.pending_self = engine.SelfDecision(actor=0, options={"penuki"}, option_tiles={"penuki": ["z4"]})
+    offered = tile_to_index("m2")
+    seen: list[tuple[bool, bool, bool]] = []
+
+    monkeypatch.setattr(engine, "_pm_wait_mask", lambda *_args, **_kwargs: 1 << offered)
+
+    def fake_has_hupai_multi(cases: list[tuple[object, ...]]) -> list[bool]:
+        seen.extend((bool(case[8]), bool(case[9]), bool(case[10])) for case in cases)
+        return [False] * len(cases)
+
+    monkeypatch.setattr(engine, "_pm_has_hupai_multi", fake_has_hupai_multi)
+
+    tokenizer._on_penuki({"l": 0, "p": "z4"})
+    tokenizer._on_draw({"l": 0, "p": "m2"}, is_gangzimo=True, is_replacement_draw=True)
+    tokenizer.pending_dead_wall_draw = False
+    tokenizer._on_discard({"l": 0, "p": "m2_"})
+
+    assert tokenizer.live_draws_left == 0
     assert seen
     assert all(flags == (True, False, False) for flags in seen)
 

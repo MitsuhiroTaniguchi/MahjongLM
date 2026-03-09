@@ -1516,7 +1516,7 @@ class TenhouTokenizer:
         self.players[actor].last_draw_tile = tile_token
         self.players[actor].temporary_furiten = False
         self._invalidate_wait_mask(actor)
-        if not is_replacement_draw:
+        if self.live_draws_left > 0:
             self.live_draws_left -= 1
         self.last_draw_was_gangzimo = is_gangzimo
 
@@ -1953,6 +1953,61 @@ class TenhouTokenizer:
             trigger="ankan",
         )
 
+    def _compute_penuki_reaction_options(self, actor: int, tile_idx: int) -> Optional[ReactionDecision]:
+        if self.seat_count != 3:
+            return None
+        options_by_player: Dict[int, Set[str]] = {}
+        ron_cases: List[
+            Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int, bool, bool, bool, bool]
+        ] = []
+        ron_case_seats: List[int] = []
+
+        for seat in range(self.seat_count):
+            if seat == actor:
+                continue
+
+            p = self.players[seat]
+            if p.temporary_furiten or p.riichi_furiten:
+                continue
+
+            wait_mask = self._wait_mask(seat)
+            if self._is_permanent_furiten(seat, wait_mask=wait_mask) or not ((wait_mask >> tile_idx) & 1):
+                continue
+
+            counts_plus = list(p.concealed)
+            counts_plus[tile_idx] += 1
+            ron_cases.append(
+                (
+                    counts_plus,
+                    p.melds,
+                    tile_idx,
+                    False,
+                    (p.open_melds == 0),
+                    p.is_riichi,
+                    self.bakaze,
+                    self._player_wind(seat),
+                    False,
+                    False,
+                    True,
+                    True,
+                )
+            )
+            ron_case_seats.append(seat)
+
+        if ron_cases:
+            for seat, can_ron in zip(ron_case_seats, _pm_has_hupai_multi(ron_cases)):
+                if can_ron:
+                    options_by_player[seat] = {"ron"}
+
+        if not options_by_player:
+            return None
+        return ReactionDecision(
+            discarder=actor,
+            discard_tile=tile_idx,
+            options_by_player=options_by_player,
+            trigger="penuki",
+        )
+
     def _can_chi(self, concealed: List[int], tile_idx: int) -> bool:
         if tile_idx >= 27:
             return False
@@ -2220,8 +2275,12 @@ class TenhouTokenizer:
         self._consume_concealed_token(self.players[actor], tile_token)
         self.players[actor].last_draw_tile = None
         self._invalidate_wait_mask(actor)
+        reaction = self._compute_penuki_reaction_options(actor, tile_to_index(tile_token))
+        if reaction:
+            self.pending_reaction = reaction
+            self.tokens.extend(self._build_reaction_option_block(reaction.options_by_player))
         self.expected_discard_actor = None
-        self.expected_draw_actor = actor
+        self.expected_draw_actor = None if reaction else actor
         self.pending_dead_wall_draw = True
 
     def _emit_non_winning_reaction_passes_before_result(self, remaining_ron_winners: Set[int] | None = None) -> None:

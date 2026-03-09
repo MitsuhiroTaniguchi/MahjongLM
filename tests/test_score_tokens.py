@@ -690,6 +690,28 @@ def test_penuki_marks_first_turn_open_call_seen() -> None:
     assert tokenizer.first_turn_open_calls_seen is True
 
 
+def test_penuki_opens_ron_reaction_window_before_replacement_draw() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer.seat_count = 3
+    tokenizer._on_qipai(qipai_payload(seat_count=3))
+    tokenizer._on_draw({"l": 0, "p": "z4"}, is_gangzimo=False)
+
+    reaction = engine.ReactionDecision(
+        discarder=0,
+        discard_tile=tile_to_index("z4"),
+        options_by_player={1: {"ron"}},
+        trigger="penuki",
+    )
+    tokenizer._compute_penuki_reaction_options = lambda actor, tile_idx: reaction  # type: ignore[method-assign]
+
+    tokenizer._on_penuki({"l": 0, "p": "z4"})
+
+    assert tokenizer.pending_reaction is reaction
+    assert tokenizer.expected_draw_actor is None
+    assert tokenizer.pending_dead_wall_draw is True
+    assert "opt_react_1_ron" in tokenizer.tokens
+
+
 def test_vocab_includes_penuki_self_action_tokens() -> None:
     vocab = (Path(__file__).resolve().parents[1] / "tokenizer" / "vocab.txt").read_text(encoding="utf-8")
 

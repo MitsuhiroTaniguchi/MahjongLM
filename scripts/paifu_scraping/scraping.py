@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import gzip
 import json
 import re
@@ -41,6 +42,9 @@ from tenhou_tokenizer.viewspec import view_artifact_name
 TARGET_PLAYERS = {"三", "四"}
 TARGET_ROUNDS = {"東", "南"}
 TARGET_SPEEDS = {"－", "速"}
+FETCH_SLEEP_SECONDS = 0.05
+PROCESS_WORKERS = 4
+MAX_INFLIGHT_PROCESS_TASKS = 32
 LINE_RE = re.compile(
     r"^\d{2}:\d{2}\s+\|\s+\d+\s+\|\s+(?P<title>[^|]+?)\s+\|\s+"
     r'<a href="https?://tenhou\.net/0/\?log=(?P<log_id>[^"]+)">牌譜</a>'
@@ -209,6 +213,59 @@ def tokenize_game_views_to_files(
         save_token_ids(path, vocab.encode(view.tokens), vocab_fingerprint=vocab.fingerprint)
 
 
+def _process_log_id(
+    *,
+    log_id: str,
+    raw_path: str,
+    json_path: str,
+    tokenized_year_dir: str,
+) -> tuple[str, bool]:
+    raw_path_obj = Path(raw_path)
+    json_path_obj = Path(json_path)
+    tokenized_year_dir_obj = Path(tokenized_year_dir)
+    vocab = Vocabulary.load()
+
+    updated = False
+    if not has_valid_json(json_path_obj):
+        convert_raw_to_json(raw_path_obj, json_path_obj)
+        updated = True
+
+    game = load_json_game(json_path_obj)
+    if has_all_valid_tokenized_views(tokenized_year_dir_obj, vocab, game, log_id):
+        return log_id, updated
+
+    tokenize_game_views_to_files(vocab, game, tokenized_year_dir_obj, log_id)
+    return log_id, True
+
+
+def _drain_completed(
+    pending: dict[concurrent.futures.Future[tuple[str, bool]], str],
+    *,
+    block_until_one: bool,
+) -> tuple[list[tuple[str, bool]], list[tuple[str, BaseException]]]:
+    if not pending:
+        return [], []
+    done, _ = concurrent.futures.wait(
+        pending.keys(),
+        return_when=(
+            concurrent.futures.FIRST_COMPLETED
+            if block_until_one
+            else concurrent.futures.ALL_COMPLETED
+        ),
+    )
+    completed: list[tuple[str, bool]] = []
+    failures: list[tuple[str, BaseException]] = []
+    for future in done:
+        log_id = pending.pop(future)
+        try:
+            completed.append(future.result())
+        except KeyboardInterrupt:
+            raise
+        except BaseException as exc:
+            failures.append((log_id, exc))
+    return completed, failures
+
+
 def main() -> None:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     JSON_DIR.mkdir(parents=True, exist_ok=True)
@@ -221,9 +278,8 @@ def main() -> None:
     if not CONVERT.is_file():
         raise FileNotFoundError(f"convert.pl not found: {CONVERT}")
 
-    vocab = Vocabulary.load()
     save_hf_tokenizer_assets()
-    with requests.Session() as session:
+    with requests.Session() as session, concurrent.futures.ProcessPoolExecutor(max_workers=PROCESS_WORKERS) as executor:
         for year, zip_path in archives:
             raw_year_dir = RAW_DIR / str(year)
             json_year_dir = JSON_DIR / str(year)
@@ -233,6 +289,7 @@ def main() -> None:
             json_year_dir.mkdir(parents=True, exist_ok=True)
             tokenized_year_dir.mkdir(parents=True, exist_ok=True)
             year_updated = False
+            pending_tasks: dict[concurrent.futures.Future[tuple[str, bool]], str] = {}
 
             for line in tqdm(iter_archive_lines(zip_path), desc=str(year)):
                 log_id = parse_log_id(line)
@@ -243,22 +300,34 @@ def main() -> None:
                 json_path = json_year_dir / f"{log_id}.json"
 
                 try:
-                    if not has_valid_json(json_path):
-                        if not has_downloaded_raw(raw_path):
-                            atomic_write_text(raw_path, fetch_log_text(session, log_id))
-                            time.sleep(0.1)
-                        convert_raw_to_json(raw_path, json_path)
-                        year_updated = True
-                    game = load_json_game(json_path)
-                    if has_all_valid_tokenized_views(tokenized_year_dir, vocab, game, log_id):
-                        continue
-                    tokenize_game_views_to_files(vocab, game, tokenized_year_dir, log_id)
-                    year_updated = True
+                    if not has_valid_json(json_path) and not has_downloaded_raw(raw_path):
+                        atomic_write_text(raw_path, fetch_log_text(session, log_id))
+                        time.sleep(FETCH_SLEEP_SECONDS)
+                    future = executor.submit(
+                        _process_log_id,
+                        log_id=log_id,
+                        raw_path=str(raw_path),
+                        json_path=str(json_path),
+                        tokenized_year_dir=str(tokenized_year_dir),
+                    )
+                    pending_tasks[future] = log_id
+                    if len(pending_tasks) >= MAX_INFLIGHT_PROCESS_TASKS:
+                        completed, failures = _drain_completed(pending_tasks, block_until_one=True)
+                        year_updated = year_updated or any(updated for _log_id, updated in completed)
+                        for failed_log_id, exc in failures:
+                            print(failed_log_id)
+                            print(exc)
                 except KeyboardInterrupt:
                     raise
                 except Exception as exc:
                     print(log_id)
                     print(exc)
+
+            completed, failures = _drain_completed(pending_tasks, block_until_one=False)
+            year_updated = year_updated or any(updated for _log_id, updated in completed)
+            for failed_log_id, exc in failures:
+                print(failed_log_id)
+                print(exc)
 
             if year_updated or not hf_dataset_year_dir.exists():
                 save_year_hf_dataset(
