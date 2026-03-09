@@ -40,6 +40,3 @@ docs/references/legacy_colab/
 # Large local datasets
 data/raw/tenhou/
 data/processed/
-
-# Local paifu scraping workspace
-scripts/paifu_scraping/

@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONVERT = ROOT / "tests" / "fixtures" / "tenhou" / "convert.pl"
+CONVERT = ROOT / "scripts" / "paifu_scraping" / "convert.pl"
 SANMA_RAW = ROOT / "tests" / "fixtures" / "tenhou" / "2014091101gm-00b9-0000-5ca6b487.txt"
 
 

@@ -506,7 +506,7 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
             token = emitted[idx]
             assert token.startswith("opt_self_")
             idx += 1
-            if token.endswith("_ankan") or token.endswith("_kakan"):
+            if token.endswith("_ankan") or token.endswith("_kakan") or token.endswith("_penuki"):
                 saw_tile = False
                 while idx < len(emitted) and emitted[idx] in TILE_TOKENS:
                     saw_tile = True
@@ -575,7 +575,7 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
         take_positions = [i for i, token in enumerate(emitted) if token.startswith("take_self_")]
         assert len(take_positions) == 1
         take_idx = take_positions[0]
-        assert all(token.startswith("pass_self_") or token.startswith("opt_self_") or token in TILE_TOKENS for token in emitted[:take_idx + 2])
+        assert all(token.startswith("pass_self_") or token.startswith("opt_self_") or token in TILE_TOKENS for token in emitted[:take_idx])
         assert emitted[take_idx].endswith("_penuki")
         assert emitted[take_idx + 1] == "z4"
         return
@@ -667,6 +667,10 @@ def trace_round_token_slices(round_data: list[dict]) -> tuple[TenhouTokenizer, l
             tokenizer._finalize_self(set())
 
         if key == "qipai":
+            if isinstance(value, dict):
+                shoupai = value.get("shoupai")
+                if isinstance(shoupai, list) and len(shoupai) in {3, 4}:
+                    tokenizer.seat_count = len(shoupai)
             tokenizer._on_qipai(value)
         elif key == "zimo":
             tokenizer._on_draw(value, is_gangzimo=False)
@@ -676,6 +680,8 @@ def trace_round_token_slices(round_data: list[dict]) -> tuple[TenhouTokenizer, l
             tokenizer._on_discard(value)
         elif key == "fulou":
             tokenizer._on_fulou(value)
+        elif key == "penuki":
+            tokenizer._on_penuki(value)
         elif key == "gang":
             tokenizer._on_gang(value)
         elif key == "kaigang":
