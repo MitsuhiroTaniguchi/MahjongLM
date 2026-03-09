@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import pymahjong  # noqa: F401
 
@@ -57,10 +59,49 @@ def test_tokenize_game_emits_three_player_rule_token_from_title() -> None:
     tokens = TenhouTokenizer().tokenize_game(
         {
             "title": "三鳳南喰赤",
-            "log": [[qipai_event(), pingju_event()]],
+            "log": [[qipai_event(seat_count=3), pingju_event(seat_count=3)]],
         }
     )
     assert tokens[:4] == ["game_start", "rule_player_3", "rule_length_hanchan", "round_start"]
+
+
+def test_tokenize_game_emits_inferred_three_player_rule_token_without_title() -> None:
+    tokens = TenhouTokenizer().tokenize_game(
+        {
+            "log": [[qipai_event(seat_count=3), pingju_event(seat_count=3)]],
+        }
+    )
+    assert tokens[:3] == ["game_start", "rule_player_3", "round_start"]
+
+
+def test_sanma_multi_player_simulation_is_enabled_when_three_player_api_exists() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer.seat_count = 3
+
+    assert tokenizer._use_multi_player_simulation() is (
+        engine.PM_STATELESS_SIMULATION_API_AVAILABLE and engine.PM_THREE_PLAYER_API_AVAILABLE
+    )
+
+
+def test_sanma_simulation_stays_disabled_when_only_shoupai_helpers_exist() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer.seat_count = 3
+
+    original_stateless = engine.PM_STATELESS_SIMULATION_API_AVAILABLE
+    original_sim = engine.PM_SIMULATION_API_AVAILABLE
+    original_shoupai = engine.PM_SHOUPAI_SIMULATION_API_AVAILABLE
+    original_three_player = engine.PM_THREE_PLAYER_API_AVAILABLE
+    engine.PM_STATELESS_SIMULATION_API_AVAILABLE = False
+    engine.PM_SIMULATION_API_AVAILABLE = True
+    engine.PM_SHOUPAI_SIMULATION_API_AVAILABLE = True
+    engine.PM_THREE_PLAYER_API_AVAILABLE = True
+    try:
+        assert tokenizer._use_multi_player_simulation() is False
+    finally:
+        engine.PM_STATELESS_SIMULATION_API_AVAILABLE = original_stateless
+        engine.PM_SIMULATION_API_AVAILABLE = original_sim
+        engine.PM_SHOUPAI_SIMULATION_API_AVAILABLE = original_shoupai
+        engine.PM_THREE_PLAYER_API_AVAILABLE = original_three_player
 
 
 def test_qipai_emits_honba_and_riichi_sticks_as_tenbo_tokens() -> None:
@@ -127,6 +168,240 @@ def test_result_emits_round_rank_tokens_after_score_deltas() -> None:
     delta_idx = tokenizer.tokens.index("score_delta_3")
     rank_tokens = tokenizer.tokens[delta_idx + 2 : delta_idx + 6]
     assert rank_tokens == ["rank_0_4", "rank_1_1", "rank_2_2", "rank_3_3"]
+
+
+def test_hule_emits_yaku_summary_tokens_before_score_deltas() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_self = engine.SelfDecision(actor=0, options={"tsumo"})
+
+    tokenizer._on_hule(
+        {
+            "l": 0,
+            "fenpei": [-3900, 3900, 0, 0],
+            "hupai": [
+                {"name": "立直", "fanshu": 1},
+                {"name": "門前清自摸和", "fanshu": 1},
+                {"name": "ドラ", "fanshu": 2},
+            ],
+            "fanshu": 4,
+            "fu": 30,
+        }
+    )
+
+    tsumo_idx = tokenizer.tokens.index("take_self_0_tsumo")
+    yaku_idx = tokenizer.tokens.index("yaku_riichi")
+    han_idx = tokenizer.tokens.index("han_4")
+    fu_idx = tokenizer.tokens.index("fu_30")
+    delta_idx = tokenizer.tokens.index("score_delta_0")
+    assert tsumo_idx < yaku_idx < han_idx < fu_idx < delta_idx
+    assert "yaku_menzen_tsumo" in tokenizer.tokens
+    assert "yaku_dora" in tokenizer.tokens
+
+
+def test_hule_emits_yakuman_summary_token() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_reaction = engine.ReactionDecision(
+        discarder=0,
+        discard_tile=tile_to_index("m1"),
+        options_by_player={1: {"ron"}},
+    )
+
+    tokenizer._on_hule(
+        {
+            "l": 1,
+            "baojia": 0,
+            "fenpei": [-16000, 16000, 0, 0],
+            "hupai": [{"name": "国士無双", "fanshu": "*"}],
+            "damanguan": 1,
+        }
+    )
+
+    assert "yaku_kokushi_musou" in tokenizer.tokens
+    assert "yakuman_1" in tokenizer.tokens
+    assert "han_13" not in tokenizer.tokens
+    assert "fu_30" not in tokenizer.tokens
+
+
+def test_hule_clamps_13_plus_han_to_han_13() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_self = engine.SelfDecision(actor=0, options={"tsumo"})
+
+    tokenizer._on_hule(
+        {
+            "l": 0,
+            "fenpei": [-16000, 16000, 0, 0],
+            "hupai": [{"name": "ドラ", "fanshu": 13}],
+            "fanshu": 13,
+            "fu": 30,
+        }
+    )
+
+    assert "han_13" in tokenizer.tokens
+    assert "yakuman_1" not in tokenizer.tokens
+    assert "fu_30" in tokenizer.tokens
+    assert "han_15" not in tokenizer.tokens
+
+
+def test_hule_rejects_unknown_yaku_name() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_self = engine.SelfDecision(actor=0, options={"tsumo"})
+
+    with pytest.raises(TokenizeError, match="unknown hule.hupai name"):
+        tokenizer._on_hule(
+            {
+                "l": 0,
+                "fenpei": [-3900, 3900, 0, 0],
+                "hupai": [{"name": "未知役", "fanshu": 1}],
+                "fanshu": 1,
+                "fu": 30,
+            }
+        )
+
+
+def test_three_player_qipai_initializes_sanma_live_draw_count() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer.seat_count = 3
+    tokenizer._on_qipai(qipai_payload(seat_count=3))
+
+    assert tokenizer.live_draws_left == 55
+
+
+def test_hule_skips_zero_han_hupai_entries() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_self = engine.SelfDecision(actor=0, options={"tsumo"})
+
+    tokenizer._on_hule(
+        {
+            "l": 0,
+            "fenpei": [-3900, 3900, 0, 0],
+            "hupai": [
+                {"name": "立直", "fanshu": 1},
+                {"name": "裏ドラ", "fanshu": 0},
+            ],
+            "fanshu": 1,
+            "fu": 30,
+        }
+    )
+
+    assert "yaku_riichi" in tokenizer.tokens
+    assert "yaku_ura_dora" not in tokenizer.tokens
+
+
+def test_hule_skips_blank_converter_placeholder_name() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_self = engine.SelfDecision(actor=0, options={"tsumo"})
+
+    tokenizer._on_hule(
+        {
+            "l": 0,
+            "fenpei": [-3900, 3900, 0, 0],
+            "hupai": [
+                {"name": "", "fanshu": 1},
+                {"name": "立直", "fanshu": 1},
+            ],
+            "fanshu": 1,
+            "fu": 30,
+        }
+    )
+
+    assert "yaku_riichi" in tokenizer.tokens
+
+
+def test_three_player_self_options_respect_simulated_penuki_mask() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer.seat_count = 3
+    tokenizer.players = [engine.PlayerState(concealed=[0] * 34, score=25000) for _ in range(3)]
+    tokenizer.players[0].concealed[tile_to_index("z4")] = 1
+    tokenizer.live_draws_left = 10
+
+    original_simulation = engine.PM_SIMULATION_API_AVAILABLE
+    original_three_player = engine.PM_THREE_PLAYER_API_AVAILABLE
+    original_supports = engine.PM_STATELESS_SIMULATION_API_AVAILABLE
+    original_pm = engine.pm
+    engine.PM_SIMULATION_API_AVAILABLE = True
+    engine.PM_THREE_PLAYER_API_AVAILABLE = True
+    engine.PM_STATELESS_SIMULATION_API_AVAILABLE = True
+
+    class _FakePm:
+        @staticmethod
+        def compute_self_option_mask(*args):
+            return 0
+
+    engine.pm = _FakePm()
+    try:
+        options = tokenizer._compute_self_options(actor=0, drawn_tile=tile_to_index("m1"), is_gangzimo=False)
+    finally:
+        engine.pm = original_pm
+        engine.PM_SIMULATION_API_AVAILABLE = original_simulation
+        engine.PM_THREE_PLAYER_API_AVAILABLE = original_three_player
+        engine.PM_STATELESS_SIMULATION_API_AVAILABLE = original_supports
+
+    assert "penuki" not in options
+
+
+def test_three_player_fallback_self_options_offer_penuki() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer.seat_count = 3
+    tokenizer.players = [engine.PlayerState(concealed=[0] * 34, score=25000) for _ in range(3)]
+    tokenizer.players[0].concealed[tile_to_index("z4")] = 1
+    tokenizer.live_draws_left = 10
+
+    original_simulation = engine.PM_SIMULATION_API_AVAILABLE
+    original_three_player = engine.PM_THREE_PLAYER_API_AVAILABLE
+    engine.PM_SIMULATION_API_AVAILABLE = False
+    engine.PM_THREE_PLAYER_API_AVAILABLE = False
+    try:
+        options = tokenizer._compute_self_options(actor=0, drawn_tile=tile_to_index("m1"), is_gangzimo=False)
+    finally:
+        engine.PM_SIMULATION_API_AVAILABLE = original_simulation
+        engine.PM_THREE_PLAYER_API_AVAILABLE = original_three_player
+
+    assert "penuki" in options
+
+
+def test_penuki_marks_first_turn_open_call_seen() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer.seat_count = 3
+    tokenizer._on_qipai(qipai_payload(seat_count=3))
+    tokenizer._on_draw({"l": 0, "p": "z4"}, is_gangzimo=False)
+
+    assert tokenizer.first_turn_open_calls_seen is False
+
+    tokenizer._on_penuki({"l": 0, "p": "z4"})
+
+    assert tokenizer.first_turn_open_calls_seen is True
+
+
+def test_vocab_includes_penuki_self_action_tokens() -> None:
+    vocab = (Path(__file__).resolve().parents[1] / "tokenizer" / "vocab.txt").read_text(encoding="utf-8")
+
+    for seat in range(4):
+        assert f"opt_self_{seat}_penuki" in vocab
+        assert f"take_self_{seat}_penuki" in vocab
+        assert f"pass_self_{seat}_penuki" in vocab
+
+
+def test_hule_rejects_fu_above_wikipedia_maximum() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_self = engine.SelfDecision(actor=0, options={"tsumo"})
+
+    with pytest.raises(TokenizeError, match="hule.fu must be at most 110"):
+        tokenizer._on_hule(
+            {
+                "l": 0,
+                "fenpei": [-3900, 3900, 0, 0],
+                "hupai": [{"name": "立直", "fanshu": 1}],
+                "fanshu": 1,
+                "fu": 120,
+            }
+        )
 
 
 def test_hule_emits_ron_then_score_deltas_in_seat_order() -> None:

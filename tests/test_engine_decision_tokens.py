@@ -586,7 +586,7 @@ def test_riichi_ankan_requires_waits_unchanged(monkeypatch: pytest.MonkeyPatch) 
     tile = tile_to_index("m1")
     tokenizer.players[0].concealed[tile] = 4
 
-    def same_waits_mask(_counts: list[int], meld_count: int) -> int:
+    def same_waits_mask(_counts: list[int], meld_count: int, three_player: bool = False) -> int:
         if meld_count in {0, 1}:
             return (1 << tile_to_index("m1")) | (1 << tile_to_index("m2"))
         return 0
@@ -595,7 +595,7 @@ def test_riichi_ankan_requires_waits_unchanged(monkeypatch: pytest.MonkeyPatch) 
     opts = tokenizer._compute_self_options(actor=0, drawn_tile=tile)
     assert "ankan" in opts
 
-    def changed_waits_mask(_counts: list[int], meld_count: int) -> int:
+    def changed_waits_mask(_counts: list[int], meld_count: int, three_player: bool = False) -> int:
         if meld_count == 0:
             return (1 << tile_to_index("m1")) | (1 << tile_to_index("m2"))
         if meld_count == 1:
@@ -640,7 +640,7 @@ def test_riichi_ankan_uses_pre_draw_waits_baseline(monkeypatch: pytest.MonkeyPat
     waits_13_mask = (1 << tile_to_index("m6")) | (1 << tile_to_index("p5"))
     waits_14_mask = waits_13_mask | (1 << tile_to_index("p4"))
 
-    def fake_waits_mask(counts: list[int], meld_count: int) -> int:
+    def fake_waits_mask(counts: list[int], meld_count: int, three_player: bool = False) -> int:
         if meld_count == 0:
             # Distinguish pre-draw(13) from post-draw(14) baseline by drawn tile count.
             return waits_13_mask if counts[draw_tile] == 3 else waits_14_mask

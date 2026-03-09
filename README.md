@@ -13,8 +13,12 @@ At each decision point, the tokenizer emits:
 
 - `opt_self_*` / `pass_self_*` for draw-time choices (riichi, ankan, kakan, tsumo)
 - `opt_react_*` / `pass_react_*` for discard reactions (chi, pon, minkan, ron)
+- `yaku_*`, `han_*`, `fu_*`, `yakuman_*` for winning-hand result details
 
 This addresses the key dataset issue where logs only contain chosen actions and omit unchosen-but-legal options.
+
+Winning-hand detail tokens are emitted after `take_self_*_tsumo` / `take_react_*_ron` and before `score_delta_*`.
+`han_*` is capped at `han_13`; any 13+ han hand is normalized to `han_13`. `yakuman_*` is reserved for hands where `damanguan` is present. `fu_*` is capped at 110.
 
 ### Run (small test)
 

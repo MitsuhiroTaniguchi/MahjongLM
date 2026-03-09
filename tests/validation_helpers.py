@@ -41,7 +41,7 @@ REACTION_PASS_SUFFIXES = ("_voluntary", "_forced_priority")
 
 def _is_rank_token(token: str) -> bool:
     parts = token.split("_")
-    return len(parts) == 3 and parts[0] == "rank" and parts[1] in {"0", "1", "2", "3"} and parts[2] in {"1", "2", "3", "4"}
+    return len(parts) == 3 and parts[0] == "rank" and parts[1].isdigit() and parts[2].isdigit()
 
 
 def _is_final_rank_token(token: str) -> bool:
@@ -50,8 +50,8 @@ def _is_final_rank_token(token: str) -> bool:
         len(parts) == 4
         and parts[0] == "final"
         and parts[1] == "rank"
-        and parts[2] in {"0", "1", "2", "3"}
-        and parts[3] in {"1", "2", "3", "4"}
+        and parts[2].isdigit()
+        and parts[3].isdigit()
     )
 
 
@@ -62,6 +62,15 @@ def _is_rule_token(token: str) -> bool:
         "rule_length_tonpu",
         "rule_length_hanchan",
     }
+
+
+def _is_hule_detail_token(token: str) -> bool:
+    if token.startswith("yaku_"):
+        return True
+    if token.startswith("han_") or token.startswith("fu_") or token.startswith("yakuman_"):
+        parts = token.split("_")
+        return len(parts) == 2 and parts[1].isdigit()
+    return False
 
 
 def _consume_tenbo_payload(tokens: Sequence[str], start: int) -> int:
@@ -93,7 +102,7 @@ def _consume_tile_payload(tokens: Sequence[str], start: int, *, minimum: int, ex
     return idx
 
 
-def _consume_round_prelude(tokens: Sequence[str], start: int) -> int:
+def _consume_round_prelude(tokens: Sequence[str], start: int, *, seat_count: int) -> int:
     idx = start
     assert idx < len(tokens) and tokens[idx].startswith("bakaze_")
     idx += 1
@@ -105,10 +114,10 @@ def _consume_round_prelude(tokens: Sequence[str], start: int) -> int:
     idx = _consume_tenbo_payload(tokens, idx + 1)
     assert idx < len(tokens) and tokens[idx] == "dora"
     idx = _consume_tile_payload(tokens, idx + 1, minimum=1, exact=1)
-    for seat in range(4):
+    for seat in range(seat_count):
         assert idx < len(tokens) and tokens[idx] == f"score_{seat}"
         idx = _consume_tenbo_payload(tokens, idx + 1)
-    for seat in range(4):
+    for seat in range(seat_count):
         assert idx < len(tokens) and tokens[idx] == f"haipai_{seat}"
         idx = _consume_tile_payload(tokens, idx + 1, minimum=13, exact=13)
     return idx
@@ -136,6 +145,7 @@ class TokenStreamFSM:
     expected_final_score_seat: int | None = None
     expected_final_rank_seat: int | None = None
     saw_final_suffix: bool = False
+    seat_count: int = 4
 
     def validate(self) -> None:
         assert self.tokens.count("game_start") == 1
@@ -153,6 +163,10 @@ class TokenStreamFSM:
                 continue
             if _is_rule_token(token):
                 assert not self.started_round
+                if token == "rule_player_3":
+                    self.seat_count = 3
+                elif token == "rule_player_4":
+                    self.seat_count = 4
                 self.idx += 1
                 continue
             if token == "round_start":
@@ -187,7 +201,7 @@ class TokenStreamFSM:
         self.allow_post_tsumo_pass_self = False
         self.pending_kaigang_reveals = 0
         self.awaiting_ron_score_block = False
-        self.idx = _consume_round_prelude(self.tokens, self.idx + 1)
+        self.idx = _consume_round_prelude(self.tokens, self.idx + 1, seat_count=self.seat_count)
 
     def _assert_round_closed(self) -> None:
         assert self.phase is StreamPhase.RESULT
@@ -210,13 +224,14 @@ class TokenStreamFSM:
         if token.startswith("take_react_"):
             assert self.expected_score_delta_seat is None
             assert token.endswith("_ron")
+            self.expected_rank_seat = None
             self.awaiting_ron_score_block = True
             self.idx += 1
             return True
         if token.startswith("pass_self_"):
             assert self.allow_post_tsumo_pass_self
             parts = token.split("_")
-            if parts[-1] in {"ankan", "kakan"}:
+            if parts[-1] in {"ankan", "kakan", "penuki"}:
                 self.idx = _consume_tile_payload(self.tokens, self.idx + 1, minimum=1, exact=1)
             else:
                 self.idx += 1
@@ -240,6 +255,11 @@ class TokenStreamFSM:
         assert token not in DISCARD_MARKER_TOKENS
         assert not token.startswith("chi_pos_")
         assert token not in RED_CHOICE_TOKENS
+        if _is_hule_detail_token(token):
+            assert self.expected_rank_seat is None
+            assert self.expected_score_delta_seat in {None, 0}
+            self.idx += 1
+            return True
         if token.startswith("score_delta_"):
             if self.expected_score_delta_seat is None:
                 assert self.awaiting_ron_score_block
@@ -250,7 +270,7 @@ class TokenStreamFSM:
             assert seat == self.expected_score_delta_seat
             self.idx = _consume_tenbo_payload(self.tokens, self.idx + 1)
             self.allow_post_tsumo_pass_self = False
-            if self.expected_score_delta_seat == 3:
+            if self.expected_score_delta_seat == self.seat_count - 1:
                 self.expected_score_delta_seat = None
                 self.expected_rank_seat = 0
             else:
@@ -261,7 +281,7 @@ class TokenStreamFSM:
             seat = int(token.split("_")[1])
             assert seat == self.expected_rank_seat
             self.idx += 1
-            if self.expected_rank_seat == 3:
+            if self.expected_rank_seat == self.seat_count - 1:
                 self.expected_rank_seat = None
             else:
                 self.expected_rank_seat += 1
@@ -281,7 +301,7 @@ class TokenStreamFSM:
             if key.endswith("_kyushukyuhai"):
                 assert not self.saw_call_in_round
             self.seen_self.add(key)
-            if key.endswith("_ankan") or key.endswith("_kakan"):
+            if key.endswith("_ankan") or key.endswith("_kakan") or key.endswith("_penuki"):
                 self.idx = _consume_tile_payload(self.tokens, self.idx + 1, minimum=1)
             else:
                 self.idx += 1
@@ -297,7 +317,7 @@ class TokenStreamFSM:
                 self._enter_result_phase(allow_post_tsumo_pass_self=True)
             if parts[-1] in {"ankan", "kakan"}:
                 self.pending_kaigang_reveals += 1
-            if parts[-1] in {"ankan", "kakan"}:
+            if parts[-1] in {"ankan", "kakan", "penuki"}:
                 self.idx = _consume_tile_payload(self.tokens, self.idx + 1, minimum=1, exact=1)
             else:
                 self.idx += 1
@@ -305,7 +325,7 @@ class TokenStreamFSM:
         if token.startswith("pass_self_"):
             assert token.replace("pass_self_", "", 1) in self.seen_self
             parts = token.split("_")
-            if parts[-1] in {"ankan", "kakan"}:
+            if parts[-1] in {"ankan", "kakan", "penuki"}:
                 self.idx = _consume_tile_payload(self.tokens, self.idx + 1, minimum=1, exact=1)
             else:
                 self.idx += 1
@@ -369,7 +389,7 @@ class TokenStreamFSM:
             seat = int(token.split("_")[2])
             assert seat == self.expected_final_score_seat
             self.idx = _consume_tenbo_payload(self.tokens, self.idx + 1)
-            if self.expected_final_score_seat == 3:
+            if self.expected_final_score_seat == self.seat_count - 1:
                 self.expected_final_score_seat = None
                 self.expected_final_rank_seat = 0
             else:
@@ -381,7 +401,7 @@ class TokenStreamFSM:
             seat = int(token.split("_")[2])
             assert seat == self.expected_final_rank_seat
             self.idx += 1
-            if self.expected_final_rank_seat == 3:
+            if self.expected_final_rank_seat == self.seat_count - 1:
                 self.expected_final_rank_seat = None
             else:
                 self.expected_final_rank_seat += 1
@@ -404,6 +424,7 @@ def validate_token_stream(tokens: Sequence[str]) -> None:
 
 def validate_score_rotation(game: dict) -> None:
     tokenizer = TenhouTokenizer()
+    tokenizer.seat_count = tokenizer._infer_game_seat_count(game)
     rounds = game.get("log", [])
     for idx, round_data in enumerate(rounds[:-1]):
         tokenizer._process_round(round_data)
@@ -414,10 +435,11 @@ def validate_score_rotation(game: dict) -> None:
         internal_scores = [player.score for player in tokenizer.players]
         assert any(
             internal_scores[offset:] + internal_scores[:offset] == expected_scores
-            for offset in range(4)
+        for offset in range(len(internal_scores))
         )
     if rounds:
         tokenizer = TenhouTokenizer()
+        tokenizer.seat_count = tokenizer._infer_game_seat_count(game)
         if "qijia" in game:
             tokenizer.initial_qijia = int(game["qijia"])
             tokenizer.has_initial_qijia = True
@@ -466,7 +488,9 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
     if event_key == "qipai":
         assert emitted
         assert emitted[0] == "round_start"
-        assert _consume_round_prelude(emitted, 1) == len(emitted)
+        seat_count = len([token for token in emitted if token.startswith("haipai_")])
+        assert seat_count in {3, 4}
+        assert _consume_round_prelude(emitted, 1, seat_count=seat_count) == len(emitted)
         return
 
     if event_key in {"zimo", "gangzimo"}:
@@ -547,6 +571,15 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
         assert all(token.startswith("opt_react_") for token in emitted[idx:])
         return
 
+    if event_key == "penuki":
+        take_positions = [i for i, token in enumerate(emitted) if token.startswith("take_self_")]
+        assert len(take_positions) == 1
+        take_idx = take_positions[0]
+        assert all(token.startswith("pass_self_") or token.startswith("opt_self_") or token in TILE_TOKENS for token in emitted[:take_idx + 2])
+        assert emitted[take_idx].endswith("_penuki")
+        assert emitted[take_idx + 1] == "z4"
+        return
+
     if event_key == "kaigang":
         assert len(emitted) == 2
         assert emitted[0] == "dora"
@@ -557,21 +590,25 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
         if any(token.startswith("take_react_") and token.endswith("_ron") for token in emitted):
             first_delta_idx = next(i for i, token in enumerate(emitted) if token.startswith("score_delta_"))
             assert all(
-                token.startswith("take_react_") or token.startswith("pass_react_")
+                token.startswith("take_react_") or token.startswith("pass_react_") or _is_hule_detail_token(token)
                 for token in emitted[:first_delta_idx]
             )
         elif any(token.startswith("score_delta_") for token in emitted):
             first_delta_idx = next(i for i, token in enumerate(emitted) if token.startswith("score_delta_"))
             assert any(token.startswith("take_self_") and token.endswith("_tsumo") for token in emitted[:first_delta_idx])
             assert all(
-                token.startswith("take_self_") or token.startswith("pass_self_") or token in TILE_TOKENS
+                token.startswith("take_self_")
+                or token.startswith("pass_self_")
+                or token in TILE_TOKENS
+                or _is_hule_detail_token(token)
                 for token in emitted[:first_delta_idx]
             )
         delta_positions = [i for i, token in enumerate(emitted) if token.startswith("score_delta_")]
         if delta_positions:
-            assert len(delta_positions) == 4
+            seat_count = len(delta_positions)
+            assert seat_count in {3, 4}
             rank_positions = [i for i, token in enumerate(emitted) if _is_rank_token(token)]
-            assert len(rank_positions) in {0, 4}
+            assert len(rank_positions) in {0, seat_count}
             if rank_positions:
                 assert rank_positions[0] > delta_positions[-1]
         return
@@ -584,14 +621,12 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
             token.startswith("pass_self_")
             or token.startswith("pass_react_")
             or token.endswith("_kyushukyuhai") and token.startswith("take_self_")
-            or token == "take_react_0_ron"
-            or token == "take_react_1_ron"
-            or token == "take_react_2_ron"
-            or token == "take_react_3_ron"
+            or token.startswith("take_react_") and token.endswith("_ron")
             for token in emitted[:pingju_idx]
         )
-        assert len([token for token in emitted if token.startswith("score_delta_")]) == 4
-        assert len([token for token in emitted if _is_rank_token(token)]) == 4
+        delta_count = len([token for token in emitted if token.startswith("score_delta_")])
+        assert delta_count in {3, 4}
+        assert len([token for token in emitted if _is_rank_token(token)]) == delta_count
         return
 
 

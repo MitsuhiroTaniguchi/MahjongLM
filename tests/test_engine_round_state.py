@@ -923,6 +923,7 @@ def test_pm_has_hupai_multi_uses_context_enabled_has_hupai_multi(monkeypatch: py
                 bool,
                 bool,
                 bool,
+                bool,
             ]
         ]
     ) -> list[bool]:
@@ -934,12 +935,59 @@ def test_pm_has_hupai_multi_uses_context_enabled_has_hupai_multi(monkeypatch: py
 
     out = engine._pm_has_hupai_multi(
         [
-            ([0] * 34, [], 0, False, True, False, 0, 0, True, False, False),
-            ([0] * 34, [], 1, False, True, False, 0, 1, False, True, True),
+            ([0] * 34, [], 0, False, True, False, 0, 0, True, False, False, False),
+            ([0] * 34, [], 1, False, True, False, 0, 1, False, True, True, False),
         ]
     )
     assert out == [True, True]
     assert called["n"] == 2
+
+
+def test_compute_reaction_options_threads_three_player_to_ron_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer.seat_count = 3
+    tokenizer._on_qipai(qipai_payload(seat_count=3))
+    tokenizer.live_draws_left = 10
+
+    offered = tile_to_index("m2")
+    monkeypatch.setattr(engine, "PM_STATELESS_SIMULATION_API_AVAILABLE", False)
+    monkeypatch.setattr(engine, "PM_SIMULATION_API_AVAILABLE", False)
+    monkeypatch.setattr(engine, "_pm_wait_mask", lambda *_args, **_kwargs: 1 << offered)
+
+    seen: dict[str, object] = {}
+
+    def fake_has_hupai_multi(cases):
+        seen["three_player"] = cases[0][-1]
+        return [True] * len(cases)
+
+    monkeypatch.setattr(engine, "_pm_has_hupai_multi", fake_has_hupai_multi)
+
+    reaction = tokenizer._compute_reaction_options(discarder=0, tile_idx=offered)
+
+    assert reaction is not None
+    assert 1 in reaction.options_by_player
+    assert seen["three_player"] is True
+
+
+def test_ankan_candidate_tiles_threads_three_player_wait_mask(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer.seat_count = 3
+    tokenizer._on_qipai(qipai_payload(seat_count=3, hands=["m1111p123s123z123", "m123456789p1234", "m123456789p1234"]))
+    seat = 0
+    tokenizer.players[seat].is_riichi = True
+
+    seen: list[bool] = []
+
+    def fake_wait_mask(_counts: list[int], _meld_count: int, three_player: bool = False) -> int:
+        seen.append(three_player)
+        return 1 << tile_to_index("m2")
+
+    monkeypatch.setattr(engine, "_pm_wait_mask", fake_wait_mask)
+
+    out = tokenizer._ankan_candidate_tiles(seat, drawn_tile=tile_to_index("m1"))
+
+    assert out == ["m1"]
+    assert seen == [True, True]
 
 
 def test_pm_evaluate_draw_uses_context_enabled_evaluate_draw(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -980,3 +1028,54 @@ def test_pm_evaluate_draw_uses_context_enabled_evaluate_draw(monkeypatch: pytest
     )
     assert out == (True, False)
     assert called["flags"] == (True, True)
+
+
+def test_pm_evaluate_draw_threads_three_player_to_hupai_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    called: dict[str, object] = {}
+
+    def fake_has_hupai(**kwargs):
+        called["three_player"] = kwargs["three_player"]
+        return True
+
+    monkeypatch.setattr(engine, "PM_EVALUATE_DRAW_AVAILABLE", False)
+    monkeypatch.setattr(engine, "_pm_has_hupai", fake_has_hupai)
+
+    out = engine._pm_evaluate_draw(
+        counts=[0] * 34,
+        melds=[],
+        encoded_melds=None,
+        win_tile=0,
+        is_menqian=True,
+        is_riichi=False,
+        zhuangfeng=0,
+        lunban=0,
+        closed_kans=0,
+        check_riichi_discard=False,
+        three_player=True,
+    )
+
+    assert out == (True, False)
+    assert called["three_player"] is True
+
+
+def test_penuki_replacement_draw_is_treated_as_dead_wall_draw() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer.seat_count = 3
+    tokenizer._on_qipai(qipai_payload(seat_count=3))
+    tokenizer.players[0].concealed[tile_to_index("z4")] += 1
+    tokenizer.pending_self = engine.SelfDecision(actor=0, options={"penuki"}, option_tiles={"penuki": ["z4"]})
+
+    tokenizer._on_penuki({"l": 0, "p": "z4"})
+
+    assert tokenizer.pending_dead_wall_draw is True
+    assert tokenizer.live_draws_left == 55
+
+    tokenizer._on_draw(
+        {"l": 0, "p": "m1"},
+        is_gangzimo=tokenizer.pending_dead_wall_draw,
+        is_replacement_draw=tokenizer.pending_dead_wall_draw,
+    )
+    tokenizer.pending_dead_wall_draw = False
+
+    assert tokenizer.live_draws_left == 55
+    assert tokenizer.last_draw_was_gangzimo is True

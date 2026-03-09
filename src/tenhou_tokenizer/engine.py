@@ -12,6 +12,7 @@ PM_FASTAPI_AVAILABLE = all(
 )
 PM_MULTI_HUPAI_AVAILABLE = hasattr(pm, "has_hupai_multi")
 PM_EVALUATE_DRAW_AVAILABLE = hasattr(pm, "evaluate_draw")
+PM_THREE_PLAYER_API_AVAILABLE = hasattr(pm, "SELF_OPT_PENUKI")
 PM_STATELESS_SIMULATION_API_AVAILABLE = all(
     hasattr(pm, name)
     for name in ("compute_self_option_mask", "compute_reaction_option_masks", "compute_rob_kan_option_masks")
@@ -55,11 +56,68 @@ TENBO_UNITS: Tuple[Tuple[int, str], ...] = (
     (200, "TENBO_200"),
     (100, "TENBO_100"),
 )
+HUPAI_TOKEN_BY_NAME = {
+    "門前清自摸和": "yaku_menzen_tsumo",
+    "立直": "yaku_riichi",
+    "一発": "yaku_ippatsu",
+    "槍槓": "yaku_chankan",
+    "嶺上開花": "yaku_rinshan",
+    "海底摸月": "yaku_haitei",
+    "河底撈魚": "yaku_houtei",
+    "平和": "yaku_pinfu",
+    "断幺九": "yaku_tanyao",
+    "一盃口": "yaku_iipeikou",
+    "自風 東": "yaku_jikaze_ton",
+    "自風 南": "yaku_jikaze_nan",
+    "自風 西": "yaku_jikaze_shaa",
+    "自風 北": "yaku_jikaze_pei",
+    "場風 東": "yaku_bakaze_ton",
+    "場風 南": "yaku_bakaze_nan",
+    "場風 西": "yaku_bakaze_shaa",
+    "場風 北": "yaku_bakaze_pei",
+    "役牌 白": "yaku_haku",
+    "役牌 發": "yaku_hatsu",
+    "役牌 中": "yaku_chun",
+    "両立直": "yaku_double_riichi",
+    "七対子": "yaku_chiitoitsu",
+    "混全帯幺九": "yaku_chanta",
+    "一気通貫": "yaku_ittsu",
+    "三色同順": "yaku_sanshoku_doujun",
+    "三色同刻": "yaku_sanshoku_doukou",
+    "三槓子": "yaku_sankantsu",
+    "対々和": "yaku_toitoi",
+    "三暗刻": "yaku_sanankou",
+    "小三元": "yaku_shousangen",
+    "混老頭": "yaku_honroutou",
+    "二盃口": "yaku_ryanpeikou",
+    "純全帯幺九": "yaku_junchan",
+    "混一色": "yaku_honitsu",
+    "清一色": "yaku_chinitsu",
+    "天和": "yaku_tenhou",
+    "地和": "yaku_chiihou",
+    "大三元": "yaku_daisangen",
+    "四暗刻": "yaku_suuankou",
+    "四暗刻単騎": "yaku_suuankou_tanki",
+    "字一色": "yaku_tsuuiisou",
+    "緑一色": "yaku_ryuuiisou",
+    "清老頭": "yaku_chinroutou",
+    "九蓮宝燈": "yaku_chuuren_poutou",
+    "純正九蓮宝燈": "yaku_junsei_chuuren_poutou",
+    "国士無双": "yaku_kokushi_musou",
+    "国士無双１３面": "yaku_kokushi_musou_13_wait",
+    "大四喜": "yaku_daisuushi",
+    "小四喜": "yaku_shousuushi",
+    "四槓子": "yaku_suukantsu",
+    "ドラ": "yaku_dora",
+    "裏ドラ": "yaku_ura_dora",
+    "赤ドラ": "yaku_aka_dora",
+}
 SELF_OPT_TSUMO = int(getattr(pm, "SELF_OPT_TSUMO", 1 << 0))
 SELF_OPT_RIICHI = int(getattr(pm, "SELF_OPT_RIICHI", 1 << 1))
 SELF_OPT_ANKAN = int(getattr(pm, "SELF_OPT_ANKAN", 1 << 2))
 SELF_OPT_KAKAN = int(getattr(pm, "SELF_OPT_KAKAN", 1 << 3))
 SELF_OPT_KYUSHUKYUHAI = int(getattr(pm, "SELF_OPT_KYUSHUKYUHAI", 1 << 4))
+SELF_OPT_PENUKI = int(getattr(pm, "SELF_OPT_PENUKI", 1 << 5))
 REACT_OPT_RON = int(getattr(pm, "REACT_OPT_RON", 1 << 0))
 REACT_OPT_CHI = int(getattr(pm, "REACT_OPT_CHI", 1 << 1))
 REACT_OPT_PON = int(getattr(pm, "REACT_OPT_PON", 1 << 2))
@@ -261,22 +319,24 @@ def _encode_pm_melds(melds: List[Tuple[str, int]]) -> List[Tuple[int, int]]:
     return [(MELD_TYPE_TO_PM_CODE[meld_type], pai_34) for meld_type, pai_34 in melds]
 
 
-def _pm_xiangting(counts: List[int], meld_count: int) -> int:
-    x, _mode, _disc, _wait = PM_XIANGTING.calculate(tuple(counts), 4 - meld_count, 7, False, False)
+def _pm_xiangting(counts: List[int], meld_count: int, three_player: bool = False) -> int:
+    x, _mode, _disc, _wait = PM_XIANGTING.calculate(tuple(counts), 4 - meld_count, 7, False, three_player)
     return int(x)
 
 
-def _pm_wait_mask(counts: List[int], meld_count: int) -> int:
+def _pm_wait_mask(counts: List[int], meld_count: int, three_player: bool = False) -> int:
     if PM_FASTAPI_AVAILABLE:
+        if PM_THREE_PLAYER_API_AVAILABLE and three_player:
+            return int(pm.wait_mask(tuple(counts), int(meld_count), True))
         return int(pm.wait_mask(tuple(counts), int(meld_count)))
-    x, _mode, _disc, wait = PM_XIANGTING.calculate(tuple(counts), 4 - meld_count, 7, False, False)
+    x, _mode, _disc, wait = PM_XIANGTING.calculate(tuple(counts), 4 - meld_count, 7, False, three_player)
     if int(x) != 0:
         return 0
     return int(wait)
 
 
-def _pm_wait_tiles(counts: List[int], meld_count: int) -> Set[int]:
-    wait_mask = _pm_wait_mask(counts, meld_count)
+def _pm_wait_tiles(counts: List[int], meld_count: int, three_player: bool = False) -> Set[int]:
+    wait_mask = _pm_wait_mask(counts, meld_count, three_player)
     if wait_mask == 0:
         return set()
     return {i for i in range(34) if (wait_mask >> i) & 1}
@@ -310,16 +370,20 @@ def _is_kokushi_agari_shape(counts: List[int], meld_count: int) -> bool:
     return pair_found
 
 
-def _pm_has_riichi_discard(counts: List[int], meld_count: int) -> bool:
+def _pm_has_riichi_discard(counts: List[int], meld_count: int, three_player: bool = False) -> bool:
     if PM_FASTAPI_AVAILABLE:
+        if PM_THREE_PLAYER_API_AVAILABLE and three_player:
+            return bool(pm.has_riichi_discard(tuple(counts), int(meld_count), True))
         return bool(pm.has_riichi_discard(tuple(counts), int(meld_count)))
 
     base = list(counts)
     for i in range(34):
+        if three_player and 0 < i < 8:
+            continue
         if base[i] == 0:
             continue
         base[i] -= 1
-        if _pm_xiangting(base, meld_count) == 0:
+        if _pm_xiangting(base, meld_count, three_player) == 0:
             return True
         base[i] += 1
     return False
@@ -338,9 +402,30 @@ def _pm_has_hupai(
     is_haidi: bool = False,
     is_lingshang: bool = False,
     is_qianggang: bool = False,
+    three_player: bool = False,
 ) -> bool:
     pm_melds = encoded_melds if encoded_melds is not None else _encode_pm_melds(melds)
     if PM_FASTAPI_AVAILABLE:
+        if PM_THREE_PLAYER_API_AVAILABLE and three_player:
+            try:
+                return bool(
+                    pm.has_hupai(
+                        tuple(counts),
+                        pm_melds,
+                        int(win_tile),
+                        bool(is_tsumo),
+                        bool(is_menqian),
+                        bool(is_riichi),
+                        int(zhuangfeng),
+                        int(lunban),
+                        bool(is_haidi),
+                        bool(is_lingshang),
+                        bool(is_qianggang),
+                        bool(three_player),
+                    )
+                )
+            except TypeError:
+                pass
         return bool(
             pm.has_hupai(
                 tuple(counts),
@@ -358,12 +443,20 @@ def _pm_has_hupai(
         )
 
     shoupai = _make_pm_shoupai(counts, melds)
-    option = pm.HuleOption(int(zhuangfeng), int(lunban))
+    if PM_THREE_PLAYER_API_AVAILABLE and three_player:
+        try:
+            option = pm.HuleOption(int(zhuangfeng), int(lunban), bool(three_player))
+        except TypeError:
+            option = pm.HuleOption(int(zhuangfeng), int(lunban))
+    else:
+        option = pm.HuleOption(int(zhuangfeng), int(lunban))
     option.is_menqian = bool(is_menqian)
     option.is_lizhi = bool(is_riichi)
     option.is_haidi = bool(is_haidi)
     option.is_lingshang = bool(is_lingshang)
     option.is_qianggang = bool(is_qianggang)
+    if three_player and hasattr(option, "is_three_player"):
+        option.is_three_player = True
     action_type = pm.ActionType.zimohu if is_tsumo else pm.ActionType.ronghu
     action = pm.Action(action_type, int(win_tile))
     hule = pm.Hule(shoupai, action, option)
@@ -372,14 +465,14 @@ def _pm_has_hupai(
 
 def _pm_has_hupai_multi(
     cases: List[
-        Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int, bool, bool, bool]
+        Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int, bool, bool, bool, bool]
     ],
 ) -> List[bool]:
     if not cases:
         return []
-    if PM_MULTI_HUPAI_AVAILABLE:
+    if PM_MULTI_HUPAI_AVAILABLE and not any(case[-1] for case in cases):
         encoded_cases_with_context: List[
-            Tuple[Tuple[int, ...], List[Tuple[int, int]], int, bool, bool, bool, int, int, bool, bool, bool]
+            Tuple[Tuple[int, ...], List[Tuple[int, int]], int, bool, bool, bool, int, int, bool, bool, bool, bool]
         ] = []
         for (
             counts,
@@ -393,6 +486,7 @@ def _pm_has_hupai_multi(
             is_haidi,
             is_lingshang,
             is_qianggang,
+            three_player,
         ) in cases:
             encoded_melds = [(MELD_TYPE_TO_PM_CODE[mtype], pai_34) for mtype, pai_34 in melds]
             encoded_cases_with_context.append(
@@ -416,6 +510,7 @@ def _pm_has_hupai_multi(
         _pm_has_hupai(
             counts=counts,
             melds=melds,
+            encoded_melds=None,
             win_tile=win_tile,
             is_tsumo=is_tsumo,
             is_menqian=is_menqian,
@@ -425,6 +520,7 @@ def _pm_has_hupai_multi(
             is_haidi=is_haidi,
             is_lingshang=is_lingshang,
             is_qianggang=is_qianggang,
+            three_player=three_player,
         )
         for (
             counts,
@@ -438,6 +534,7 @@ def _pm_has_hupai_multi(
             is_haidi,
             is_lingshang,
             is_qianggang,
+            three_player,
         ) in cases
     ]
 
@@ -455,22 +552,39 @@ def _pm_evaluate_draw(
     check_riichi_discard: bool,
     is_haidi: bool = False,
     is_lingshang: bool = False,
+    three_player: bool = False,
 ) -> Tuple[bool, bool]:
     pm_melds = encoded_melds if encoded_melds is not None else _encode_pm_melds(melds)
     if PM_EVALUATE_DRAW_AVAILABLE:
-        can_tsumo, can_riichi_discard = pm.evaluate_draw(
-            tuple(counts),
-            pm_melds,
-            int(win_tile),
-            bool(is_menqian),
-            bool(is_riichi),
-            int(zhuangfeng),
-            int(lunban),
-            int(closed_kans),
-            bool(check_riichi_discard),
-            bool(is_haidi),
-            bool(is_lingshang),
-        )
+        if PM_THREE_PLAYER_API_AVAILABLE and three_player:
+            can_tsumo, can_riichi_discard = pm.evaluate_draw(
+                tuple(counts),
+                pm_melds,
+                int(win_tile),
+                bool(is_menqian),
+                bool(is_riichi),
+                int(zhuangfeng),
+                int(lunban),
+                int(closed_kans),
+                bool(check_riichi_discard),
+                bool(is_haidi),
+                bool(is_lingshang),
+                bool(three_player),
+            )
+        else:
+            can_tsumo, can_riichi_discard = pm.evaluate_draw(
+                tuple(counts),
+                pm_melds,
+                int(win_tile),
+                bool(is_menqian),
+                bool(is_riichi),
+                int(zhuangfeng),
+                int(lunban),
+                int(closed_kans),
+                bool(check_riichi_discard),
+                bool(is_haidi),
+                bool(is_lingshang),
+            )
         return bool(can_tsumo), bool(can_riichi_discard)
 
     can_tsumo = _pm_has_hupai(
@@ -485,9 +599,10 @@ def _pm_evaluate_draw(
         lunban=lunban,
         is_haidi=is_haidi,
         is_lingshang=is_lingshang,
+        three_player=three_player,
     )
     can_riichi_discard = (
-        _pm_has_riichi_discard(counts, closed_kans) if check_riichi_discard else False
+        _pm_has_riichi_discard(counts, closed_kans, three_player) if check_riichi_discard else False
     )
     return can_tsumo, can_riichi_discard
 
@@ -538,11 +653,12 @@ class TenhouTokenizer:
     def __init__(self) -> None:
         self.tokens: List[str] = []
         self.players: List[PlayerState] = []
+        self.seat_count = 4
         self.pending_self: Optional[SelfDecision] = None
         self.pending_reaction: Optional[ReactionDecision] = None
         self.pending_riichi_actor: Optional[int] = None
         self.round_index = 0
-        self.live_draws_left = 70
+        self.live_draws_left = 55 if self.seat_count == 3 else 70
         self.bakaze = 0
         self.kyoku = 0
         self.dealer_seat = 0
@@ -553,6 +669,7 @@ class TenhouTokenizer:
         self.expected_draw_actor: Optional[int] = None
         self.expected_discard_actor: Optional[int] = None
         self.awaiting_kaigang = 0
+        self.pending_dead_wall_draw = False
 
     def tokenize_game(self, game: dict) -> List[str]:
         if not isinstance(game, dict):
@@ -562,6 +679,7 @@ class TenhouTokenizer:
             raise TokenizeError("game log must be a list")
         if not log:
             raise TokenizeError("game log cannot be empty")
+        self.seat_count = self._infer_game_seat_count(game)
         self.tokens = ["game_start"]
         self.tokens.extend(self._build_game_rule_block(game))
         self.pending_self = None
@@ -571,6 +689,7 @@ class TenhouTokenizer:
         self.expected_draw_actor = None
         self.expected_discard_actor = None
         self.awaiting_kaigang = 0
+        self.pending_dead_wall_draw = False
         self.initial_qijia = 0
         self.has_initial_qijia = False
         if "qijia" in game:
@@ -582,13 +701,13 @@ class TenhouTokenizer:
         if "defen" in game:
             final_scores = [
                 self._require_score(score, field=f"game.defen[{seat}]")
-                for seat, score in enumerate(self._require_four(game["defen"], field="game.defen"))
+                for seat, score in enumerate(self._require_seat_list(game["defen"], field="game.defen"))
             ]
             final_ranks = self._compute_final_rank_places(final_scores)
             if "rank" in game:
                 expected_final_ranks = [
                     self._require_rank_place(rank, field=f"game.rank[{seat}]")
-                    for seat, rank in enumerate(self._require_four(game["rank"], field="game.rank"))
+                    for seat, rank in enumerate(self._require_seat_list(game["rank"], field="game.rank"))
                 ]
                 if expected_final_ranks != final_ranks:
                     raise TokenizeError("game.rank does not match reconstructed final ranks")
@@ -598,7 +717,7 @@ class TenhouTokenizer:
         return self.tokens
 
     def _require_round_initialized(self) -> None:
-        if len(self.players) != 4:
+        if len(self.players) != self.seat_count:
             raise TokenizeError("round state is not initialized")
 
     def _require_int(self, value: object, *, field: str) -> int:
@@ -608,13 +727,13 @@ class TenhouTokenizer:
 
     def _require_seat(self, seat: object, *, field: str) -> int:
         seat_int = self._require_int(seat, field=field)
-        if seat_int < 0 or seat_int >= 4:
+        if seat_int < 0 or seat_int >= self.seat_count:
             raise TokenizeError(f"invalid seat for {field}: {seat}")
         return seat_int
 
-    def _require_four(self, values: object, *, field: str) -> List[object]:
-        if not isinstance(values, list) or len(values) != 4:
-            raise TokenizeError(f"{field} must be a list of length 4")
+    def _require_seat_list(self, values: object, *, field: str) -> List[object]:
+        if not isinstance(values, list) or len(values) != self.seat_count:
+            raise TokenizeError(f"{field} must be a list of length {self.seat_count}")
         return values
 
     def _require_dict(self, value: object, *, field: str) -> dict:
@@ -641,9 +760,38 @@ class TenhouTokenizer:
 
     def _require_rank_place(self, value: object, *, field: str) -> int:
         value_int = self._require_int(value, field=field)
-        if value_int < 1 or value_int > 4:
-            raise TokenizeError(f"{field} must be an integer between 1 and 4")
+        if value_int < 1 or value_int > self.seat_count:
+            raise TokenizeError(f"{field} must be an integer between 1 and {self.seat_count}")
         return value_int
+
+    def _infer_game_seat_count(self, game: dict) -> int:
+        title = game.get("title")
+        if isinstance(title, str):
+            if "三" in title:
+                return 3
+            if "四" in title:
+                return 4
+        for key in ("defen", "rank", "player", "point"):
+            value = game.get(key)
+            if isinstance(value, list) and len(value) in {3, 4}:
+                return len(value)
+        log = game.get("log")
+        if isinstance(log, list):
+            for round_data in log:
+                if not isinstance(round_data, list):
+                    continue
+                for event in round_data:
+                    if not isinstance(event, dict):
+                        continue
+                    for payload_key in ("qipai", "hule", "pingju"):
+                        payload = event.get(payload_key)
+                        if not isinstance(payload, dict):
+                            continue
+                        for list_key in ("shoupai", "defen", "fenpei"):
+                            values = payload.get(list_key)
+                            if isinstance(values, list) and len(values) in {3, 4}:
+                                return len(values)
+        return 4
 
     def _process_round(self, round_data: list) -> None:
         if not isinstance(round_data, list):
@@ -692,9 +840,16 @@ class TenhouTokenizer:
             if key == "qipai":
                 self._on_qipai(value)
             elif key == "zimo":
-                self._on_draw(value, is_gangzimo=False)
+                is_dead_wall_draw = self.pending_dead_wall_draw
+                self.pending_dead_wall_draw = False
+                self._on_draw(
+                    value,
+                    is_gangzimo=is_dead_wall_draw,
+                    is_replacement_draw=is_dead_wall_draw,
+                )
             elif key == "gangzimo":
-                self._on_draw(value, is_gangzimo=True)
+                self.pending_dead_wall_draw = False
+                self._on_draw(value, is_gangzimo=True, is_replacement_draw=False)
             elif key == "dapai":
                 self._on_discard(value)
             elif key == "fulou":
@@ -703,6 +858,8 @@ class TenhouTokenizer:
                 self._on_gang(value)
             elif key == "kaigang":
                 self._on_kaigang(value)
+            elif key == "penuki":
+                self._on_penuki(value)
             elif key == "hule":
                 remaining_ron_winners: Set[int] | None = None
                 more_ron_expected = False
@@ -752,14 +909,14 @@ class TenhouTokenizer:
 
     def _build_game_rule_block(self, game: dict) -> List[str]:
         title = game.get("title")
-        if title is None:
-            return []
-        title = self._require_str(title, field="game.title")
         block: List[str] = []
-        if "三" in title:
+        if self.seat_count == 3:
             block.append("rule_player_3")
-        elif "四" in title:
+        elif self.seat_count == 4:
             block.append("rule_player_4")
+        if title is None:
+            return block
+        title = self._require_str(title, field="game.title")
         if "東" in title:
             block.append("rule_length_tonpu")
         elif "南" in title:
@@ -768,7 +925,7 @@ class TenhouTokenizer:
 
     def _build_score_delta_block(self, deltas: List[int]) -> List[str]:
         block: List[str] = []
-        for seat in range(4):
+        for seat in range(self.seat_count):
             block.append(f"score_delta_{seat}")
             block.extend(encode_tenbo_tokens(deltas[seat]))
         return block
@@ -865,22 +1022,22 @@ class TenhouTokenizer:
         return block
 
     def _game_seat_for_round_seat(self, seat: int) -> int:
-        return (self.initial_qijia + self.kyoku + seat) % 4
+        return (self.initial_qijia + self.kyoku + seat) % self.seat_count
 
     def _compute_rank_places(self, scores: List[int], order_keys: List[int]) -> List[int]:
-        sorted_seats = sorted(range(4), key=lambda seat: (-scores[seat], order_keys[seat]))
-        places = [0] * 4
+        sorted_seats = sorted(range(self.seat_count), key=lambda seat: (-scores[seat], order_keys[seat]))
+        places = [0] * self.seat_count
         for place, seat in enumerate(sorted_seats, start=1):
             places[seat] = place
         return places
 
     def _compute_round_rank_places(self) -> List[int]:
         scores = [player.score for player in self.players]
-        order_keys = [(self.kyoku + seat) % 4 for seat in range(4)]
+        order_keys = [(self.kyoku + seat) % self.seat_count for seat in range(self.seat_count)]
         return self._compute_rank_places(scores, order_keys)
 
     def _current_game_order_scores(self) -> List[int]:
-        scores = [0] * 4
+        scores = [0] * self.seat_count
         for seat, player in enumerate(self.players):
             scores[self._game_seat_for_round_seat(seat)] = player.score
         return scores
@@ -888,7 +1045,7 @@ class TenhouTokenizer:
     def _compute_final_rank_places(self, scores: List[int]) -> List[int]:
         if not self.has_initial_qijia and len(set(scores)) != len(scores):
             raise TokenizeError("game.qijia is required to reconstruct tied final ranks")
-        order_keys = [((seat - self.initial_qijia) % 4) for seat in range(4)]
+        order_keys = [((seat - self.initial_qijia) % self.seat_count) for seat in range(self.seat_count)]
         return self._compute_rank_places(scores, order_keys)
 
     def _can_consume_concealed_token(
@@ -1022,7 +1179,7 @@ class TenhouTokenizer:
         return f"red_{action}_{'used' if used_red else 'not_used'}"
 
     def _player_wind(self, seat: int) -> int:
-        return (seat - self.dealer_seat) % 4
+        return (seat - self.dealer_seat) % self.seat_count
 
     def _invalidate_wait_mask(self, seat: int) -> None:
         self.players[seat].wait_mask_cache = None
@@ -1046,10 +1203,127 @@ class TenhouTokenizer:
             action = pm.Action(action_type, int(pai_34), bool(red), int(bias))
         p.sim_shoupai.apply(action)
 
+    def _use_multi_player_simulation(self) -> bool:
+        if self.seat_count == 3:
+            return PM_STATELESS_SIMULATION_API_AVAILABLE and PM_THREE_PLAYER_API_AVAILABLE
+        return PM_SIMULATION_API_AVAILABLE
+
+    def _simulation_supports_three_player(self) -> bool:
+        return self.seat_count == 3 and PM_THREE_PLAYER_API_AVAILABLE
+
+    def _use_shoupai_simulation(self) -> bool:
+        return (
+            self.seat_count == 4
+            and PM_SHOUPAI_SIMULATION_API_AVAILABLE
+            and all(p.sim_shoupai is not None for p in self.players)
+        )
+
+    def _simulation_reaction_players_payload(self):
+        return [
+            (
+                tuple(p.concealed),
+                self._player_encoded_melds(seat),
+                bool(p.is_riichi),
+                bool(p.temporary_furiten),
+                bool(p.riichi_furiten),
+                _furiten_mask(p.furiten_tiles),
+                int(p.open_melds),
+            )
+            for seat, p in enumerate(self.players)
+        ]
+
+    def _simulation_reaction_shoupai_payload(self):
+        return [
+            (
+                p.sim_shoupai,
+                bool(p.is_riichi),
+                bool(p.temporary_furiten),
+                bool(p.riichi_furiten),
+                _furiten_mask(p.furiten_tiles),
+                int(p.open_melds),
+            )
+            for p in self.players
+        ]
+
+    def _compute_simulation_reaction_pairs(self, discarder: int, tile_idx: int) -> List[Tuple[int, int]]:
+        if self._use_shoupai_simulation():
+            return pm.compute_reaction_option_masks_shoupai(
+                self._simulation_reaction_shoupai_payload(),
+                int(discarder),
+                int(tile_idx),
+                int(self.bakaze),
+                int(self.dealer_seat),
+                int(self.live_draws_left),
+                bool(self.last_draw_was_gangzimo),
+                *( [True] if self._simulation_supports_three_player() else [] ),
+            )
+        if PM_STATELESS_SIMULATION_API_AVAILABLE:
+            return pm.compute_reaction_option_masks(
+                self._simulation_reaction_players_payload(),
+                int(discarder),
+                int(tile_idx),
+                int(self.bakaze),
+                int(self.dealer_seat),
+                int(self.live_draws_left),
+                bool(self.last_draw_was_gangzimo),
+                *( [True] if self._simulation_supports_three_player() else [] ),
+            )
+        return []
+
+    def _compute_simulation_rob_kan_pairs(
+        self,
+        actor: int,
+        tile_idx: int,
+        require_kokushi: bool,
+    ) -> List[Tuple[int, int]]:
+        if self._use_shoupai_simulation():
+            return pm.compute_rob_kan_option_masks_shoupai(
+                self._simulation_reaction_shoupai_payload(),
+                int(actor),
+                int(tile_idx),
+                int(self.bakaze),
+                int(self.dealer_seat),
+                bool(require_kokushi),
+                *( [True] if self._simulation_supports_three_player() else [] ),
+            )
+        if PM_STATELESS_SIMULATION_API_AVAILABLE:
+            return pm.compute_rob_kan_option_masks(
+                self._simulation_reaction_players_payload(),
+                int(actor),
+                int(tile_idx),
+                int(self.bakaze),
+                int(self.dealer_seat),
+                bool(require_kokushi),
+                *( [True] if self._simulation_supports_three_player() else [] ),
+            )
+        return []
+
+    def _decode_simulation_reaction_options(
+        self,
+        result_pairs: List[Tuple[int, int]],
+    ) -> Dict[int, Set[str]]:
+        options_by_player: Dict[int, Set[str]] = {}
+        for seat, mask in result_pairs:
+            opts: Set[str] = set()
+            if mask & REACT_OPT_RON:
+                opts.add("ron")
+            if mask & REACT_OPT_CHI:
+                opts.add("chi")
+            if mask & REACT_OPT_PON:
+                opts.add("pon")
+            if mask & REACT_OPT_MINKAN:
+                opts.add("minkan")
+            if opts:
+                options_by_player[int(seat)] = opts
+        return options_by_player
+
     def _wait_mask(self, seat: int) -> int:
         p = self.players[seat]
         if p.wait_mask_cache is None:
-            p.wait_mask_cache = _pm_wait_mask(p.concealed, p.meld_count)
+            if self.seat_count == 3:
+                p.wait_mask_cache = _pm_wait_mask(p.concealed, p.meld_count, True)
+            else:
+                p.wait_mask_cache = _pm_wait_mask(p.concealed, p.meld_count)
         return p.wait_mask_cache
 
     def _can_win(self, seat: int, win_tile: int, is_tsumo: bool) -> bool:
@@ -1079,10 +1353,13 @@ class TenhouTokenizer:
             is_riichi=p.is_riichi,
             zhuangfeng=self.bakaze,
             lunban=self._player_wind(seat),
+            three_player=(self.seat_count == 3),
         )
 
     def _has_riichi_discard(self, seat: int) -> bool:
         p = self.players[seat]
+        if self.seat_count == 3:
+            return _pm_has_riichi_discard(p.concealed, p.closed_kans, True)
         return _pm_has_riichi_discard(p.concealed, p.closed_kans)
 
     def _evaluate_draw(
@@ -1094,7 +1371,7 @@ class TenhouTokenizer:
         is_lingshang: bool = False,
     ) -> Tuple[bool, bool]:
         p = self.players[seat]
-        return _pm_evaluate_draw(
+        kwargs = dict(
             counts=p.concealed,
             melds=p.melds,
             encoded_melds=self._player_encoded_melds(seat),
@@ -1108,6 +1385,9 @@ class TenhouTokenizer:
             is_haidi=is_haidi,
             is_lingshang=is_lingshang,
         )
+        if self.seat_count == 3:
+            return _pm_evaluate_draw(**kwargs, three_player=True)
+        return _pm_evaluate_draw(**kwargs)
 
     def _is_permanent_furiten(self, seat: int, wait_mask: Optional[int] = None) -> bool:
         p = self.players[seat]
@@ -1122,8 +1402,8 @@ class TenhouTokenizer:
     def _on_qipai(self, q: dict) -> None:
         if not isinstance(q, dict):
             raise TokenizeError("qipai payload must be a dict")
-        shoupai = self._require_four(q["shoupai"], field="qipai.shoupai")
-        defen = self._require_four(q["defen"], field="qipai.defen")
+        shoupai = self._require_seat_list(q["shoupai"], field="qipai.shoupai")
+        defen = self._require_seat_list(q["defen"], field="qipai.defen")
         if not all(isinstance(hand, str) for hand in shoupai):
             raise TokenizeError("qipai.shoupai entries must be strings")
         baopai = self._require_str(q["baopai"], field="qipai.baopai")
@@ -1148,14 +1428,14 @@ class TenhouTokenizer:
                     else None
                 ),
             )
-            for seat in range(4)
+            for seat in range(self.seat_count)
         ]
         bakaze = self._require_non_negative_int(q["zhuangfeng"], field="qipai.zhuangfeng")
         kyoku = self._require_non_negative_int(q["jushu"], field="qipai.jushu")
         honba = self._require_non_negative_int(q["changbang"], field="qipai.changbang")
         riichi_sticks = self._require_non_negative_int(q["lizhibang"], field="qipai.lizhibang")
 
-        self.live_draws_left = 70
+        self.live_draws_left = 55 if self.seat_count == 3 else 70
         self.bakaze = bakaze
         self.kyoku = kyoku
         # Tenhou JSON used here is seat-rotated so dealer is always seat 0.
@@ -1165,6 +1445,7 @@ class TenhouTokenizer:
         self.expected_draw_actor = None
         self.expected_discard_actor = None
         self.awaiting_kaigang = 0
+        self.pending_dead_wall_draw = False
 
         self.tokens.extend(
             self._build_round_prelude_block(
@@ -1178,10 +1459,10 @@ class TenhouTokenizer:
             )
         )
 
-    def _on_draw(self, z: dict, is_gangzimo: bool) -> None:
+    def _on_draw(self, z: dict, is_gangzimo: bool, is_replacement_draw: bool = False) -> None:
         self._require_round_initialized()
         z = self._require_dict(z, field="draw")
-        if self.live_draws_left <= 0:
+        if self.live_draws_left <= 0 and not is_replacement_draw:
             raise TokenizeError("no live draws remaining")
         if self.expected_discard_actor is not None:
             raise TokenizeError("draw is not allowed before discard resolution")
@@ -1195,7 +1476,8 @@ class TenhouTokenizer:
         self.players[actor].last_draw_tile = tile_token
         self.players[actor].temporary_furiten = False
         self._invalidate_wait_mask(actor)
-        self.live_draws_left -= 1
+        if not is_replacement_draw:
+            self.live_draws_left -= 1
         self.last_draw_was_gangzimo = is_gangzimo
 
         self.tokens.append(f"draw_{actor}_{tile_token}")
@@ -1210,8 +1492,9 @@ class TenhouTokenizer:
 
     def _compute_self_options(self, actor: int, drawn_tile: int, is_gangzimo: bool = False) -> Set[str]:
         p = self.players[actor]
-        if PM_SIMULATION_API_AVAILABLE:
-            if PM_SHOUPAI_SIMULATION_API_AVAILABLE and p.sim_shoupai is not None:
+        options: Set[str]
+        if self._use_multi_player_simulation():
+            if self.seat_count == 4 and PM_SHOUPAI_SIMULATION_API_AVAILABLE and p.sim_shoupai is not None:
                 option_mask = int(
                     pm.compute_self_option_mask_shoupai(
                         p.sim_shoupai,
@@ -1227,6 +1510,7 @@ class TenhouTokenizer:
                         bool(p.is_first_turn),
                         bool(self.first_turn_open_calls_seen),
                         bool(is_gangzimo),
+                        *( [True] if self._simulation_supports_three_player() else [] ),
                     )
                 )
             elif PM_STATELESS_SIMULATION_API_AVAILABLE:
@@ -1246,11 +1530,12 @@ class TenhouTokenizer:
                         bool(p.is_first_turn),
                         bool(self.first_turn_open_calls_seen),
                         bool(is_gangzimo),
+                        *( [True] if self._simulation_supports_three_player() else [] ),
                     )
                 )
             else:
                 option_mask = 0
-            options: Set[str] = set()
+            options = set()
             if option_mask & SELF_OPT_TSUMO:
                 options.add("tsumo")
             if option_mask & SELF_OPT_RIICHI:
@@ -1261,36 +1546,41 @@ class TenhouTokenizer:
                 options.add("kakan")
             if option_mask & SELF_OPT_KYUSHUKYUHAI:
                 options.add("kyushukyuhai")
-            return options
-        options: Set[str] = set()
-        can_riichi = (
-            not p.is_riichi
-            and p.open_melds == 0
-            and p.score >= 1000
-            and self.live_draws_left >= 4
-        )
-        is_haidi = self.live_draws_left == 0 and not is_gangzimo
-        can_tsumo, has_riichi_discard = self._evaluate_draw(
-            seat=actor,
-            drawn_tile=drawn_tile,
-            check_riichi_discard=can_riichi,
-            is_haidi=is_haidi,
-            is_lingshang=is_gangzimo,
-        )
-        if can_tsumo:
-            options.add("tsumo")
+            if option_mask & SELF_OPT_PENUKI:
+                options.add("penuki")
+        else:
+            options = set()
+            can_riichi = (
+                not p.is_riichi
+                and p.open_melds == 0
+                and p.score >= 1000
+                and self.live_draws_left >= 4
+            )
+            is_haidi = self.live_draws_left == 0 and not is_gangzimo
+            can_tsumo, has_riichi_discard = self._evaluate_draw(
+                seat=actor,
+                drawn_tile=drawn_tile,
+                check_riichi_discard=can_riichi,
+                is_haidi=is_haidi,
+                is_lingshang=is_gangzimo,
+            )
+            if can_tsumo:
+                options.add("tsumo")
 
-        if can_riichi and has_riichi_discard:
-            options.add("riichi")
+            if can_riichi and has_riichi_discard:
+                options.add("riichi")
 
-        if self._can_ankan(actor, drawn_tile):
-            options.add("ankan")
+            if self._can_ankan(actor, drawn_tile):
+                options.add("ankan")
 
-        if any(p.concealed[tile] > 0 for tile in p.open_pons):
-            options.add("kakan")
+            if any(p.concealed[tile] > 0 for tile in p.open_pons):
+                options.add("kakan")
 
-        if self._can_kyushukyuhai(actor):
-            options.add("kyushukyuhai")
+            if self._can_kyushukyuhai(actor):
+                options.add("kyushukyuhai")
+
+            if self.seat_count == 3 and p.concealed[tile_to_index("z4")] > 0:
+                options.add("penuki")
 
         return options
 
@@ -1354,9 +1644,9 @@ class TenhouTokenizer:
             self.tokens.extend(self._build_reaction_option_block(reaction.options_by_player))
         elif is_riichi:
             self._apply_riichi_stick(actor)
-            self.expected_draw_actor = (actor + 1) % 4
+            self.expected_draw_actor = (actor + 1) % self.seat_count
         else:
-            self.expected_draw_actor = (actor + 1) % 4
+            self.expected_draw_actor = (actor + 1) % self.seat_count
 
     def _has_exact_discard_choice(self, actor: int, tile_token: str) -> bool:
         player = self.players[actor]
@@ -1369,70 +1659,14 @@ class TenhouTokenizer:
         return normal_five_count >= 2
 
     def _compute_reaction_options(self, discarder: int, tile_idx: int) -> Optional[ReactionDecision]:
-        use_simulation_api = PM_SIMULATION_API_AVAILABLE and not (
+        use_simulation_api = self._use_multi_player_simulation() and not (
             self.live_draws_left == 0 and self.last_draw_was_gangzimo
         )
         if use_simulation_api:
-            if PM_SHOUPAI_SIMULATION_API_AVAILABLE and all(p.sim_shoupai is not None for p in self.players):
-                players_payload = [
-                    (
-                        p.sim_shoupai,
-                        bool(p.is_riichi),
-                        bool(p.temporary_furiten),
-                        bool(p.riichi_furiten),
-                        _furiten_mask(p.furiten_tiles),
-                        int(p.open_melds),
-                    )
-                    for p in self.players
-                ]
-                result_pairs = pm.compute_reaction_option_masks_shoupai(
-                    players_payload,
-                    int(discarder),
-                    int(tile_idx),
-                    int(self.bakaze),
-                    int(self.dealer_seat),
-                    int(self.live_draws_left),
-                    bool(self.last_draw_was_gangzimo),
-                )
-            elif PM_STATELESS_SIMULATION_API_AVAILABLE:
-                players_payload = [
-                    (
-                        tuple(p.concealed),
-                        self._player_encoded_melds(seat),
-                        bool(p.is_riichi),
-                        bool(p.temporary_furiten),
-                        bool(p.riichi_furiten),
-                        _furiten_mask(p.furiten_tiles),
-                        int(p.open_melds),
-                    )
-                    for seat, p in enumerate(self.players)
-                ]
-                result_pairs = pm.compute_reaction_option_masks(
-                    players_payload,
-                    int(discarder),
-                    int(tile_idx),
-                    int(self.bakaze),
-                    int(self.dealer_seat),
-                    int(self.live_draws_left),
-                    bool(self.last_draw_was_gangzimo),
-                )
-            else:
-                result_pairs = []
+            result_pairs = self._compute_simulation_reaction_pairs(discarder, tile_idx)
             if not result_pairs:
                 return None
-            options_by_player: Dict[int, Set[str]] = {}
-            for seat, mask in result_pairs:
-                opts: Set[str] = set()
-                if mask & REACT_OPT_RON:
-                    opts.add("ron")
-                if mask & REACT_OPT_CHI:
-                    opts.add("chi")
-                if mask & REACT_OPT_PON:
-                    opts.add("pon")
-                if mask & REACT_OPT_MINKAN:
-                    opts.add("minkan")
-                if opts:
-                    options_by_player[int(seat)] = opts
+            options_by_player = self._decode_simulation_reaction_options(result_pairs)
             if not options_by_player:
                 return None
             options_by_player = self._filter_reaction_call_options(
@@ -1450,14 +1684,14 @@ class TenhouTokenizer:
             )
         options_by_player: Dict[int, Set[str]] = {}
         ron_cases: List[
-            Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int, bool, bool, bool]
+            Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int, bool, bool, bool, bool]
         ] = []
         ron_case_seats: List[int] = []
         # A ron on the last discard after a rinshan draw is still houtei.
         is_haidi = self.live_draws_left == 0
 
-        for offset in range(1, 4):
-            seat = (discarder + offset) % 4
+        for offset in range(1, self.seat_count):
+            seat = (discarder + offset) % self.seat_count
             p = self.players[seat]
             if not p.temporary_furiten and not p.riichi_furiten:
                 wait_mask = self._wait_mask(seat)
@@ -1478,6 +1712,7 @@ class TenhouTokenizer:
                             is_haidi,
                             False,
                             False,
+                            self.seat_count == 3,
                         )
                     )
                     ron_case_seats.append(seat)
@@ -1488,8 +1723,8 @@ class TenhouTokenizer:
                 if can_ron:
                     ron_seats.add(seat)
 
-        for offset in range(1, 4):
-            seat = (discarder + offset) % 4
+        for offset in range(1, self.seat_count):
+            seat = (discarder + offset) % self.seat_count
             p = self.players[seat]
             options: Set[str] = set()
             if seat in ron_seats:
@@ -1500,7 +1735,7 @@ class TenhouTokenizer:
                 continue
 
             if self.live_draws_left > 0:
-                if offset == 1 and self._can_chi(p.concealed, tile_idx):
+                if self.seat_count == 4 and offset == 1 and self._can_chi(p.concealed, tile_idx):
                     options.add("chi")
                 if p.concealed[tile_idx] >= 2:
                     options.add("pon")
@@ -1544,50 +1779,8 @@ class TenhouTokenizer:
         return filtered
 
     def _compute_kakan_reaction_options(self, actor: int, tile_idx: int) -> Optional[ReactionDecision]:
-        if PM_SIMULATION_API_AVAILABLE:
-            if PM_SHOUPAI_SIMULATION_API_AVAILABLE and all(p.sim_shoupai is not None for p in self.players):
-                players_payload = [
-                    (
-                        p.sim_shoupai,
-                        bool(p.is_riichi),
-                        bool(p.temporary_furiten),
-                        bool(p.riichi_furiten),
-                        _furiten_mask(p.furiten_tiles),
-                        int(p.open_melds),
-                    )
-                    for p in self.players
-                ]
-                result_pairs = pm.compute_rob_kan_option_masks_shoupai(
-                    players_payload,
-                    int(actor),
-                    int(tile_idx),
-                    int(self.bakaze),
-                    int(self.dealer_seat),
-                    False,
-                )
-            elif PM_STATELESS_SIMULATION_API_AVAILABLE:
-                players_payload = [
-                    (
-                        tuple(p.concealed),
-                        self._player_encoded_melds(seat),
-                        bool(p.is_riichi),
-                        bool(p.temporary_furiten),
-                        bool(p.riichi_furiten),
-                        _furiten_mask(p.furiten_tiles),
-                        int(p.open_melds),
-                    )
-                    for seat, p in enumerate(self.players)
-                ]
-                result_pairs = pm.compute_rob_kan_option_masks(
-                    players_payload,
-                    int(actor),
-                    int(tile_idx),
-                    int(self.bakaze),
-                    int(self.dealer_seat),
-                    False,
-                )
-            else:
-                result_pairs = []
+        if self._use_multi_player_simulation():
+            result_pairs = self._compute_simulation_rob_kan_pairs(actor, tile_idx, require_kokushi=False)
             options_by_player = {
                 int(seat): {"ron"} for seat, mask in result_pairs if mask & REACT_OPT_RON
             }
@@ -1601,11 +1794,11 @@ class TenhouTokenizer:
             )
         options_by_player: Dict[int, Set[str]] = {}
         ron_cases: List[
-            Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int, bool, bool, bool]
+            Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int, bool, bool, bool, bool]
         ] = []
         ron_case_seats: List[int] = []
 
-        for seat in range(4):
+        for seat in range(self.seat_count):
             if seat == actor:
                 continue
 
@@ -1632,6 +1825,7 @@ class TenhouTokenizer:
                     False,
                     False,
                     True,
+                    self.seat_count == 3,
                 )
             )
             ron_case_seats.append(seat)
@@ -1651,50 +1845,8 @@ class TenhouTokenizer:
         )
 
     def _compute_ankan_reaction_options(self, actor: int, tile_idx: int) -> Optional[ReactionDecision]:
-        if PM_SIMULATION_API_AVAILABLE:
-            if PM_SHOUPAI_SIMULATION_API_AVAILABLE and all(p.sim_shoupai is not None for p in self.players):
-                players_payload = [
-                    (
-                        p.sim_shoupai,
-                        bool(p.is_riichi),
-                        bool(p.temporary_furiten),
-                        bool(p.riichi_furiten),
-                        _furiten_mask(p.furiten_tiles),
-                        int(p.open_melds),
-                    )
-                    for p in self.players
-                ]
-                result_pairs = pm.compute_rob_kan_option_masks_shoupai(
-                    players_payload,
-                    int(actor),
-                    int(tile_idx),
-                    int(self.bakaze),
-                    int(self.dealer_seat),
-                    True,
-                )
-            elif PM_STATELESS_SIMULATION_API_AVAILABLE:
-                players_payload = [
-                    (
-                        tuple(p.concealed),
-                        self._player_encoded_melds(seat),
-                        bool(p.is_riichi),
-                        bool(p.temporary_furiten),
-                        bool(p.riichi_furiten),
-                        _furiten_mask(p.furiten_tiles),
-                        int(p.open_melds),
-                    )
-                    for seat, p in enumerate(self.players)
-                ]
-                result_pairs = pm.compute_rob_kan_option_masks(
-                    players_payload,
-                    int(actor),
-                    int(tile_idx),
-                    int(self.bakaze),
-                    int(self.dealer_seat),
-                    True,
-                )
-            else:
-                result_pairs = []
+        if self._use_multi_player_simulation():
+            result_pairs = self._compute_simulation_rob_kan_pairs(actor, tile_idx, require_kokushi=True)
             options_by_player = {
                 int(seat): {"ron"} for seat, mask in result_pairs if mask & REACT_OPT_RON
             }
@@ -1708,11 +1860,11 @@ class TenhouTokenizer:
             )
         options_by_player: Dict[int, Set[str]] = {}
         ron_cases: List[
-            Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int, bool, bool, bool]
+            Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int, bool, bool, bool, bool]
         ] = []
         ron_case_seats: List[int] = []
 
-        for seat in range(4):
+        for seat in range(self.seat_count):
             if seat == actor:
                 continue
 
@@ -1742,6 +1894,7 @@ class TenhouTokenizer:
                     False,
                     False,
                     True,
+                    self.seat_count == 3,
                 )
             )
             ron_case_seats.append(seat)
@@ -2005,6 +2158,32 @@ class TenhouTokenizer:
         self.tokens.extend(self._build_dora_block(tile))
         self.awaiting_kaigang -= 1
 
+    def _on_penuki(self, n: dict) -> None:
+        self._require_round_initialized()
+        if self.seat_count != 3:
+            raise TokenizeError("penuki is only valid in three-player games")
+        n = self._require_dict(n, field="penuki")
+        actor = self._require_seat(n["l"], field="penuki.l")
+        tile_token = token_tile(_strip_tile_suffix(self._require_str(n["p"], field="penuki.p")))
+        if tile_token != "z4":
+            raise TokenizeError("penuki currently only supports North extraction")
+        if not self.pending_self or self.pending_self.actor != actor:
+            raise TokenizeError("penuki requires a pending self decision")
+        if "penuki" not in self.pending_self.options:
+            raise TokenizeError("penuki action was not offered")
+        self._finalize_self({"penuki"}, actor=actor, chosen_tiles={"penuki": tile_token})
+        self.first_turn_open_calls_seen = True
+        # Nuki-dora affects final han, but like other dora it is not itself a yaku.
+        # Win-legality checks here intentionally depend on actual yaku only, so we
+        # track the extraction in round flow/state but do not feed a nuki count into
+        # has_hupai/evaluate_draw.
+        self._consume_concealed_token(self.players[actor], tile_token)
+        self.players[actor].last_draw_tile = None
+        self._invalidate_wait_mask(actor)
+        self.expected_discard_actor = None
+        self.expected_draw_actor = actor
+        self.pending_dead_wall_draw = True
+
     def _emit_non_winning_reaction_passes_before_result(self, remaining_ron_winners: Set[int] | None = None) -> None:
         if not self.pending_reaction:
             return
@@ -2056,7 +2235,7 @@ class TenhouTokenizer:
         baojia = h.get("baojia")
         if baojia is not None:
             baojia = self._require_seat(baojia, field="hule.baojia")
-        fenpei = self._require_four(h["fenpei"], field="hule.fenpei")
+        fenpei = self._require_seat_list(h["fenpei"], field="hule.fenpei")
 
         if baojia is not None:
             if not self.pending_reaction or baojia != self.pending_reaction.discarder:
@@ -2078,8 +2257,10 @@ class TenhouTokenizer:
                 raise TokenizeError("tsumo action was not offered")
             self._finalize_self({"tsumo"}, actor=winner)
 
+        detail_tokens = self._build_hule_detail_block(h)
         deltas = [self._require_score(delta, field=f"hule.fenpei[{seat}]") for seat, delta in enumerate(fenpei)]
-        for seat in range(4):
+        self.tokens.extend(detail_tokens)
+        for seat in range(self.seat_count):
             self.players[seat].score += deltas[seat]
         self.tokens.extend(self._build_score_delta_block(deltas))
         if baojia is None or not more_ron_expected:
@@ -2091,7 +2272,7 @@ class TenhouTokenizer:
         name = p.get("name", "unknown")
         if not isinstance(name, str):
             raise TokenizeError("pingju.name must be a string")
-        fenpei = self._require_four(p["fenpei"], field="pingju.fenpei")
+        fenpei = self._require_seat_list(p["fenpei"], field="pingju.fenpei")
         normalized_name = self._normalize_pingju_name(name)
         if self.pending_reaction:
             if normalized_name == "sanchahou":
@@ -2111,7 +2292,7 @@ class TenhouTokenizer:
                 self._finalize_self({"kyushukyuhai"}, actor=actor)
         self.tokens.append(f"pingju_{normalized_name}")
         deltas = [self._require_score(delta, field=f"pingju.fenpei[{seat}]") for seat, delta in enumerate(fenpei)]
-        for seat in range(4):
+        for seat in range(self.seat_count):
             self.players[seat].score += deltas[seat]
         self.tokens.extend(self._build_score_delta_block(deltas))
         self.tokens.extend(self._build_rank_block(self._compute_round_rank_places()))
@@ -2139,6 +2320,54 @@ class TenhouTokenizer:
         if text in mapping:
             return mapping[text]
         raise TokenizeError(f"unknown pingju.name: {text}")
+
+    def _build_hule_detail_block(self, h: dict) -> List[str]:
+        block: List[str] = []
+        hupai = h.get("hupai")
+        if hupai is not None:
+            if not isinstance(hupai, list):
+                raise TokenizeError("hule.hupai must be a list")
+            for idx, entry in enumerate(hupai):
+                if not isinstance(entry, dict):
+                    raise TokenizeError(f"hule.hupai[{idx}] must be a dict")
+                fanshu_value = entry.get("fanshu")
+                if isinstance(fanshu_value, int) and fanshu_value <= 0:
+                    continue
+                name = entry.get("name")
+                if not isinstance(name, str):
+                    raise TokenizeError(f"hule.hupai[{idx}].name must be a string")
+                if name == "":
+                    # The bundled Tenhou converter still emits a blank placeholder for one yaku slot.
+                    continue
+                token = HUPAI_TOKEN_BY_NAME.get(name)
+                if token is None:
+                    raise TokenizeError(f"unknown hule.hupai name: {name}")
+                block.append(token)
+
+        damanguan = h.get("damanguan")
+        if damanguan is not None:
+            if isinstance(damanguan, bool) or not isinstance(damanguan, int) or damanguan <= 0:
+                raise TokenizeError("hule.damanguan must be a positive integer")
+            block.append(f"yakuman_{damanguan}")
+            return block
+
+        fanshu = h.get("fanshu")
+        if fanshu is not None:
+            if isinstance(fanshu, bool) or not isinstance(fanshu, int) or fanshu <= 0:
+                raise TokenizeError("hule.fanshu must be a positive integer")
+            if fanshu > 13:
+                fanshu = 13
+            block.append(f"han_{fanshu}")
+
+        fu = h.get("fu")
+        if fu is not None:
+            if isinstance(fu, bool) or not isinstance(fu, int) or fu <= 0:
+                raise TokenizeError("hule.fu must be a positive integer")
+            if fu > 110:
+                raise TokenizeError("hule.fu must be at most 110")
+            block.append(f"fu_{fu}")
+
+        return block
 
     def _finalize_self(
         self,
@@ -2196,6 +2425,8 @@ class TenhouTokenizer:
 
     def _self_option_tiles(self, actor: int, drawn_tile: int) -> Dict[str, List[str]]:
         option_tiles: Dict[str, List[str]] = {}
+        if self.seat_count == 3 and self.players[actor].concealed[tile_to_index("z4")] > 0:
+            option_tiles["penuki"] = ["z4"]
         ankan_tiles = self._ankan_candidate_tiles(actor, drawn_tile=drawn_tile)
         if ankan_tiles:
             option_tiles["ankan"] = ankan_tiles
@@ -2232,7 +2463,7 @@ class TenhouTokenizer:
             return []
         pre_draw_counts[drawn_tile] -= 1
 
-        waits_before_mask = _pm_wait_mask(pre_draw_counts, p.meld_count)
+        waits_before_mask = _pm_wait_mask(pre_draw_counts, p.meld_count, self.seat_count == 3)
         if waits_before_mask == 0:
             return []
 
@@ -2240,7 +2471,7 @@ class TenhouTokenizer:
         for tile in candidates:
             next_counts = list(p.concealed)
             next_counts[tile] -= 4
-            waits_after_mask = _pm_wait_mask(next_counts, p.meld_count + 1)
+            waits_after_mask = _pm_wait_mask(next_counts, p.meld_count + 1, self.seat_count == 3)
             if waits_after_mask != 0 and waits_after_mask == waits_before_mask:
                 allowed.append(index_to_tile(tile))
         return allowed
@@ -2350,7 +2581,7 @@ class TenhouTokenizer:
             self.expected_discard_actor = None
             self.expected_draw_actor = self.pending_reaction.discarder
             if self.pending_reaction.trigger == "discard":
-                self.expected_draw_actor = (self.pending_reaction.discarder + 1) % 4
+                self.expected_draw_actor = (self.pending_reaction.discarder + 1) % self.seat_count
         self.pending_reaction = None
 
     def _is_reaction_continuation(self, key: str, value: dict) -> bool:
@@ -2376,6 +2607,8 @@ class TenhouTokenizer:
             return True
         if not isinstance(value, dict):
             return False
+        if key == "penuki" and value.get("l") == actor:
+            return True
         if key == "dapai" and value.get("l") == actor:
             return True
         if key == "gang" and value.get("l") == actor:
