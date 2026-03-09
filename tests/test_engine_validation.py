@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -20,6 +21,19 @@ from tests.validation_helpers import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+SANMA_RAW = ROOT / "tests" / "fixtures" / "tenhou" / "2014091101gm-00b9-0000-5ca6b487.txt"
+CONVERT = ROOT / "tests" / "fixtures" / "tenhou" / "convert.pl"
+
+
+def _convert_sanma_sample() -> dict:
+    proc = subprocess.run(
+        ["perl", "-T", str(CONVERT), str(SANMA_RAW)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(proc.stdout)
 
 
 def test_validation_helpers_accept_minimal_game() -> None:
@@ -29,6 +43,25 @@ def test_validation_helpers_accept_minimal_game() -> None:
     validate_token_stream(tokens)
     validate_score_rotation(game)
     validate_round_stepwise(game["log"][0])
+
+
+def test_validation_helpers_accept_converted_sanma_game() -> None:
+    game = _convert_sanma_sample()
+    tokens = TenhouTokenizer().tokenize_game(game)
+
+    validate_token_stream(tokens)
+    validate_score_rotation(game)
+
+
+def test_converted_sanma_game_emits_hule_detail_tokens() -> None:
+    game = _convert_sanma_sample()
+
+    tokens = TenhouTokenizer().tokenize_game(game)
+
+    assert "yaku_riichi" in tokens
+    assert "yaku_menzen_tsumo" in tokens
+    assert "han_6" in tokens
+    assert "fu_30" in tokens
 
 
 def test_stepwise_validation_accepts_call_then_discard_round() -> None:
