@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# Test and local validation dependencies.
+pytest==9.0.2

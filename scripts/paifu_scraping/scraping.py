@@ -20,13 +20,21 @@ LOG_DIR = DATA_ROOT / "logs"
 RAW_DIR = DATA_ROOT / "paifu_raw"
 JSON_DIR = DATA_ROOT / "paifu_json"
 TOKENIZED_DIR = DATA_ROOT / "tokenized"
+HF_DATASETS_DIR = SCRIPT_DIR.parents[1] / "data" / "huggingface_datasets"
 CONVERT = SCRIPT_DIR / "convert.pl"
 
 SRC_DIR = SCRIPT_DIR.parents[1] / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from tenhou_tokenizer import TenhouTokenizer
+from tenhou_tokenizer import (
+    TenhouTokenizer,
+    Vocabulary,
+    load_token_ids,
+    save_hf_tokenizer_assets,
+    save_token_ids,
+    save_year_hf_dataset,
+)
 
 TARGET_PLAYERS = {"三", "四"}
 TARGET_ROUNDS = {"東", "南"}
@@ -152,26 +160,32 @@ def has_valid_json(json_path: Path) -> bool:
     return isinstance(game, dict) and isinstance(game.get("log"), list)
 
 
-def has_valid_tokenized(tokenized_path: Path) -> bool:
+def has_valid_tokenized(tokenized_path: Path, vocab: Vocabulary) -> bool:
     if not tokenized_path.is_file() or tokenized_path.stat().st_size == 0:
         return False
     try:
-        tokens = json.loads(tokenized_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        input_ids = load_token_ids(tokenized_path, expected_vocab_fingerprint=vocab.fingerprint)
+    except (OSError, ValueError):
         return False
-    return isinstance(tokens, list) and all(isinstance(token, str) for token in tokens)
+    return all(isinstance(token_id, int) and token_id >= 0 for token_id in input_ids)
 
 
-def tokenize_json_to_file(tokenizer: TenhouTokenizer, json_path: Path, tokenized_path: Path) -> None:
+def tokenize_json_to_file(
+    tokenizer: TenhouTokenizer,
+    vocab: Vocabulary,
+    json_path: Path,
+    tokenized_path: Path,
+) -> None:
     game = json.loads(json_path.read_text(encoding="utf-8"))
     tokens = tokenizer.tokenize_game(game)
-    atomic_write_text(tokenized_path, json.dumps(tokens, ensure_ascii=False))
+    save_token_ids(tokenized_path, vocab.encode(tokens), vocab_fingerprint=vocab.fingerprint)
 
 
 def main() -> None:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     JSON_DIR.mkdir(parents=True, exist_ok=True)
     TOKENIZED_DIR.mkdir(parents=True, exist_ok=True)
+    HF_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 
     archives = iter_archive_zips()
     if not archives:
@@ -180,14 +194,18 @@ def main() -> None:
         raise FileNotFoundError(f"convert.pl not found: {CONVERT}")
 
     tokenizer = TenhouTokenizer()
+    vocab = Vocabulary.load()
+    save_hf_tokenizer_assets()
     with requests.Session() as session:
         for year, zip_path in archives:
             raw_year_dir = RAW_DIR / str(year)
             json_year_dir = JSON_DIR / str(year)
             tokenized_year_dir = TOKENIZED_DIR / str(year)
+            hf_dataset_year_dir = HF_DATASETS_DIR / str(year)
             raw_year_dir.mkdir(parents=True, exist_ok=True)
             json_year_dir.mkdir(parents=True, exist_ok=True)
             tokenized_year_dir.mkdir(parents=True, exist_ok=True)
+            year_updated = False
 
             for line in tqdm(iter_archive_lines(zip_path), desc=str(year)):
                 log_id = parse_log_id(line)
@@ -196,8 +214,8 @@ def main() -> None:
 
                 raw_path = raw_year_dir / f"{log_id}.txt"
                 json_path = json_year_dir / f"{log_id}.json"
-                tokenized_path = tokenized_year_dir / f"{log_id}.json"
-                if has_valid_tokenized(tokenized_path):
+                tokenized_path = tokenized_year_dir / f"{log_id}.ids.bin"
+                if has_valid_tokenized(tokenized_path, vocab):
                     continue
 
                 try:
@@ -206,12 +224,22 @@ def main() -> None:
                             atomic_write_text(raw_path, fetch_log_text(session, log_id))
                             time.sleep(0.1)
                         convert_raw_to_json(raw_path, json_path)
-                    tokenize_json_to_file(tokenizer, json_path, tokenized_path)
+                        year_updated = True
+                    tokenize_json_to_file(tokenizer, vocab, json_path, tokenized_path)
+                    year_updated = True
                 except KeyboardInterrupt:
                     raise
                 except Exception as exc:
                     print(log_id)
                     print(exc)
+
+            if year_updated or not hf_dataset_year_dir.exists():
+                save_year_hf_dataset(
+                    year=year,
+                    tokenized_dir=tokenized_year_dir,
+                    json_dir=json_year_dir,
+                    output_dir=hf_dataset_year_dir,
+                )
 
 
 if __name__ == "__main__":

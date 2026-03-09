@@ -6,6 +6,10 @@ This repository now includes a streaming Tenhou tokenizer that adds explicit opt
 
 - Engine: `src/tenhou_tokenizer/engine.py`
 - CLI: `scripts/tokenize_tenhou.py`
+- Hugging Face tokenizer assets: `tokenizer/`
+
+`tokenizer/` can be loaded directly via `tenhou_tokenizer.MahjongTokenizerFast.from_pretrained("tokenizer")`.
+The repository vocabulary remains line-based in `tokenizer/vocab.txt`; Hugging Face assets are derived from that same source of truth.
 
 ### What is added
 
@@ -23,8 +27,10 @@ Winning-hand detail tokens are emitted after `take_self_*_tsumo` / `take_react_*
 ### Run (small test)
 
 ```bash
-./scripts/setup_pymahjong.sh
+python -m venv .venv
 source .venv/bin/activate
+pip install -r requirements-dev.txt
+./scripts/setup_pymahjong.sh
 python scripts/tokenize_tenhou.py --max-games 200 --progress-every 50
 ```
 
@@ -59,7 +65,7 @@ python scripts/tokenize_tenhou.py --zip-path data/raw/tenhou/data2023.zip --stri
 
 ```bash
 source .venv/bin/activate
-pip install -U pytest
+pip install -r requirements-dev.txt
 pytest -m "not slow" -q
 ```
 
@@ -78,6 +84,7 @@ pytest -m slow -q
 This tokenizer is `pymahjong`-first: shanten and hupai checks are delegated to its C++ implementation.
 
 Generated token outputs under `data/processed/` are local artifacts and are not tracked in Git.
+Scraped training data artifacts under `data/raw/tenhou/` and `data/huggingface_datasets/` are also local.
 
 ## References
 

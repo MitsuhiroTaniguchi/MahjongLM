@@ -39,4 +39,5 @@ docs/references/legacy_colab/
 
 # Large local datasets
 data/raw/tenhou/
+data/huggingface_datasets/
 data/processed/
