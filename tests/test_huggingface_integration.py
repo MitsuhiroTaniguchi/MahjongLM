@@ -186,6 +186,7 @@ def test_hf_tokenizer_assets_cover_converted_sanma_game() -> None:
 
 
 def test_hf_tokenizer_import_does_not_require_pymahjong(tmp_path: Path) -> None:
+    expected_ids = Vocabulary.load().encode(["game_start", "game_end"])
     script = tmp_path / "probe.py"
     script.write_text(
         """
@@ -219,4 +220,4 @@ print(tok.convert_tokens_to_ids(["game_start", "game_end"]))
     )
 
     assert "MahjongTokenizerFast" in proc.stdout
-    assert "[4, 9]" in proc.stdout
+    assert str(expected_ids) in proc.stdout
