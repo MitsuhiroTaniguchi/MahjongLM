@@ -45,9 +45,9 @@ def test_imperfect_view_masks_other_players_haipai_tiles() -> None:
     assert "haipai_0" in view.tokens
     assert "m1" in view.tokens
     assert "haipai_1" in view.tokens
-    assert "hidden_hand_1" in view.tokens
-    assert "hidden_hand_2" in view.tokens
-    assert "hidden_hand_3" in view.tokens
+    assert "hidden_haipai_1" in view.tokens
+    assert "hidden_haipai_2" in view.tokens
+    assert "hidden_haipai_3" in view.tokens
 
 
 def test_imperfect_view_masks_other_players_draws_and_hides_their_self_options() -> None:

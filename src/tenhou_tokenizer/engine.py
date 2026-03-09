@@ -2354,7 +2354,7 @@ class TenhouTokenizer:
             "流局": "ryukyoku",
             "九種九牌": "kyushukyuhai",
             "流し満貫": "nagashimangan",
-            "四風連打": "sufonrenda",
+            "四風連打": "sufurenda",
             "四槓散了": "sukantsu",
             "四家立直": "suuchariichi",
             "三家和了": "sanchahou",

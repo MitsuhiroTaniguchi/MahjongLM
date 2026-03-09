@@ -36,8 +36,8 @@ class TokenizedGameView:
     tokens: list[str]
 
 
-def _hidden_hand_token(seat: int) -> str:
-    return f"hidden_hand_{seat}"
+def _hidden_haipai_token(seat: int) -> str:
+    return f"hidden_haipai_{seat}"
 
 
 def _hidden_draw_token(seat: int) -> str:
@@ -94,7 +94,7 @@ def _transform_qipai(tokens: list[str], viewer_seat: int | None) -> list[str]:
             if viewer_seat == seat:
                 out.append(tokens[idx])
             else:
-                out.append(_hidden_hand_token(seat))
+                out.append(_hidden_haipai_token(seat))
             idx += 1
 
     return out

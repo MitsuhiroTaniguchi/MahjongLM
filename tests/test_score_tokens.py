@@ -418,7 +418,7 @@ def test_suufonrenda_does_not_emit_opened_hands() -> None:
         }
     )
 
-    assert "pingju_sufonrenda" in tokenizer.tokens
+    assert "pingju_sufurenda" in tokenizer.tokens
     assert all(not token.startswith("opened_hand_") for token in tokenizer.tokens)
 
 
