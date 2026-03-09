@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import math
+import random
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import numpy as np
 from datasets import Dataset, Features, Sequence, Value
@@ -13,6 +15,7 @@ from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import WhitespaceSplit
 from transformers import PreTrainedTokenizerFast
 
+from .viewspec import parse_view_artifact_name
 from .vocab import DEFAULT_VOCAB_PATH, Vocabulary, load_token_ids
 
 
@@ -108,12 +111,19 @@ def load_hf_tokenizer(tokenizer_dir: Path = DEFAULT_TOKENIZER_DIR) -> MahjongTok
     return MahjongTokenizerFast.from_pretrained(str(tokenizer_dir))
 
 
-def _iter_year_rows(year: int, tokenized_dir: Path, json_dir: Path) -> Iterable[dict]:
+def _iter_year_rows(year: int, tokenized_dir: Path, json_dir: Path, vocab_fingerprint: bytes) -> Iterable[dict]:
     for tokenized_path in sorted(tokenized_dir.glob("*.ids.bin")):
-        game_id = tokenized_path.name.removesuffix(".ids.bin")
+        try:
+            view_spec = parse_view_artifact_name(tokenized_path.name)
+        except ValueError:
+            # Ignore legacy single-view caches such as "{game_id}.ids.bin".
+            # The scraper regenerates multiview artifacts alongside them, and
+            # dataset export should remain forward-compatible without manual cleanup.
+            continue
+        game_id = view_spec.game_id
         json_path = json_dir / f"{game_id}.json"
         game = json.loads(json_path.read_text(encoding="utf-8"))
-        input_ids = load_token_ids(tokenized_path)
+        input_ids = load_token_ids(tokenized_path, expected_vocab_fingerprint=vocab_fingerprint)
         seat_count = 0
         player = game.get("player")
         if isinstance(player, list):
@@ -137,8 +147,11 @@ def _iter_year_rows(year: int, tokenized_dir: Path, json_dir: Path) -> Iterable[
             raise ValueError(f"unable to infer seat_count for {game_id}")
         yield {
             "game_id": game_id,
+            "group_id": game_id,
             "year": year,
             "seat_count": seat_count,
+            "view_type": view_spec.view_type,
+            "viewer_seat": -1 if view_spec.viewer_seat is None else view_spec.viewer_seat,
             "length": len(input_ids),
             "input_ids": input_ids,
         }
@@ -153,19 +166,28 @@ def save_year_hf_dataset(
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     if output_dir.exists():
         shutil.rmtree(output_dir)
-    token_dtype = "uint16" if len(Vocabulary.load().tokens) < 2**16 else "uint32"
+    vocab = Vocabulary.load()
+    token_dtype = "uint16" if len(vocab.tokens) < 2**16 else "uint32"
     features = Features(
         {
             "game_id": Value("string"),
+            "group_id": Value("string"),
             "year": Value("int32"),
             "seat_count": Value("int8"),
+            "view_type": Value("string"),
+            "viewer_seat": Value("int8"),
             "length": Value("int32"),
             "input_ids": Sequence(Value(token_dtype)),
         }
     )
     dataset = Dataset.from_generator(
         _iter_year_rows,
-        gen_kwargs={"year": year, "tokenized_dir": tokenized_dir, "json_dir": json_dir},
+        gen_kwargs={
+            "year": year,
+            "tokenized_dir": tokenized_dir,
+            "json_dir": json_dir,
+            "vocab_fingerprint": vocab.fingerprint,
+        },
         features=features,
     )
     dataset.save_to_disk(str(output_dir), max_shard_size="512MB")
@@ -182,6 +204,9 @@ class MahjongDataCollatorForCausalLM:
     def __call__(self, features: list[dict]) -> dict[str, np.ndarray]:
         if not features:
             raise ValueError("features must not be empty")
+        group_ids = [feature.get("group_id") for feature in features if "group_id" in feature]
+        if group_ids and len(set(group_ids)) != 1:
+            raise ValueError("all features in a batch must share the same group_id")
 
         pad_token_id = self.tokenizer.pad_token_id
         if pad_token_id is None:
@@ -203,15 +228,63 @@ class MahjongDataCollatorForCausalLM:
             batch_attention_mask.append([1] * len(input_ids) + [0] * pad_length)
             batch_labels.append(input_ids + [self.label_pad_token_id] * pad_length)
 
-        arrays = {
+        arrays: dict[str, np.ndarray | list[str]] = {
             "input_ids": np.asarray(batch_input_ids, dtype=np.int64),
             "attention_mask": np.asarray(batch_attention_mask, dtype=np.int64),
             "labels": np.asarray(batch_labels, dtype=np.int64),
         }
+        if "group_id" in features[0]:
+            arrays["group_id"] = [feature["group_id"] for feature in features]
+        if "view_type" in features[0]:
+            arrays["view_type"] = [feature["view_type"] for feature in features]
+        if "viewer_seat" in features[0]:
+            arrays["viewer_seat"] = np.asarray([feature["viewer_seat"] for feature in features], dtype=np.int64)
         if self.return_tensors == "np":
             return arrays
         if self.return_tensors == "pt":
             import torch
 
-            return {key: torch.from_numpy(value) for key, value in arrays.items()}
+            out = {}
+            for key, value in arrays.items():
+                if isinstance(value, np.ndarray):
+                    out[key] = torch.from_numpy(value)
+                else:
+                    out[key] = value
+            return out
         raise ValueError(f"unsupported return_tensors: {self.return_tensors}")
+
+
+@dataclass
+class MahjongGroupBatchSampler:
+    group_ids: Sequence[str]
+    groups_per_batch: int = 1
+    shuffle: bool = False
+    seed: int = 0
+
+    def __post_init__(self) -> None:
+        if self.groups_per_batch <= 0:
+            raise ValueError("groups_per_batch must be positive")
+
+    def __iter__(self):
+        grouped_indices: dict[str, list[int]] = {}
+        group_order: list[str] = []
+        for idx, group_id in enumerate(self.group_ids):
+            if group_id not in grouped_indices:
+                grouped_indices[group_id] = []
+                group_order.append(group_id)
+            grouped_indices[group_id].append(idx)
+
+        if self.shuffle:
+            rng = random.Random(self.seed)
+            rng.shuffle(group_order)
+
+        for batch_start in range(0, len(group_order), self.groups_per_batch):
+            batch_groups = group_order[batch_start : batch_start + self.groups_per_batch]
+            batch_indices: list[int] = []
+            for group_id in batch_groups:
+                batch_indices.extend(grouped_indices[group_id])
+            yield batch_indices
+
+    def __len__(self) -> int:
+        unique_groups = len(dict.fromkeys(self.group_ids))
+        return math.ceil(unique_groups / self.groups_per_batch)

@@ -646,3 +646,13 @@ pingju_sufonrenda
 pingju_sukantsu
 pingju_suuchariichi
 pingju_sanchahou
+view_complete
+view_imperfect
+hidden_hand_0
+hidden_hand_1
+hidden_hand_2
+hidden_hand_3
+draw_0_hidden
+draw_1_hidden
+draw_2_hidden
+draw_3_hidden

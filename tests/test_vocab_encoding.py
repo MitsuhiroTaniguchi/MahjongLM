@@ -4,7 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from tenhou_tokenizer import TenhouTokenizer, Vocabulary, load_token_ids, save_token_ids
+from tenhou_tokenizer import TenhouTokenizer, Vocabulary, load_token_ids, save_token_ids, tokenize_game_views
 from tests.fixtures.synthetic_logs import minimal_game, pingju_event, qipai_event
 
 
@@ -81,3 +81,11 @@ def test_vocab_covers_converted_sanma_game_tokens() -> None:
     tokens = TenhouTokenizer().tokenize_game(_convert_sanma_sample())
 
     assert vocab.decode(vocab.encode(tokens)) == tokens
+
+
+def test_vocab_covers_all_multiview_tokens() -> None:
+    vocab = Vocabulary.load()
+    views = tokenize_game_views(minimal_game([qipai_event(), pingju_event()]))
+
+    for view in views:
+        assert vocab.decode(vocab.encode(view.tokens)) == view.tokens

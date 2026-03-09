@@ -721,7 +721,17 @@
       "pingju_sufonrenda": 644,
       "pingju_sukantsu": 645,
       "pingju_suuchariichi": 646,
-      "pingju_sanchahou": 647
+      "pingju_sanchahou": 647,
+      "view_complete": 648,
+      "view_imperfect": 649,
+      "hidden_hand_0": 650,
+      "hidden_hand_1": 651,
+      "hidden_hand_2": 652,
+      "hidden_hand_3": 653,
+      "draw_0_hidden": 654,
+      "draw_1_hidden": 655,
+      "draw_2_hidden": 656,
+      "draw_3_hidden": 657
     },
     "unk_token": "<unk>"
   }

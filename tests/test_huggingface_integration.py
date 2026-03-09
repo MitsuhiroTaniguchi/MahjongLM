@@ -7,6 +7,7 @@ from pathlib import Path
 
 from tenhou_tokenizer import (
     MahjongDataCollatorForCausalLM,
+    MahjongGroupBatchSampler,
     TenhouTokenizer,
     Vocabulary,
     build_hf_tokenizer,
@@ -14,6 +15,7 @@ from tenhou_tokenizer import (
     save_hf_tokenizer_assets,
     save_token_ids,
     save_year_hf_dataset,
+    tokenize_game_views,
 )
 from tests.fixtures.synthetic_logs import minimal_game, pingju_event, qipai_event
 
@@ -61,11 +63,16 @@ def test_save_year_hf_dataset_writes_input_ids_dataset(tmp_path: Path) -> None:
     tokenized_dir.mkdir(parents=True)
     json_dir.mkdir(parents=True)
 
-    tokenizer = TenhouTokenizer()
     vocab = Vocabulary.load()
     game = minimal_game([qipai_event(), pingju_event()])
-    tokens = tokenizer.tokenize_game(game)
-    save_token_ids(tokenized_dir / "g0.ids.bin", vocab.encode(tokens), vocab_fingerprint=vocab.fingerprint)
+    views = tokenize_game_views(game)
+    for view in views:
+        suffix = "complete" if view.viewer_seat is None else f"player_{view.viewer_seat}"
+        save_token_ids(
+            tokenized_dir / f"g0__{suffix}.ids.bin",
+            vocab.encode(view.tokens),
+            vocab_fingerprint=vocab.fingerprint,
+        )
     (json_dir / "g0.json").write_text(json.dumps(game, ensure_ascii=False), encoding="utf-8")
 
     output_dir = tmp_path / "hf" / str(year)
@@ -74,12 +81,49 @@ def test_save_year_hf_dataset_writes_input_ids_dataset(tmp_path: Path) -> None:
     from datasets import load_from_disk
 
     dataset = load_from_disk(str(output_dir))
+    assert len(dataset) == 5
     row = dataset[0]
     assert row["game_id"] == "g0"
+    assert row["group_id"] == "g0"
     assert row["year"] == year
     assert row["seat_count"] == 4
-    assert row["length"] == len(tokens)
-    assert row["input_ids"] == vocab.encode(tokens)
+    assert row["view_type"] in {"complete", "imperfect"}
+    assert row["viewer_seat"] in {-1, 0, 1, 2, 3}
+    assert row["length"] == len(row["input_ids"])
+
+
+def test_save_year_hf_dataset_ignores_legacy_single_view_cache(tmp_path: Path) -> None:
+    year = 2026
+    tokenized_dir = tmp_path / "tokenized" / str(year)
+    json_dir = tmp_path / "json" / str(year)
+    tokenized_dir.mkdir(parents=True)
+    json_dir.mkdir(parents=True)
+
+    vocab = Vocabulary.load()
+    game = minimal_game([qipai_event(), pingju_event()])
+    views = tokenize_game_views(game)
+    for view in views:
+        suffix = "complete" if view.viewer_seat is None else f"player_{view.viewer_seat}"
+        save_token_ids(
+            tokenized_dir / f"g0__{suffix}.ids.bin",
+            vocab.encode(view.tokens),
+            vocab_fingerprint=vocab.fingerprint,
+        )
+    save_token_ids(
+        tokenized_dir / "g0.ids.bin",
+        vocab.encode(views[0].tokens),
+        vocab_fingerprint=vocab.fingerprint,
+    )
+    (json_dir / "g0.json").write_text(json.dumps(game, ensure_ascii=False), encoding="utf-8")
+
+    output_dir = tmp_path / "hf" / str(year)
+    save_year_hf_dataset(year=year, tokenized_dir=tokenized_dir, json_dir=json_dir, output_dir=output_dir)
+
+    from datasets import load_from_disk
+
+    dataset = load_from_disk(str(output_dir))
+    assert len(dataset) == 5
+    assert all(row["game_id"] == "g0" for row in dataset)
 
 
 def test_collator_builds_attention_mask_and_labels() -> None:
@@ -100,6 +144,35 @@ def test_collator_builds_attention_mask_and_labels() -> None:
     ]
     assert batch["labels"].tolist()[0][:3] == [4, 6, 10]
     assert all(value == -100 for value in batch["labels"].tolist()[0][3:])
+
+
+def test_collator_rejects_mixed_group_ids() -> None:
+    tokenizer = build_hf_tokenizer()
+    collator = MahjongDataCollatorForCausalLM(tokenizer=tokenizer, return_tensors="np")
+
+    try:
+        collator(
+            [
+                {"group_id": "g0", "input_ids": [4, 6, 10]},
+                {"group_id": "g1", "input_ids": [4, 5, 8]},
+            ]
+        )
+    except ValueError as exc:
+        assert "same group_id" in str(exc)
+    else:
+        raise AssertionError("expected mixed group_ids to fail")
+
+
+def test_group_batch_sampler_keeps_views_together() -> None:
+    sampler = MahjongGroupBatchSampler(
+        ["g0", "g0", "g0", "g1", "g1", "g2"],
+        groups_per_batch=2,
+        shuffle=False,
+    )
+
+    batches = list(sampler)
+
+    assert batches == [[0, 1, 2, 3, 4], [5]]
 
 
 def test_hf_tokenizer_assets_cover_converted_sanma_game() -> None:

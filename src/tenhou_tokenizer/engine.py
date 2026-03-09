@@ -649,9 +649,18 @@ class ReactionDecision:
     emitted_chosen: Set[int] = field(default_factory=set)
 
 
+@dataclass(frozen=True)
+class EventTrace:
+    round_index: int
+    event_key: str
+    start: int
+    end: int
+
+
 class TenhouTokenizer:
     def __init__(self) -> None:
         self.tokens: List[str] = []
+        self.event_traces: List[EventTrace] = []
         self.players: List[PlayerState] = []
         self.seat_count = 4
         self.pending_self: Optional[SelfDecision] = None
@@ -681,6 +690,7 @@ class TenhouTokenizer:
             raise TokenizeError("game log cannot be empty")
         self.seat_count = self._infer_game_seat_count(game)
         self.tokens = ["game_start"]
+        self.event_traces = []
         self.tokens.extend(self._build_game_rule_block(game))
         self.pending_self = None
         self.pending_reaction = None
@@ -837,6 +847,7 @@ class TenhouTokenizer:
             if self.pending_self and not self._is_self_resolution(key, value):
                 self._finalize_self(set())
 
+            before_token_count = len(self.tokens)
             if key == "qipai":
                 self._on_qipai(value)
             elif key == "zimo":
@@ -888,6 +899,15 @@ class TenhouTokenizer:
                 self._on_pingju(value)
             else:
                 self.tokens.append(f"event_unknown_{key}")
+
+            self.event_traces.append(
+                EventTrace(
+                    round_index=self.round_index,
+                    event_key=key,
+                    start=before_token_count,
+                    end=len(self.tokens),
+                )
+            )
 
             if key in {"hule", "pingju"}:
                 round_ended = True

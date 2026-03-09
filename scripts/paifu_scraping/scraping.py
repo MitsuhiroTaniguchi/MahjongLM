@@ -28,13 +28,15 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from tenhou_tokenizer import (
-    TenhouTokenizer,
+    TokenizedGameView,
     Vocabulary,
     load_token_ids,
     save_hf_tokenizer_assets,
     save_token_ids,
     save_year_hf_dataset,
+    tokenize_game_views,
 )
+from tenhou_tokenizer.viewspec import view_artifact_name
 
 TARGET_PLAYERS = {"三", "四"}
 TARGET_ROUNDS = {"東", "南"}
@@ -170,15 +172,41 @@ def has_valid_tokenized(tokenized_path: Path, vocab: Vocabulary) -> bool:
     return all(isinstance(token_id, int) and token_id >= 0 for token_id in input_ids)
 
 
-def tokenize_json_to_file(
-    tokenizer: TenhouTokenizer,
+def load_json_game(json_path: Path) -> dict:
+    return json.loads(json_path.read_text(encoding="utf-8"))
+
+
+def view_output_paths(tokenized_year_dir: Path, game: dict, log_id: str) -> list[tuple[TokenizedGameView, Path]]:
+    views = tokenize_game_views(game)
+    paths: list[tuple[TokenizedGameView, Path]] = []
+    for view in views:
+        paths.append(
+            (
+                view,
+                tokenized_year_dir
+                / view_artifact_name(log_id, view.view_type, view.viewer_seat),
+            )
+        )
+    return paths
+
+
+def has_all_valid_tokenized_views(
+    tokenized_year_dir: Path,
     vocab: Vocabulary,
-    json_path: Path,
-    tokenized_path: Path,
+    game: dict,
+    log_id: str,
+) -> bool:
+    return all(has_valid_tokenized(path, vocab) for _view, path in view_output_paths(tokenized_year_dir, game, log_id))
+
+
+def tokenize_game_views_to_files(
+    vocab: Vocabulary,
+    game: dict,
+    tokenized_year_dir: Path,
+    log_id: str,
 ) -> None:
-    game = json.loads(json_path.read_text(encoding="utf-8"))
-    tokens = tokenizer.tokenize_game(game)
-    save_token_ids(tokenized_path, vocab.encode(tokens), vocab_fingerprint=vocab.fingerprint)
+    for view, path in view_output_paths(tokenized_year_dir, game, log_id):
+        save_token_ids(path, vocab.encode(view.tokens), vocab_fingerprint=vocab.fingerprint)
 
 
 def main() -> None:
@@ -193,7 +221,6 @@ def main() -> None:
     if not CONVERT.is_file():
         raise FileNotFoundError(f"convert.pl not found: {CONVERT}")
 
-    tokenizer = TenhouTokenizer()
     vocab = Vocabulary.load()
     save_hf_tokenizer_assets()
     with requests.Session() as session:
@@ -214,9 +241,6 @@ def main() -> None:
 
                 raw_path = raw_year_dir / f"{log_id}.txt"
                 json_path = json_year_dir / f"{log_id}.json"
-                tokenized_path = tokenized_year_dir / f"{log_id}.ids.bin"
-                if has_valid_tokenized(tokenized_path, vocab):
-                    continue
 
                 try:
                     if not has_valid_json(json_path):
@@ -225,7 +249,10 @@ def main() -> None:
                             time.sleep(0.1)
                         convert_raw_to_json(raw_path, json_path)
                         year_updated = True
-                    tokenize_json_to_file(tokenizer, vocab, json_path, tokenized_path)
+                    game = load_json_game(json_path)
+                    if has_all_valid_tokenized_views(tokenized_year_dir, vocab, game, log_id):
+                        continue
+                    tokenize_game_views_to_files(vocab, game, tokenized_year_dir, log_id)
                     year_updated = True
                 except KeyboardInterrupt:
                     raise

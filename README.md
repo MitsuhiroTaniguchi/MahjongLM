@@ -18,6 +18,7 @@ At each decision point, the tokenizer emits:
 - `opt_self_*` / `pass_self_*` for draw-time choices (riichi, ankan, kakan, tsumo)
 - `opt_react_*` / `pass_react_*` for discard reactions (chi, pon, minkan, ron)
 - `yaku_*`, `han_*`, `fu_*`, `yakuman_*` for winning-hand result details
+- multi-view outputs: one complete-information sequence plus one imperfect-information sequence per seat
 
 This addresses the key dataset issue where logs only contain chosen actions and omit unchosen-but-legal options.
 
@@ -85,6 +86,7 @@ This tokenizer is `pymahjong`-first: shanten and hupai checks are delegated to i
 
 Generated token outputs under `data/processed/` are local artifacts and are not tracked in Git.
 Scraped training data artifacts under `data/raw/tenhou/` and `data/huggingface_datasets/` are also local.
+Imperfect-information exports store one dataset row per view and group complete/imperfect rows from the same game with a shared `group_id`.
 
 ## References
 
