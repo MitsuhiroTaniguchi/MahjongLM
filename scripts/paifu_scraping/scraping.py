@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import gzip
+import io
 import json
 import os
 import re
@@ -123,8 +124,12 @@ def iter_archive_lines(zip_path: Path) -> list[str]:
     with zipfile.ZipFile(zip_path, "r") as zip_ref:
         for filename in sorted(name for name in zip_ref.namelist() if "scc" in name):
             with zip_ref.open(filename) as file:
-                with gzip.open(file, "rt", encoding="utf-8", errors="replace") as gz_file:
-                    lines.extend(gz_file.read().splitlines())
+                data = file.read()
+                if data.startswith(b"\x1f\x8b"):
+                    text = gzip.open(io.BytesIO(data), "rt", encoding="utf-8", errors="replace").read()
+                else:
+                    text = data.decode("utf-8", errors="replace")
+                lines.extend(text.splitlines())
     return lines
 
 
