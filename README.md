@@ -1,93 +1,165 @@
 # MahjongLM
 
-This repository now includes a streaming Tenhou tokenizer that adds explicit option/pass tokens for latent decisions.
+[English](README.md) | [日本語](README.ja.md)
 
-## Tokenizer
+Tenhou JSON log tokenizer, multiview dataset builder, and small GPT-2 training stack for Mahjong sequence modeling.
 
-- Engine: `src/tenhou_tokenizer/engine.py`
-- CLI: `scripts/tokenize_tenhou.py`
-- Hugging Face tokenizer assets: `tokenizer/`
+## Repository layout
 
-`tokenizer/` can be loaded directly via `tenhou_tokenizer.MahjongTokenizerFast.from_pretrained("tokenizer")`.
-The repository vocabulary remains line-based in `tokenizer/vocab.txt`; Hugging Face assets are derived from that same source of truth.
+- [src/tenhou_tokenizer/engine.py](src/tenhou_tokenizer/engine.py): core event-by-event tokenizer
+- [src/tenhou_tokenizer/views.py](src/tenhou_tokenizer/views.py): complete/imperfect multiview conversion
+- [scripts/tokenize_tenhou.py](scripts/tokenize_tenhou.py): JSON zip -> JSONL token stream CLI
+- [scripts/paifu_scraping/scraping.py](scripts/paifu_scraping/scraping.py): Tenhou fetch + raw/json/tokenized/HF dataset pipeline
+- [src/gpt2/train.py](src/gpt2/train.py): tiny GPT-2 training entrypoint
+- [tokenizer/vocab.txt](tokenizer/vocab.txt): vocabulary source of truth
 
-### What is added
+## Tokenizer summary
 
-At each decision point, the tokenizer emits:
+The tokenizer emits:
 
-- `opt_self_*` / `pass_self_*` for draw-time choices (riichi, ankan, kakan, tsumo)
-- `opt_react_*` / `pass_react_*` for discard reactions (chi, pon, minkan, ron)
-- `yaku_*`, `han_*`, `fu_*`, `yakuman_*` for winning-hand result details
-- multi-view outputs: one complete-information sequence plus one imperfect-information sequence per seat
+- chosen actions and latent legal alternatives at each decision point
+  - `opt_self_*` / `take_self_*` / `pass_self_*`
+  - `opt_react_*` / `take_react_*` / `pass_react_*`
+- winning-hand detail tokens
+  - `yaku_*`, `han_*`, `fu_*`, `yakuman_*`
+- multiview outputs
+  - one `view_complete`
+  - one `view_imperfect_{player}` per seat, where `player` is `qijia`-relative
 
-This addresses the key dataset issue where logs only contain chosen actions and omit unchosen-but-legal options.
+Imperfect views hide non-viewer initial hands with a single `hidden_haipai_{seat}` token per hidden player. That token replaces the whole hidden `haipai_{seat}` block; it is not emitted after `haipai_{seat}`.
 
-Winning-hand detail tokens are emitted after `take_self_*_tsumo` / `take_react_*_ron` and before `score_delta_*`.
-`han_*` is capped at `han_13`; any 13+ han hand is normalized to `han_13`. `yakuman_*` is reserved for hands where `damanguan` is present. `fu_*` is capped at 110.
+Winning-hand detail tokens appear after `take_self_*_tsumo` / `take_react_*_ron` and before `score_delta_*`.
 
-### Run (small test)
+Normalization rules:
+
+- `han_*` is capped at `han_13`
+- `fu_*` is emitted for `25` and `20..140` in steps of `10`
+- `yakuman_*` is emitted only for hands where `damanguan` is present
+- `yaku_dora`, `yaku_ura_dora`, `yaku_aka_dora` repeat by realized han count
+
+See [トークン設計.md](docs/references/トークン設計.md) for the token-level specification.
+
+## Setup
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
 ./scripts/setup_pymahjong.sh
-python scripts/tokenize_tenhou.py --max-games 200 --progress-every 50
 ```
 
-`python3 scripts/tokenize_tenhou.py ...` でも同じように動く。
-
-`setup_pymahjong.sh` installs `pymahjong` directly from GitHub.
-Default ref is `main`, and you can override with:
+`setup_pymahjong.sh` installs `pymahjong` from GitHub `main` by default.
 
 ```bash
 PYMAHJONG_REF=<branch-or-commit> ./scripts/setup_pymahjong.sh
 ```
 
-Upstream PR notes: `docs/performance/pymahjong_upstream_pr_notes.md`.
+## Tokenize one zip
 
-Default input is `data/raw/tenhou/data2023.zip` and default output is `data/processed/tenhou/tokens_2023.jsonl.gz`.
-Defaults are resolved from the repository root.
-User-provided relative paths for `--zip-path`, `--zip-glob`, and `--output` are resolved from the current shell working directory.
+The tokenizer CLI now defaults to the tracked fixture zip:
 
-For all years in `data/raw/tenhou/`:
+- [data2023_sample_v1.zip](tests/fixtures/tenhou/data2023_sample_v1.zip)
+
+Example:
 
 ```bash
-python scripts/tokenize_tenhou.py --all-years --zip-glob "data/raw/tenhou/data*.zip" --output data/processed/tenhou/tokens_all_years.jsonl.gz
+PYTHONPATH=src .venv/bin/python scripts/tokenize_tenhou.py --max-games 20 --progress-every 0
 ```
 
-Fail fast when any game is skipped:
+Useful options:
+
+- `--zip-path`: one input zip
+- `--all-years --zip-glob`: process multiple zips
+- `--strict`: fail if any game is skipped
+- `--workers`: process-level parallel tokenization for larger inputs
+
+Defaults:
+
+- input zip: tracked fixture sample zip under `tests/fixtures/tenhou/`
+- output: `data/processed/tenhou/tokens_2023.jsonl.gz`
+
+The output path is intentionally local and ignored by Git.
+
+## Scraping pipeline
+
+Full data generation is handled by [scraping.py](scripts/paifu_scraping/scraping.py).
+
+Behavior:
+
+- parent process performs Tenhou fetches with one `requests.Session`
+- downstream `raw -> json -> tokenized` conversion runs in worker processes
+- per-year Hugging Face datasets are rebuilt from tokenized views
+- `404` fetches are memoized with `.404` marker files to avoid repeated requests
+
+The default full run is:
 
 ```bash
-python scripts/tokenize_tenhou.py --zip-path data/raw/tenhou/data2023.zip --strict
+PYTHONPATH=src .venv/bin/python scripts/paifu_scraping/scraping.py
+```
+
+## Hugging Face datasets
+
+Each saved row is one view, not one full game.
+
+Columns:
+
+- `game_id`
+- `group_id`
+- `year`
+- `seat_count`
+- `view_type`
+- `viewer_seat`
+- `length`
+- `input_ids`
+
+`group_id == game_id`. A valid group contains:
+
+- one complete view
+- one imperfect view per seat
+
+## GPT-2 training
+
+Training code lives under [src/gpt2/](src/gpt2).
+
+Current batching semantics:
+
+- sampler batches by `group_id`
+- public batch-size control is `max_tokens_per_batch`
+- collator appends `EOS`, packs multiple segments into one row, and keeps the same `group_id` out of the same packed row
+- packed attention masks are 4D block-diagonal causal masks, so segments do not attend across boundaries
+
+Current defaults:
+
+- context length: `8192`
+- train token budget: `65536`
+- eval token budget: `65536`
+
+Example:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m gpt2.train \
+  --dataset-dir data/huggingface_datasets/2023 \
+  --output-dir runs/example \
+  --train-steps 20 \
+  --wandb-mode disabled
 ```
 
 ## Tests
 
-```bash
-source .venv/bin/activate
-pip install -r requirements-dev.txt
-pytest -m "not slow" -q
-```
-
-`pytest` の代わりに `python -m pytest` または `python3 -m pytest` でもよい。
-
-`pymahjong` is required for tokenizer and CLI tests.
-
-Optional dataset smoke test:
+Fast tests:
 
 ```bash
-pytest -m slow -q
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH=src .venv/bin/python -m pytest -m "not slow" -q
 ```
 
-## Important note
+Notes:
 
-This tokenizer is `pymahjong`-first: shanten and hupai checks are delegated to its C++ implementation.
-
-Generated token outputs under `data/processed/` are local artifacts and are not tracked in Git.
-Scraped training data artifacts under `data/raw/tenhou/` and `data/huggingface_datasets/` are also local.
-Imperfect-information exports store one dataset row per view and group complete/imperfect rows from the same game with a shared `group_id`.
+- tokenizer tests require `pymahjong`
+- training GPT-2 requires `torch`
 
 ## References
 
-- [kobalab-based Tenhou paifu notes](docs/references/tenhou_paifu_notes_kobalab.md)
+- [トークン設計.md](docs/references/トークン設計.md)
+- [tenhou_paifu_notes_kobalab.md](docs/references/tenhou_paifu_notes_kobalab.md)
+- [tokenizer_speed_plan.md](docs/performance/tokenizer_speed_plan.md)
+- [pymahjong_upstream_pr_notes.md](docs/performance/pymahjong_upstream_pr_notes.md)

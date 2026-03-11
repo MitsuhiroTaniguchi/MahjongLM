@@ -1,103 +1,101 @@
 # Tokenizer Speed Plan
 
-Updated: 2026-03-04
+更新日: 2026-03-12
 
-## Goal
+## 現状
 
-Reduce Tenhou tokenization wall-clock time while keeping token semantics unchanged.
+初期の単純実装に対して、現在の tokenizer はすでに大きく高速化されている。
 
-## Current baseline and recent gain
+主な改善:
 
-Benchmark condition:
-- machine: local dev machine
-- input: `data2023.zip`
-- sample size: first 3000 games
-- command: in-repo benchmark script (same logic as tokenizer core loop)
+1. `pymahjong` fast API の導入
+- `wait_mask`
+- `has_riichi_discard`
+- `has_hupai`
+- `has_hupai_multi`
+- `evaluate_draw`
 
-Results:
-- Before (old pymahjong API path): `19.28 games/s` (`3000 / 155.634s`)
-- After (pymahjong fast APIs + engine integration): `35.81 games/s` (`3000 / 83.775s`)
-- After phase-1 cache + shape-gate + furiten short-circuit: `60.13 games/s` (`3000 / 49.889s`)
-- After phase-2 batch APIs (`evaluate_draw`, `has_hupai_multi`): `62.98 games/s` (`3000 / 47.636s`)
-- Total gain vs baseline: `+226.7%`
+2. engine 側の削減
+- `wait_mask` cache
+- 形テン外の `ron` short-circuit
+- `kakan` 候補探索の縮小
+- self/reaction の batch API 利用
 
-## What changed (already done)
+3. scraping 側の throughput 改善
+- fetch は親プロセス直列のまま維持
+- `raw -> json -> tokenized` を worker 並列化
+- 404 marker 導入で再試行無駄を抑制
 
-1. Added pymahjong fast APIs (upstream merged):
-- `wait_mask(hand, meld_count)`
-- `has_riichi_discard(hand, meld_count)`
-- `has_hupai(hand, melds, win_tile, is_tsumo, is_menqian, is_riichi, zhuangfeng, lunban)`
-- `Shoupai.tingpai_mask()` / `Shoupai.tingpai_list()`
+## 測定メモ
 
-2. Engine switched to those APIs:
-- replaced Python-side repeated loops and object construction where possible
-- reduced redundant list copies
-- reduced expensive `kakan` scan from fixed 34-loop to open-pon keys only
-- removed duplicate `parse_hand_counts` in `qipai`
+過去の 2023 サンプル測定では、概ね次の流れで改善した。
 
-3. Added tokenizer-side phase-1 optimization:
-- per-player `wait_mask` cache with explicit invalidation on state-changing events
-- ron checks short-circuit when offered tile is outside current wait mask
-- removed temporary `p.concealed` swap in reaction path (`_can_win_with_counts`)
+- old baseline: 約 `19 games/s`
+- fast API 導入後: 約 `35 games/s`
+- cache / short-circuit 導入後: 約 `60 games/s`
+- batch API 導入後: 約 `63 games/s`
 
-4. Setup made reproducible:
-- `scripts/setup_pymahjong.sh` installs directly from `pymahjong` GitHub repository (`main` by default).
+これは tokenizer 単体寄りの測定で、現行 scraping 全体の wall-clock とは別物である。
 
-5. Added pymahjong-side phase-2 APIs:
-- `evaluate_draw(...)` for combined tsumo/riichi-discard evaluation in one call
-- `has_hupai_multi(...)` for batched hupai checks
-- context-aware flags integrated into existing APIs (`has_hupai`, `has_hupai_multi`, `evaluate_draw`)
-- tokenizer engine switched self/reaction paths to use these APIs
+## 現在のボトルネック
 
-## Remaining bottlenecks (cProfile, 1000 games)
+tokenizer 本体:
 
-Top cumulative contributors still include:
 - `_compute_reaction_options`
 - `_compute_self_options`
-- `pymahjong.has_hupai`
-- `pymahjong.wait_mask`
-- `pymahjong.has_riichi_discard`
-- Python event loop overhead in `_on_draw` / `_on_discard`
+- `pymahjong` 呼び出し回数そのもの
+- Python 側イベントループの分岐コスト
 
-Interpretation:
-- major C++ call overhead remains from high call counts, not single-call slowness.
+scraping 全体:
 
-## Next optimization phases
+- Tenhou 側 HTTP 応答待ち
+- parent loop の fetch/drain/backpressure
 
-### Phase 1 (completed)
+観測上、`raw/json` が既に存在して downstream だけ回る状況では数百 `it/s` が出る。一方で実 fetch を含む run は単一 session・直列 fetch なので、速度支配は network 側になる。
 
-Completed with measured gain from `35.81 -> 60.13 games/s`.
+## いま優先すべき最適化
 
-### Phase 2 (partially completed)
+### 1. 正しさ優先の profiling 継続
 
-Completed:
-- `has_hupai_multi(...)` and `evaluate_draw(...)` introduced and integrated
+furiten / penuki / qianggang / haidi まわりは実牌譜 failure を通じて何度も修正が入った。速度変更でもまず実データ回帰を優先する。
 
-Remaining:
-- optional API to return `wait_mask` and riichi-discard possibility in one pass
-- upstream PR/merge for phase-2 APIs
+必須確認:
 
-### Phase 3 (throughput scaling)
+- unit test
+- tricky 実牌譜 replay
+- 1000 戦レベルの downstream benchmark
 
-1. Multi-process sharding for CLI
-- split by zip index range
-- merge JSONL outputs after processing
+### 2. tokenizer 呼び出し回数の削減
 
-Expected: near-linear wall-clock reduction by worker count.
+まだ有望なのは、個別 API の微小高速化より「何回呼ぶか」の削減である。
 
-## Safety constraints
+候補:
 
-- No semantic regression in decision tokens (`opt/take/pass`) is allowed.
-- Every speed change requires:
-  - existing unit tests pass
-  - at least one known tricky log replay passes
-  - benchmark comparison with same sample window.
+- self option 判定のさらなる統合
+- reaction 判定の seat-by-seat 分岐削減
+- event trace 生成時の余計な list copy 削減
 
-## Acceptance targets
+### 3. scraping の運用改善
 
-Short term target:
-- single-process throughput >= `45 games/s` on current machine
+BAN 回避のため、fetch を複数 session 並列にはしていない。したがって、速度改善余地は主に downstream 側より運用面にある。
 
-Mid term target:
-- single-process throughput >= `55 games/s`
-- plus optional multi-process mode for full-year runs
+候補:
+
+- downstream-only rerun mode の明示化
+- worker 初期化の共有コスト削減
+- year/filter 指定を使った小さい再実行フロー整備
+
+## やらないこと
+
+- Tenhou への多 session 並列 fetch
+- semantic regression を伴う option/pass 省略
+- benchmark 数値だけを見た unsafe なショートカット
+
+## 受け入れ条件
+
+速度改善を入れるときは、少なくとも次を満たすこと。
+
+- token semantics が変わらない
+- 既存 test が通る
+- 実牌譜 regression が再発しない
+- benchmark 条件と結果を記録する

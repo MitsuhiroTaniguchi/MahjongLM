@@ -1,91 +1,100 @@
-# pymahjong Upstream PR Notes (Fast APIs)
+# pymahjong Upstream PR Notes
 
-Updated: 2026-03-05
+更新日: 2026-03-12
 
-## Goal
+このノートは、この repository が `pymahjong` に何を期待しているか、その upstream 変更をどう追ってきたかをまとめたもの。
 
-Contribute tokenizer-oriented fast APIs to `pymahjong` upstream and consume them directly from the repository.
+## この repository が使う API
 
-## Status
+現在 Tenhou tokenizer が依存している主な `pymahjong` API は次のとおり。
 
-- PR: https://github.com/MitsuhiroTaniguchi/pymahjong/pull/4
-- State: merged on 2026-03-04
-- Merge commit: `0b80bafa99c5b4b8bc1ade256c5a86b679238576`
-- Batch API PR: https://github.com/MitsuhiroTaniguchi/pymahjong/pull/5
-- Batch/context API PR: https://github.com/MitsuhiroTaniguchi/pymahjong/pull/6
-- Batch/context API state: merged on 2026-03-05 (PR #6)
-- Batch/context API merge commit: `d92973ad6a34bcd564c8a9d8da4c50627da43485`
-- Setup/toolchain fix in PR #6: stop forcing `gcc/g++` in `setup.py` and honor environment/default toolchain.
+- `wait_mask`
+- `has_riichi_discard`
+- `has_hupai`
+- `has_hupai_multi`
+- `evaluate_draw`
+- `compute_self_option_mask`
+- `compute_reaction_option_masks`
+- `compute_rob_kan_option_masks`
+- `Shoupai`
+- `Xiangting`
 
-## Proposed PR scope
+三麻では `penuki`、`qianggang`、`haidi/lingshang` 文脈も正しく流す必要がある。
 
-Target file in upstream `pymahjong`:
-- `src/bindings.cpp`
+## これまでの upstream 変更
 
-Changes:
-- `wait_mask(hand, meld_count) -> int`
-- `has_riichi_discard(hand, meld_count) -> bool`
-- `has_hupai(hand, melds, win_tile, is_tsumo, is_menqian, is_riichi, zhuangfeng, lunban, is_haidi, is_lingshang, is_qianggang) -> bool`
-- `has_hupai_multi(cases_with_context) -> List[bool]`
-- `evaluate_draw(..., check_riichi_discard, is_haidi, is_lingshang) -> Tuple[bool, bool]`
-- `Shoupai.tingpai_mask() -> int`
-- `Shoupai.tingpai_list() -> List[int]`
+### PR #4
 
-Compatibility:
-- breaking API update accepted for tokenizer performance/clarity
+fast tokenizer 向け API の最初の整理。
 
-## Why this helps
+主なポイント:
 
-Tokenizer repeatedly checks:
-- current waits
-- riichi-discard availability
-- win legality (ron/tsumo)
-
-Direct C++ bindings reduce Python object construction and repeated slow-path calls.
-
-## Local benchmark summary (consumer repo)
-
-Condition:
-- input: Tenhou 2023 zip
-- sample: first 3000 games
-
-Observed throughput:
-- old path: `19.28 games/s`
-- with fast APIs + tokenizer integration: `60.13 games/s`
-
-Note:
-- this includes tokenizer-side caching/short-circuiting on top of fast APIs.
-- API-only impact should still be clearly positive and measurable.
-
-## PR title
-
-`Integrate context flags into fast tokenizer APIs (breaking update)`
-
-## PR description (English)
-
-This PR updates the fast Python bindings used by downstream tokenizers/training pipelines, integrating context flags directly into existing APIs.
-
-### Added bindings
-- `wait_mask(hand, meld_count)`
-- `has_riichi_discard(hand, meld_count)`
-- `has_hupai(hand, melds, win_tile, is_tsumo, is_menqian, is_riichi, zhuangfeng, lunban, is_haidi, is_lingshang, is_qianggang)`
-- `has_hupai_multi(cases_with_context)`
-- `evaluate_draw(..., check_riichi_discard, is_haidi, is_lingshang)`
+- `wait_mask`
+- `has_riichi_discard`
+- `has_hupai`
 - `Shoupai.tingpai_mask()`
 - `Shoupai.tingpai_list()`
 
-### Motivation
-Downstream tokenization runs call wait/riichi/win checks millions of times.  
-These direct bindings avoid repeated Python-side object setup and provide a significantly faster path.
+### PR #5 / #6
 
-### Compatibility
-This PR intentionally updates signatures of existing fast APIs.
+batch/context API の追加。
 
-### Validation
-- Built and imported on macOS local environment.
-- Downstream tokenizer integration passed unit tests and strict smoke tokenization on real Tenhou logs.
+主なポイント:
 
-## Note for this repository
+- `has_hupai_multi`
+- `evaluate_draw`
+- `is_haidi`
+- `is_lingshang`
+- `is_qianggang`
 
-This repository installs `pymahjong` directly from GitHub (`main` by default).
-To validate a PR branch before merge, use `PYMAHJONG_REF=<branch-or-commit>`.
+Tokenizer 側では self/reaction 両方でこれを使う。
+
+### PR #10
+
+package/import/build まわりの整理。
+
+確認した点:
+
+- 拡張モジュール名が `pymahjong._core` になっても `pymahjong/__init__.py` で public import は維持される
+- この repository 側の `import pymahjong as pm` はそのまま互換
+- data file 探索は editable install と wheel install の両方に整合
+
+この repository 側では、PR #10 相当の変更に対して tokenizer の relevant test を通し、merge blocker は見当たらないことを確認済み。
+
+## この repository 側の要求
+
+`pymahjong` に対して重要なのは速度だけではない。
+
+要求は次の順序で考えるべき。
+
+1. legality 判定が実牌譜に追随すること
+2. 三麻・槍槓・北抜き・河底/海底などの文脈が正しく渡ること
+3. Python 側から低コストで呼べること
+
+特に tokenizer は「選ばれなかった合法手」まで出力するので、和了判定や furiten 判定が少しでもずれると silent corruption になりやすい。
+
+## ローカル検証方針
+
+upstream branch / commit を試すときは:
+
+```bash
+PYMAHJONG_REF=<branch-or-commit> ./scripts/setup_pymahjong.sh
+```
+
+最低限見るべきもの:
+
+- `tests/test_engine_round_state.py`
+- `tests/test_engine_decision_tokens.py`
+- `tests/test_score_tokens.py`
+- tricky 実牌譜の単体 tokenize
+
+必要なら追加で:
+
+- 1000 戦 benchmark
+- scraping downstream rerun
+
+## 注意
+
+- `pymahjong` の API 変更は tokenizer 側テストとセットで扱う
+- import/package 変更は optional dependency や editable install まで含めて確認する
+- upstream 側で merge 済みでも、この repository での互換確認なしに追従しない
