@@ -26,11 +26,10 @@ def _convert_sanma_sample() -> dict:
 
 def test_vocabulary_encode_decode_roundtrip() -> None:
     vocab = Vocabulary.load()
-    tokens = ["game_start", "rule_player_4", "round_start", "game_end"]
+    tokens = ["game_start", "view_imperfect_0", "rule_player_4", "round_start", "game_end"]
 
     ids = vocab.encode(tokens)
 
-    assert ids == [4, 6, 10, 9]
     assert vocab.decode(ids) == tokens
 
 

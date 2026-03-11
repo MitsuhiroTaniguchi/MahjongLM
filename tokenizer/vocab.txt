@@ -4,7 +4,10 @@
 <eos>
 game_start
 view_complete
-view_imperfect
+view_imperfect_0
+view_imperfect_1
+view_imperfect_2
+view_imperfect_3
 rule_player_3
 rule_player_4
 rule_length_tonpu

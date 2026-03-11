@@ -15,14 +15,21 @@ __all__ = [
     "VIEW_COMPLETE",
     "VIEW_IMPERFECT",
     "TOKEN_VIEW_COMPLETE",
-    "TOKEN_VIEW_IMPERFECT",
+    "TOKEN_VIEW_IMPERFECT_PREFIX",
+    "imperfect_view_token",
     "iter_tokenized_games",
     "load_token_ids",
     "save_token_ids",
     "tokenize_game_views",
 ]
 
-from .viewspec import TOKEN_VIEW_COMPLETE, TOKEN_VIEW_IMPERFECT, VIEW_COMPLETE, VIEW_IMPERFECT
+from .viewspec import (
+    TOKEN_VIEW_COMPLETE,
+    TOKEN_VIEW_IMPERFECT_PREFIX,
+    VIEW_COMPLETE,
+    VIEW_IMPERFECT,
+    imperfect_view_token,
+)
 _HUGGINGFACE_EXPORTS = {
     "DEFAULT_HF_DATASETS_DIR",
     "DEFAULT_TOKENIZER_DIR",

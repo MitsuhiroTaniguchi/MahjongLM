@@ -6,7 +6,11 @@ from dataclasses import dataclass
 VIEW_COMPLETE = "complete"
 VIEW_IMPERFECT = "imperfect"
 TOKEN_VIEW_COMPLETE = "view_complete"
-TOKEN_VIEW_IMPERFECT = "view_imperfect"
+TOKEN_VIEW_IMPERFECT_PREFIX = "view_imperfect_"
+
+
+def imperfect_view_token(player: int) -> str:
+    return f"{TOKEN_VIEW_IMPERFECT_PREFIX}{player}"
 
 
 @dataclass(frozen=True)

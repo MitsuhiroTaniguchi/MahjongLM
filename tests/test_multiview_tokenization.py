@@ -4,7 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from tenhou_tokenizer import TOKEN_VIEW_COMPLETE, TOKEN_VIEW_IMPERFECT, tokenize_game_views
+from tenhou_tokenizer import TOKEN_VIEW_COMPLETE, imperfect_view_token, tokenize_game_views
 from tests.fixtures.synthetic_logs import minimal_game, pingju_event, qipai_event
 
 
@@ -34,7 +34,12 @@ def test_tokenize_game_views_emits_complete_plus_per_player_views() -> None:
     assert views[0].viewer_seat is None
     assert views[0].tokens[:3] == ["game_start", TOKEN_VIEW_COMPLETE, "rule_player_4"]
     assert [view.viewer_seat for view in views[1:]] == [0, 1, 2, 3]
-    assert all(view.tokens[1] == TOKEN_VIEW_IMPERFECT for view in views[1:])
+    assert [view.tokens[1] for view in views[1:]] == [
+        imperfect_view_token(0),
+        imperfect_view_token(1),
+        imperfect_view_token(2),
+        imperfect_view_token(3),
+    ]
 
 
 def test_imperfect_view_masks_other_players_haipai_tiles() -> None:
@@ -44,10 +49,12 @@ def test_imperfect_view_masks_other_players_haipai_tiles() -> None:
 
     assert "haipai_0" in view.tokens
     assert "m1" in view.tokens
-    assert "haipai_1" in view.tokens
-    assert "hidden_haipai_1" in view.tokens
-    assert "hidden_haipai_2" in view.tokens
-    assert "hidden_haipai_3" in view.tokens
+    assert "haipai_1" not in view.tokens
+    assert "haipai_2" not in view.tokens
+    assert "haipai_3" not in view.tokens
+    assert view.tokens.count("hidden_haipai_1") == 1
+    assert view.tokens.count("hidden_haipai_2") == 1
+    assert view.tokens.count("hidden_haipai_3") == 1
 
 
 def test_imperfect_view_masks_other_players_draws_and_hides_their_self_options() -> None:
@@ -125,3 +132,17 @@ def test_tokenize_game_views_emits_three_player_view_count() -> None:
     assert len(views) == 4
     assert views[0].view_type == "complete"
     assert [view.viewer_seat for view in views[1:]] == [0, 1, 2]
+
+
+def test_imperfect_view_uses_qijia_relative_player_token() -> None:
+    game = minimal_game([qipai_event(), pingju_event()])
+    game["qijia"] = 2
+
+    views = tokenize_game_views(game)
+
+    assert [view.tokens[1] for view in views[1:]] == [
+        imperfect_view_token(2),
+        imperfect_view_token(3),
+        imperfect_view_token(0),
+        imperfect_view_token(1),
+    ]

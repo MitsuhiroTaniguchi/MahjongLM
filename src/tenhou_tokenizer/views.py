@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from .engine import TenhouTokenizer
-from .viewspec import TOKEN_VIEW_COMPLETE, TOKEN_VIEW_IMPERFECT, VIEW_COMPLETE, VIEW_IMPERFECT
+from .viewspec import (
+    TOKEN_VIEW_COMPLETE,
+    VIEW_COMPLETE,
+    VIEW_IMPERFECT,
+    imperfect_view_token,
+)
 
 
 TILE_TOKENS = {
@@ -42,6 +47,10 @@ def _hidden_haipai_token(seat: int) -> str:
 
 def _hidden_draw_token(seat: int) -> str:
     return f"draw_{seat}_hidden"
+
+
+def _game_player_index(seat: int, initial_qijia: int, seat_count: int) -> int:
+    return (seat - initial_qijia) % seat_count
 
 
 def _consume_tenbo_payload(tokens: list[str], start: int) -> int:
@@ -88,14 +97,14 @@ def _transform_qipai(tokens: list[str], viewer_seat: int | None) -> list[str]:
         idx = idx_after_score
 
     for seat in range(seat_count):
-        out.append(tokens[idx])
-        idx += 1
-        for _ in range(13):
-            if viewer_seat == seat:
-                out.append(tokens[idx])
-            else:
-                out.append(_hidden_haipai_token(seat))
+        if viewer_seat == seat:
+            out.append(tokens[idx])
             idx += 1
+            out.extend(tokens[idx : idx + 13])
+        else:
+            out.append(_hidden_haipai_token(seat))
+            idx += 1
+        idx += 13
 
     return out
 
@@ -185,7 +194,12 @@ def tokenize_game_views(game: dict) -> list[TokenizedGameView]:
         )
     ]
     for viewer_seat in range(tokenizer.seat_count):
-        transformed: list[str] = [complete_tokens[0], TOKEN_VIEW_IMPERFECT]
+        transformed: list[str] = [
+            complete_tokens[0],
+            imperfect_view_token(
+                _game_player_index(viewer_seat, tokenizer.initial_qijia, tokenizer.seat_count)
+            ),
+        ]
         cursor = 1
         for trace in event_traces:
             transformed.extend(_transform_event_tokens(complete_tokens[cursor : trace.start], viewer_seat, "gap"))
