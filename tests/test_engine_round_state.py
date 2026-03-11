@@ -69,6 +69,24 @@ def test_temporary_furiten_sets_on_ron_pass_and_clears_on_draw(monkeypatch: pyte
     assert not tokenizer.players[1].temporary_furiten
 
 
+def test_temporary_furiten_clears_when_player_calls_fulou() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(
+        qipai_payload(hands=["m123456789p1234", "m23p123456s123z11", "m123456789p1234", "m123456789p1234"])
+    )
+
+    tokenizer.players[1].temporary_furiten = True
+    tokenizer.pending_reaction = ReactionDecision(
+        discarder=0,
+        discard_tile=tile_to_index("m1"),
+        options_by_player={1: {"chi"}},
+    )
+
+    tokenizer._on_fulou({"l": 1, "m": "m1-23"})
+
+    assert tokenizer.players[1].temporary_furiten is False
+
+
 def test_call_options_are_blocked_on_last_draw(monkeypatch: pytest.MonkeyPatch) -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())

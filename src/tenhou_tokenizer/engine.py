@@ -2121,6 +2121,7 @@ class TenhouTokenizer:
 
         p.open_melds += 1
         p.is_riichi = False
+        p.temporary_furiten = False
 
         if action == "chi":
             anchor = min(meld_tiles)
