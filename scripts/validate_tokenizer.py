@@ -16,7 +16,7 @@ TESTS = ROOT / "tests"
 if str(TESTS) not in sys.path:
     sys.path.insert(0, str(TESTS))
 
-DEFAULT_ZIP_PATH = ROOT / "data/raw/tenhou/data2023.zip"
+DEFAULT_ZIP_PATH = ROOT / "tests/fixtures/tenhou/data2023_sample_v1.zip"
 
 
 def parse_args() -> argparse.Namespace:

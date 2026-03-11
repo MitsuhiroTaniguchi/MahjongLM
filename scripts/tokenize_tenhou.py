@@ -17,8 +17,8 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-DEFAULT_ZIP_PATH = ROOT / "data/raw/tenhou/data2023.zip"
-DEFAULT_ZIP_GLOB = str(ROOT / "data/raw/tenhou/data*.zip")
+DEFAULT_ZIP_PATH = ROOT / "tests/fixtures/tenhou/data2023_sample_v1.zip"
+DEFAULT_ZIP_GLOB = str(ROOT / "tests/fixtures/tenhou/data2023*.zip")
 DEFAULT_OUTPUT_PATH = ROOT / "data/processed/tenhou/tokens_2023.jsonl.gz"
 AUTO_PARALLEL_MIN_GAMES = 512
 

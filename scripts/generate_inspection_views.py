@@ -13,10 +13,9 @@ for path in (str(SRC), str(ROOT)):
         sys.path.insert(0, path)
 
 from tenhou_tokenizer import tokenize_game_views
-from tests.dataset_sample import DATASET_2023_CURATED_GAME_IDS
+from tests.dataset_sample import DATASET_2023_CURATED_GAME_IDS, get_dataset_2023_curated_zip
 from tests.validation_helpers import trace_round_token_slices
 
-ZIP_PATH = ROOT / "data" / "raw" / "tenhou" / "data2023.zip"
 OUT_DIR = ROOT / "data" / "processed" / "tenhou" / "inspection"
 FOCUSED_DIR = OUT_DIR / "focused"
 GAME_IDS = list(DATASET_2023_CURATED_GAME_IDS)
@@ -104,6 +103,7 @@ def _focused_payload(game_id: str, game: dict, round_index: int) -> dict:
 
 
 def main() -> None:
+    ZIP_PATH = get_dataset_2023_curated_zip()
     if not ZIP_PATH.exists():
         raise SystemExit(f"missing zip: {ZIP_PATH}")
 

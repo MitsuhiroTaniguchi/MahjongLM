@@ -69,7 +69,7 @@ def test_dataset_game_with_kan_emits_multiple_ura_dora_reveals() -> None:
     if not DATASET_2023.exists():
         pytest.skip(f"missing dataset: {DATASET_2023}")
 
-    with zipfile.ZipFile(DATASET_2023) as zf:
+    with zipfile.ZipFile(get_dataset_2023_sample_zip()) as zf:
         game = json.load(zf.open(KAN_MULTI_URA_GAME_ID))
 
     assert any(
