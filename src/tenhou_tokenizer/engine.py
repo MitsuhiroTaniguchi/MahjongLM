@@ -2508,8 +2508,11 @@ class TenhouTokenizer:
         if fu is not None:
             if isinstance(fu, bool) or not isinstance(fu, int) or fu <= 0:
                 raise TokenizeError("hule.fu must be a positive integer")
-            if fu > 110:
-                raise TokenizeError("hule.fu must be at most 110")
+            if fu == 25:
+                block.append("fu_25")
+                return block
+            if fu < 20 or fu % 10 != 0 or fu > 140:
+                raise TokenizeError("hule.fu must be 25 or a multiple of 10 between 20 and 140")
             block.append(f"fu_{fu}")
 
         return block

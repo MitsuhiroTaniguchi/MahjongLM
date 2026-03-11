@@ -648,6 +648,9 @@ fu_80
 fu_90
 fu_100
 fu_110
+fu_120
+fu_130
+fu_140
 yakuman_1
 yakuman_2
 yakuman_3

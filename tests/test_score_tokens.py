@@ -739,19 +739,48 @@ def test_vocab_includes_penuki_self_action_tokens() -> None:
         assert f"pass_self_{seat}_penuki" in vocab
 
 
-def test_hule_rejects_fu_above_wikipedia_maximum() -> None:
+def test_hule_accepts_140_fu_non_yakuman_ron_with_actual_hand_and_yaku() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload(jushu=0))
+    tokenizer.pending_reaction = engine.ReactionDecision(
+        discarder=1,
+        discard_tile=tile_to_index("p8"),
+        options_by_player={0: {"ron"}},
+    )
+
+    tokenizer._on_hule(
+        {
+            "l": 0,
+            "baojia": 1,
+            "fenpei": [18000, -18000, 0, 0],
+            "hupai": [
+                {"name": "三槓子", "fanshu": 2},
+                {"name": "三暗刻", "fanshu": 2},
+                {"name": "役牌 中", "fanshu": 1},
+                {"name": "混全帯幺九", "fanshu": 2},
+            ],
+            "fanshu": 7,
+            "fu": 140,
+            "shoupai": "p79z11p8,m9999,z7777,p1111",
+        }
+    )
+    assert "take_react_0_ron" in tokenizer.tokens
+    assert "fu_140" in tokenizer.tokens
+
+
+def test_hule_rejects_fu_above_standard_non_yakuman_maximum() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
     tokenizer.pending_self = engine.SelfDecision(actor=0, options={"tsumo"})
 
-    with pytest.raises(TokenizeError, match="hule.fu must be at most 110"):
+    with pytest.raises(TokenizeError, match="hule.fu must be 25 or a multiple of 10 between 20 and 140"):
         tokenizer._on_hule(
             {
                 "l": 0,
                 "fenpei": [-3900, 3900, 0, 0],
                 "hupai": [{"name": "立直", "fanshu": 1}],
                 "fanshu": 1,
-                "fu": 120,
+                "fu": 150,
             }
         )
 
