@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datasets import Dataset
 
-from gpt2.data import PackedGroupCollator, split_grouped_dataset, validate_grouped_dataset
+from gpt2.data import PackedGroupCollator, build_group_batch_sampler, split_grouped_dataset, validate_grouped_dataset
 
 
 def _dataset_rows() -> list[dict]:
@@ -62,10 +62,38 @@ def test_packed_group_collator_never_cohabits_same_group() -> None:
     )
 
     assert batch.input_ids.shape[1] % 4 == 0
+    assert batch.attention_mask.shape == (batch.stats.packed_row_count, 1, batch.input_ids.shape[1], batch.input_ids.shape[1])
     for packed_group_ids in batch.packed_group_ids:
         assert len(packed_group_ids) == len(set(packed_group_ids))
     assert batch.stats.segment_count == 4
     assert batch.stats.packed_row_count >= 2
+
+
+def test_packed_group_collator_separates_segments_in_attention_mask() -> None:
+    collator = PackedGroupCollator(
+        pad_token_id=0,
+        eos_token_id=3,
+        max_length=16,
+        return_tensors="np",
+    )
+    batch = collator(
+        [
+            {"group_id": "g0", "view_type": "complete", "viewer_seat": -1, "input_ids": [10, 11]},
+            {"group_id": "g1", "view_type": "complete", "viewer_seat": -1, "input_ids": [21, 22]},
+        ]
+    )
+
+    assert batch.input_ids.shape == (1, 6)
+    assert batch.input_ids[0].tolist() == [10, 11, 3, 21, 22, 3]
+    assert batch.attention_mask.shape == (1, 1, 6, 6)
+
+    mask = batch.attention_mask[0, 0].tolist()
+    assert mask[0] == [1, 0, 0, 0, 0, 0]
+    assert mask[1] == [1, 1, 0, 0, 0, 0]
+    assert mask[2] == [1, 1, 1, 0, 0, 0]
+    assert mask[3] == [0, 0, 0, 1, 0, 0]
+    assert mask[4] == [0, 0, 0, 1, 1, 0]
+    assert mask[5] == [0, 0, 0, 1, 1, 1]
 
 
 def test_packed_group_collator_rejects_sequences_longer_than_context() -> None:
@@ -81,6 +109,20 @@ def test_packed_group_collator_rejects_sequences_longer_than_context() -> None:
         assert "exceeds max_length" in str(exc)
     else:
         raise AssertionError("expected overlong segment to fail")
+
+
+def test_group_batch_sampler_respects_token_budget_and_group_boundaries() -> None:
+    dataset = Dataset.from_list(_dataset_rows())
+
+    sampler = build_group_batch_sampler(
+        dataset,
+        max_tokens_per_batch=25,
+        shuffle=False,
+        seed=123,
+    )
+    batches = list(sampler)
+
+    assert batches == [[0, 1, 2, 3, 4], [5, 6, 7, 8]]
 
 
 def test_split_grouped_dataset_keeps_groups_intact() -> None:

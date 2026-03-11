@@ -43,8 +43,8 @@ class TrainingConfig:
     tokenizer_dir: Path = Path("tokenizer")
     max_seq_length: int = 8192
     pad_to_multiple_of: int = 8
-    groups_per_batch: int = 8
-    eval_groups_per_batch: int = 8
+    max_tokens_per_batch: int = 65536
+    eval_max_tokens_per_batch: int = 65536
     gradient_accumulation_steps: int = 1
     train_steps: int = 1000
     eval_interval: int = 200
@@ -84,10 +84,10 @@ class TrainingConfig:
             raise ValueError("max_seq_length must be positive")
         if self.pad_to_multiple_of <= 0:
             raise ValueError("pad_to_multiple_of must be positive")
-        if self.groups_per_batch <= 0:
-            raise ValueError("groups_per_batch must be positive")
-        if self.eval_groups_per_batch <= 0:
-            raise ValueError("eval_groups_per_batch must be positive")
+        if self.max_tokens_per_batch <= 0:
+            raise ValueError("max_tokens_per_batch must be positive")
+        if self.eval_max_tokens_per_batch <= 0:
+            raise ValueError("eval_max_tokens_per_batch must be positive")
         if self.gradient_accumulation_steps <= 0:
             raise ValueError("gradient_accumulation_steps must be positive")
         if self.train_steps <= 0:

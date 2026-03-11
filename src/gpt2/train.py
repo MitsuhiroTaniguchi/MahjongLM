@@ -282,7 +282,7 @@ def train(
             train_dataset,
             batch_sampler=build_group_batch_sampler(
                 train_dataset,
-                groups_per_batch=training_config.groups_per_batch,
+                max_tokens_per_batch=training_config.max_tokens_per_batch,
                 shuffle=True,
                 seed=training_config.seed + epoch,
             ),
@@ -332,7 +332,7 @@ def train(
                         eval_dataset,
                         batch_sampler=build_group_batch_sampler(
                             eval_dataset,
-                            groups_per_batch=training_config.eval_groups_per_batch,
+                            max_tokens_per_batch=training_config.eval_max_tokens_per_batch,
                             shuffle=False,
                             seed=training_config.seed,
                         ),
@@ -377,8 +377,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-embd", type=int, default=64)
     parser.add_argument("--n-inner", type=int, default=256)
     parser.add_argument("--n-positions", type=int, default=8192)
-    parser.add_argument("--groups-per-batch", type=int, default=2)
-    parser.add_argument("--eval-groups-per-batch", type=int, default=2)
+    parser.add_argument("--max-tokens-per-batch", type=int, default=65536)
+    parser.add_argument("--eval-max-tokens-per-batch", type=int, default=65536)
     parser.add_argument("--max-seq-length", type=int, default=8192)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--warmup-steps", type=int, default=4)
@@ -407,8 +407,8 @@ def main() -> None:
         eval_dataset_dirs=tuple(Path(path) for path in args.eval_dataset_dir),
         tokenizer_dir=args.tokenizer_dir,
         train_steps=args.train_steps,
-        groups_per_batch=args.groups_per_batch,
-        eval_groups_per_batch=args.eval_groups_per_batch,
+        max_tokens_per_batch=args.max_tokens_per_batch,
+        eval_max_tokens_per_batch=args.eval_max_tokens_per_batch,
         max_seq_length=args.max_seq_length,
         learning_rate=args.learning_rate,
         warmup_steps=args.warmup_steps,

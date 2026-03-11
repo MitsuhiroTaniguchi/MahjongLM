@@ -7,9 +7,6 @@ from typing import Iterable, Sequence
 
 from datasets import Dataset, concatenate_datasets, load_from_disk
 
-from tenhou_tokenizer import MahjongGroupBatchSampler
-
-
 @dataclass(frozen=True)
 class PackedGroupStats:
     segment_count: int
@@ -132,10 +129,11 @@ class PackedGroupCollator:
             "viewer_seat": feature.get("viewer_seat"),
         }
 
-    def _pack_segments(self, segments: list[dict]) -> tuple[list[list[int]], list[list[str]], list[int]]:
+    def _pack_segments(self, segments: list[dict]) -> tuple[list[list[int]], list[list[str]], list[int], list[list[int]]]:
         packed_rows: list[list[int]] = []
         packed_group_ids: list[list[str]] = []
         packed_lengths: list[int] = []
+        packed_segment_lengths: list[list[int]] = []
         row_group_sets: list[set[str]] = []
 
         segments.sort(key=lambda item: len(item["segment"]), reverse=True)
@@ -158,34 +156,48 @@ class PackedGroupCollator:
                 packed_rows.append(list(segment))
                 packed_group_ids.append([group_id])
                 packed_lengths.append(len(segment))
+                packed_segment_lengths.append([len(segment)])
                 row_group_sets.append({group_id})
                 continue
             packed_rows[best_idx].extend(segment)
             packed_group_ids[best_idx].append(group_id)
             packed_lengths[best_idx] += len(segment)
+            packed_segment_lengths[best_idx].append(len(segment))
             row_group_sets[best_idx].add(group_id)
-        return packed_rows, packed_group_ids, packed_lengths
+        return packed_rows, packed_group_ids, packed_lengths, packed_segment_lengths
+
+    def _build_attention_mask(self, packed_segment_lengths: list[list[int]], batch_max_len: int) -> list[list[list[int]]]:
+        attention_mask: list[list[list[int]]] = []
+        for segment_lengths in packed_segment_lengths:
+            row_mask = [[0] * batch_max_len for _ in range(batch_max_len)]
+            offset = 0
+            for segment_length in segment_lengths:
+                for query_idx in range(segment_length):
+                    for key_idx in range(query_idx + 1):
+                        row_mask[offset + query_idx][offset + key_idx] = 1
+                offset += segment_length
+            attention_mask.append(row_mask)
+        return attention_mask
 
     def __call__(self, features: list[dict]) -> PackedBatch | dict:
         if not features:
             raise ValueError("features must not be empty")
         group_ids = [str(feature["group_id"]) for feature in features]
         segments = [self._segment_from_feature(feature) for feature in features]
-        packed_rows, packed_group_ids, packed_lengths = self._pack_segments(segments)
+        packed_rows, packed_group_ids, packed_lengths, packed_segment_lengths = self._pack_segments(segments)
         batch_max_len = max(packed_lengths)
         if self.pad_to_multiple_of > 1 and batch_max_len % self.pad_to_multiple_of:
             batch_max_len += self.pad_to_multiple_of - (batch_max_len % self.pad_to_multiple_of)
 
         input_ids: list[list[int]] = []
-        attention_mask: list[list[int]] = []
         labels: list[list[int]] = []
         packed_segment_counts: list[int] = []
         for row in packed_rows:
             pad_len = batch_max_len - len(row)
             input_ids.append(row + [self.pad_token_id] * pad_len)
-            attention_mask.append([1] * len(row) + [0] * pad_len)
             labels.append(row + [-100] * pad_len)
             packed_segment_counts.append(0)
+        attention_mask = self._build_attention_mask(packed_segment_lengths, batch_max_len)
         for idx, group_ids in enumerate(packed_group_ids):
             packed_segment_counts[idx] = len(group_ids)
 
@@ -201,7 +213,7 @@ class PackedGroupCollator:
 
             return PackedBatch(
                 input_ids=torch.tensor(input_ids, dtype=torch.long),
-                attention_mask=torch.tensor(attention_mask, dtype=torch.long),
+                attention_mask=torch.tensor(attention_mask, dtype=torch.long).unsqueeze(1),
                 labels=torch.tensor(labels, dtype=torch.long),
                 stats=stats,
                 group_ids=sorted(set(group_ids)),
@@ -213,7 +225,7 @@ class PackedGroupCollator:
 
             return PackedBatch(
                 input_ids=np.asarray(input_ids, dtype=np.int64),
-                attention_mask=np.asarray(attention_mask, dtype=np.int64),
+                attention_mask=np.asarray(attention_mask, dtype=np.int64)[:, None, :, :],
                 labels=np.asarray(labels, dtype=np.int64),
                 stats=stats,
                 group_ids=sorted(set(group_ids)),
@@ -223,16 +235,78 @@ class PackedGroupCollator:
         raise ValueError(f"unsupported return_tensors: {self.return_tensors}")
 
 
+class TokenBudgetGroupBatchSampler:
+    def __init__(
+        self,
+        group_ids: Sequence[str],
+        group_token_counts: Sequence[int],
+        *,
+        max_tokens_per_batch: int,
+        shuffle: bool = False,
+        seed: int = 0,
+    ) -> None:
+        if max_tokens_per_batch <= 0:
+            raise ValueError("max_tokens_per_batch must be positive")
+        if len(group_ids) != len(group_token_counts):
+            raise ValueError("group_ids and group_token_counts must have the same length")
+        self.group_ids = group_ids
+        self.group_token_counts = group_token_counts
+        self.max_tokens_per_batch = max_tokens_per_batch
+        self.shuffle = shuffle
+        self.seed = seed
+
+    def _group_state(self) -> tuple[dict[str, list[int]], dict[str, int], list[str]]:
+        grouped_indices: dict[str, list[int]] = {}
+        grouped_tokens: dict[str, int] = {}
+        group_order: list[str] = []
+        for idx, (group_id, group_token_count) in enumerate(zip(self.group_ids, self.group_token_counts)):
+            if group_id not in grouped_indices:
+                grouped_indices[group_id] = []
+                grouped_tokens[group_id] = 0
+                group_order.append(group_id)
+            grouped_indices[group_id].append(idx)
+            grouped_tokens[group_id] += group_token_count
+        if self.shuffle:
+            rng = random.Random(self.seed)
+            rng.shuffle(group_order)
+        return grouped_indices, grouped_tokens, group_order
+
+    def _build_batches(self) -> list[list[int]]:
+        grouped_indices, grouped_tokens, group_order = self._group_state()
+        batches: list[list[int]] = []
+        current_batch: list[int] = []
+        current_tokens = 0
+        for group_id in group_order:
+            group_tokens = grouped_tokens[group_id]
+            group_indices = grouped_indices[group_id]
+            if current_batch and current_tokens + group_tokens > self.max_tokens_per_batch:
+                batches.append(current_batch)
+                current_batch = []
+                current_tokens = 0
+            current_batch.extend(group_indices)
+            current_tokens += group_tokens
+        if current_batch:
+            batches.append(current_batch)
+        return batches
+
+    def __iter__(self):
+        yield from self._build_batches()
+
+    def __len__(self) -> int:
+        return len(self._build_batches())
+
+
 def build_group_batch_sampler(
     dataset: Dataset,
     *,
-    groups_per_batch: int,
+    max_tokens_per_batch: int,
     shuffle: bool,
     seed: int,
-) -> MahjongGroupBatchSampler:
-    return MahjongGroupBatchSampler(
+) -> TokenBudgetGroupBatchSampler:
+    return TokenBudgetGroupBatchSampler(
         dataset["group_id"],
-        groups_per_batch=groups_per_batch,
+        [int(length) + 1 for length in dataset["length"]],
+        max_tokens_per_batch=max_tokens_per_batch,
         shuffle=shuffle,
         seed=seed,
     )
