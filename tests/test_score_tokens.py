@@ -712,6 +712,24 @@ def test_penuki_opens_ron_reaction_window_before_replacement_draw() -> None:
     assert "opt_react_1_ron" in tokenizer.tokens
 
 
+def test_riichi_penuki_does_not_mark_persistent_furiten_when_tsumo_is_also_offered() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer.seat_count = 3
+    tokenizer._on_qipai(qipai_payload(seat_count=3))
+    tokenizer.players[0].is_riichi = True
+    tokenizer.pending_self = engine.SelfDecision(
+        actor=0,
+        options={"tsumo", "penuki"},
+        option_tiles={"penuki": ["z4"]},
+    )
+
+    tokenizer._finalize_self({"penuki"}, actor=0, chosen_tiles={"penuki": "z4"})
+
+    assert tokenizer.players[0].riichi_furiten is False
+    assert "take_self_0_penuki" in tokenizer.tokens
+    assert "pass_self_0_tsumo" in tokenizer.tokens
+
+
 def test_vocab_includes_penuki_self_action_tokens() -> None:
     vocab = (Path(__file__).resolve().parents[1] / "tokenizer" / "vocab.txt").read_text(encoding="utf-8")
 

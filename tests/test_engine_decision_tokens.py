@@ -216,7 +216,7 @@ def test_kakan_generates_reaction_decision_and_rob_kan_take(monkeypatch: pytest.
     assert "take_react_1_ron" in tokenizer.tokens
 
 
-def test_passing_ron_by_taking_other_call_sets_temporary_furiten() -> None:
+def test_passing_ron_by_taking_other_call_does_not_set_temporary_furiten() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
 
@@ -228,7 +228,7 @@ def test_passing_ron_by_taking_other_call_sets_temporary_furiten() -> None:
     )
     tokenizer._finalize_reaction()
 
-    assert tokenizer.players[1].temporary_furiten
+    assert tokenizer.players[1].temporary_furiten is False
     assert "take_react_1_chi" in tokenizer.tokens
     assert "pass_react_1_ron_voluntary" in tokenizer.tokens
 
@@ -306,7 +306,7 @@ def test_forced_rule_close_is_rejected_for_reactions() -> None:
             set(),
             "voluntary",
             {"take_react_1_pon", "pass_react_1_ron_voluntary"},
-            {1},
+            set(),
             set(),
         ),
         (
@@ -315,7 +315,7 @@ def test_forced_rule_close_is_rejected_for_reactions() -> None:
             set(),
             "voluntary",
             {"take_react_1_minkan", "pass_react_1_ron_voluntary"},
-            {1},
+            set(),
             set(),
         ),
         (

@@ -2527,7 +2527,13 @@ class TenhouTokenizer:
 
         seat = self.pending_self.actor
         chosen_effective = chosen & self.pending_self.options
-        if self.players[seat].is_riichi and "tsumo" in self.pending_self.options and "tsumo" not in chosen_effective:
+        skipped_tsumo_for_penuki = "penuki" in chosen_effective
+        if (
+            self.players[seat].is_riichi
+            and "tsumo" in self.pending_self.options
+            and "tsumo" not in chosen_effective
+            and not skipped_tsumo_for_penuki
+        ):
             self.players[seat].riichi_furiten = True
         for opt in sorted(chosen_effective):
             if opt in self.pending_self.option_tiles:
@@ -2716,7 +2722,8 @@ class TenhouTokenizer:
                 ron_reason = "voluntary"
                 if not (chosen and chosen in opts):
                     ron_reason = self._reaction_pass_reason(seat, "ron", close_reason)
-                if ron_reason == "voluntary":
+                chose_non_ron_call = chosen in {"chi", "pon", "minkan"}
+                if ron_reason == "voluntary" and not chose_non_ron_call:
                     if self.players[seat].is_riichi:
                         self.players[seat].riichi_furiten = True
                     else:

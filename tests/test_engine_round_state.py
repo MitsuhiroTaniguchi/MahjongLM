@@ -597,6 +597,23 @@ def test_riichi_missed_tsumo_becomes_persistent_furiten(monkeypatch: pytest.Monk
     assert reaction is None or "ron" not in reaction.options_by_player.get(seat, set())
 
 
+def test_calling_pon_over_ron_does_not_leave_temporary_furiten() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    seat = 1
+    tokenizer.pending_reaction = ReactionDecision(
+        discarder=0,
+        discard_tile=tile_to_index("m1"),
+        options_by_player={seat: {"pon", "ron"}},
+    )
+    tokenizer.pending_reaction.chosen[seat] = "pon"
+
+    tokenizer._finalize_reaction()
+
+    assert tokenizer.players[seat].temporary_furiten is False
+    assert tokenizer.players[seat].riichi_furiten is False
+
+
 def test_wait_mask_is_cached_until_player_state_changes(monkeypatch: pytest.MonkeyPatch) -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())

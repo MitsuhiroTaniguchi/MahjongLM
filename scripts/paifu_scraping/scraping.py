@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import argparse
 import concurrent.futures
 import gzip
 import json
+import os
 import re
 import subprocess
 import sys
@@ -45,6 +47,7 @@ TARGET_SPEEDS = {"－", "速"}
 FETCH_SLEEP_SECONDS = 0.05
 PROCESS_WORKERS = 4
 MAX_INFLIGHT_PROCESS_TASKS = 32
+NON_TTY_PROGRESS_INTERVAL_SECONDS = 5.0
 LINE_RE = re.compile(
     r"^\d{2}:\d{2}\s+\|\s+\d+\s+\|\s+(?P<title>[^|]+?)\s+\|\s+"
     r'<a href="https?://tenhou\.net/0/\?log=(?P<log_id>[^"]+)">牌譜</a>'
@@ -58,6 +61,61 @@ def iter_archive_zips() -> list[tuple[int, Path]]:
         if match:
             archives.append((int(match.group(1)), path))
     return archives
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Fetch, convert, tokenize, and build HF datasets from Tenhou archives.")
+    parser.add_argument(
+        "--year",
+        dest="years",
+        action="append",
+        type=int,
+        default=[],
+        help="Process only this year. Repeatable.",
+    )
+    parser.add_argument(
+        "--year-min",
+        type=int,
+        default=None,
+        help="Process only years >= this value.",
+    )
+    parser.add_argument(
+        "--year-max",
+        type=int,
+        default=None,
+        help="Process only years <= this value.",
+    )
+    parser.add_argument(
+        "--exclude-year",
+        dest="excluded_years",
+        action="append",
+        type=int,
+        default=[],
+        help="Skip this year. Repeatable.",
+    )
+    return parser.parse_args()
+
+
+def filter_archives(
+    archives: list[tuple[int, Path]],
+    *,
+    years: set[int],
+    excluded_years: set[int],
+    year_min: int | None,
+    year_max: int | None,
+) -> list[tuple[int, Path]]:
+    selected: list[tuple[int, Path]] = []
+    for year, path in archives:
+        if year in excluded_years:
+            continue
+        if years and year not in years:
+            continue
+        if year_min is not None and year < year_min:
+            continue
+        if year_max is not None and year > year_max:
+            continue
+        selected.append((year, path))
+    return selected
 
 
 def iter_archive_lines(zip_path: Path) -> list[str]:
@@ -144,6 +202,11 @@ def convert_raw_to_json(raw_path: Path, json_path: Path) -> None:
                 check=True,
                 text=True,
                 stdout=f,
+                env={
+                    **os.environ,
+                    "LC_ALL": "C",
+                    "LANG": "C",
+                },
             )
         temp_path.replace(json_path)
     except Exception:
@@ -154,6 +217,25 @@ def convert_raw_to_json(raw_path: Path, json_path: Path) -> None:
 
 def has_downloaded_raw(raw_path: Path) -> bool:
     return raw_path.is_file() and raw_path.stat().st_size > 0
+
+
+def not_found_marker_path(raw_path: Path) -> Path:
+    return raw_path.with_suffix(raw_path.suffix + ".404")
+
+
+def has_not_found_marker(raw_path: Path) -> bool:
+    marker_path = not_found_marker_path(raw_path)
+    return marker_path.is_file() and marker_path.stat().st_size >= 0
+
+
+def write_not_found_marker(raw_path: Path) -> None:
+    atomic_write_text(not_found_marker_path(raw_path), "404 Not Found\n")
+
+
+def clear_not_found_marker(raw_path: Path) -> None:
+    marker_path = not_found_marker_path(raw_path)
+    if marker_path.exists():
+        marker_path.unlink()
 
 
 def has_valid_json(json_path: Path) -> bool:
@@ -213,6 +295,10 @@ def tokenize_game_views_to_files(
         save_token_ids(path, vocab.encode(view.tokens), vocab_fingerprint=vocab.fingerprint)
 
 
+def has_any_tokenized_views(tokenized_year_dir: Path) -> bool:
+    return any(tokenized_year_dir.glob("*.ids.bin"))
+
+
 def _process_log_id(
     *,
     log_id: str,
@@ -266,13 +352,51 @@ def _drain_completed(
     return completed, failures
 
 
+def iter_with_progress(lines: list[str], *, year: int):
+    if sys.stderr.isatty():
+        yield from tqdm(lines, desc=str(year), dynamic_ncols=True)
+        return
+
+    total = len(lines)
+    print(f"{year}: starting {total} archive lines")
+    started_at = time.monotonic()
+    last_reported_at = started_at
+    for index, line in enumerate(lines, start=1):
+        now = time.monotonic()
+        should_report = (
+            index == 1
+            or index == total
+            or (now - last_reported_at) >= NON_TTY_PROGRESS_INTERVAL_SECONDS
+        )
+        if should_report:
+            elapsed = max(now - started_at, 1e-9)
+            rate = index / elapsed
+            remaining = max(total - index, 0)
+            eta_seconds = remaining / rate if rate > 0 else float("inf")
+            eta_minutes, eta_remainder = divmod(int(eta_seconds), 60)
+            percent = (index / total) * 100 if total else 100.0
+            print(
+                f"{year}: {index}/{total} ({percent:5.2f}%) "
+                f"at {rate:,.1f} lines/s ETA {eta_minutes:02d}:{eta_remainder:02d}"
+            )
+            last_reported_at = now
+        yield line
+
+
 def main() -> None:
+    args = parse_args()
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     JSON_DIR.mkdir(parents=True, exist_ok=True)
     TOKENIZED_DIR.mkdir(parents=True, exist_ok=True)
     HF_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 
-    archives = iter_archive_zips()
+    archives = filter_archives(
+        iter_archive_zips(),
+        years=set(args.years),
+        excluded_years=set(args.excluded_years),
+        year_min=args.year_min,
+        year_max=args.year_max,
+    )
     if not archives:
         raise FileNotFoundError(f"no scraw*.zip found under {LOG_DIR}")
     if not CONVERT.is_file():
@@ -291,7 +415,8 @@ def main() -> None:
             year_updated = False
             pending_tasks: dict[concurrent.futures.Future[tuple[str, bool]], str] = {}
 
-            for line in tqdm(iter_archive_lines(zip_path), desc=str(year)):
+            archive_lines = iter_archive_lines(zip_path)
+            for line in iter_with_progress(archive_lines, year=year):
                 log_id = parse_log_id(line)
                 if not log_id:
                     continue
@@ -300,9 +425,21 @@ def main() -> None:
                 json_path = json_year_dir / f"{log_id}.json"
 
                 try:
-                    if not has_valid_json(json_path) and not has_downloaded_raw(raw_path):
-                        atomic_write_text(raw_path, fetch_log_text(session, log_id))
-                        time.sleep(FETCH_SLEEP_SECONDS)
+                    if not has_valid_json(json_path):
+                        if has_not_found_marker(raw_path) and not has_downloaded_raw(raw_path):
+                            continue
+                        if not has_downloaded_raw(raw_path):
+                            try:
+                                atomic_write_text(raw_path, fetch_log_text(session, log_id))
+                            except requests.HTTPError as exc:
+                                response = exc.response
+                                if response is not None and response.status_code == 404:
+                                    write_not_found_marker(raw_path)
+                                    print(f"{log_id} 404 not found; marked to skip future fetches")
+                                    continue
+                                raise
+                            clear_not_found_marker(raw_path)
+                            time.sleep(FETCH_SLEEP_SECONDS)
                     future = executor.submit(
                         _process_log_id,
                         log_id=log_id,
@@ -328,6 +465,10 @@ def main() -> None:
             for failed_log_id, exc in failures:
                 print(failed_log_id)
                 print(exc)
+
+            if not has_any_tokenized_views(tokenized_year_dir):
+                print(f"{year}: no tokenized views; skipping HF dataset build")
+                continue
 
             if year_updated or not hf_dataset_year_dir.exists():
                 save_year_hf_dataset(

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
+import os
 import random
 import shutil
 from dataclasses import dataclass
@@ -13,6 +15,9 @@ from datasets import Dataset, Features, Sequence, Value
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import WhitespaceSplit
+
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+logging.getLogger("transformers").setLevel(logging.ERROR)
 from transformers import PreTrainedTokenizerFast
 
 from .viewspec import parse_view_artifact_name
