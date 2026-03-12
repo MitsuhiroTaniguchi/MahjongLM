@@ -46,6 +46,12 @@ TARGET_PLAYERS = {"三", "四"}
 TARGET_ROUNDS = {"東", "南"}
 TARGET_SPEEDS = {"－", "速"}
 FETCH_SLEEP_SECONDS = 0.05
+FETCH_CONNECT_TIMEOUT_SECONDS = 5
+FETCH_READ_TIMEOUT_SECONDS = 10.0
+FETCH_READ_TIMEOUT_MIN_SECONDS = 3.0
+FETCH_READ_TIMEOUT_MAX_SECONDS = 10.0
+FETCH_TIMING_WINDOW_SIZE = 128
+FETCH_READ_TIMEOUT_HEADROOM = 3.0
 PROCESS_WORKERS = 4
 MAX_INFLIGHT_PROCESS_TASKS = 32
 NON_TTY_PROGRESS_INTERVAL_SECONDS = 5.0
@@ -93,6 +99,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=[],
         help="Skip this year. Repeatable.",
+    )
+    parser.add_argument(
+        "--retry-timeouts",
+        action="store_true",
+        help="Ignore cached timeout markers and retry timed-out fetches.",
     )
     return parser.parse_args()
 
@@ -153,7 +164,12 @@ def parse_log_id(line: str) -> str | None:
     return match.group("log_id")
 
 
-def fetch_log_text(session: requests.Session, log_id: str) -> str:
+def fetch_log_text(
+    session: requests.Session,
+    log_id: str,
+    *,
+    read_timeout_seconds: float,
+) -> str:
     response = session.get(
         f"https://tenhou.net/0/log/?{log_id}",
         headers={
@@ -163,7 +179,7 @@ def fetch_log_text(session: requests.Session, log_id: str) -> str:
                 "Chrome/122.0.0.0 Safari/537.36"
             )
         },
-        timeout=30,
+        timeout=(FETCH_CONNECT_TIMEOUT_SECONDS, read_timeout_seconds),
     )
     response.raise_for_status()
     return response.text
@@ -228,8 +244,17 @@ def not_found_marker_path(raw_path: Path) -> Path:
     return raw_path.with_suffix(raw_path.suffix + ".404")
 
 
+def timeout_marker_path(raw_path: Path) -> Path:
+    return raw_path.with_suffix(raw_path.suffix + ".timeout")
+
+
 def has_not_found_marker(raw_path: Path) -> bool:
     marker_path = not_found_marker_path(raw_path)
+    return marker_path.is_file() and marker_path.stat().st_size >= 0
+
+
+def has_timeout_marker(raw_path: Path) -> bool:
+    marker_path = timeout_marker_path(raw_path)
     return marker_path.is_file() and marker_path.stat().st_size >= 0
 
 
@@ -237,10 +262,55 @@ def write_not_found_marker(raw_path: Path) -> None:
     atomic_write_text(not_found_marker_path(raw_path), "404 Not Found\n")
 
 
+def write_timeout_marker(raw_path: Path, exc: BaseException) -> None:
+    atomic_write_text(timeout_marker_path(raw_path), f"timeout {type(exc).__name__}: {exc}\n")
+
+
 def clear_not_found_marker(raw_path: Path) -> None:
     marker_path = not_found_marker_path(raw_path)
     if marker_path.exists():
         marker_path.unlink()
+
+
+def clear_timeout_marker(raw_path: Path) -> None:
+    marker_path = timeout_marker_path(raw_path)
+    if marker_path.exists():
+        marker_path.unlink()
+
+
+class FetchTimingStats:
+    def __init__(self, *, window_size: int = FETCH_TIMING_WINDOW_SIZE) -> None:
+        self.window_size = window_size
+        self.samples: list[float] = []
+
+    def record_success(self, elapsed_seconds: float) -> None:
+        self.samples.append(elapsed_seconds)
+        if len(self.samples) > self.window_size:
+            del self.samples[: len(self.samples) - self.window_size]
+
+    def recommended_read_timeout_seconds(self) -> float:
+        if not self.samples:
+            return FETCH_READ_TIMEOUT_SECONDS
+        ordered = sorted(self.samples)
+        idx = min(len(ordered) - 1, max(0, int(len(ordered) * 0.95)))
+        p95 = ordered[idx]
+        timeout = max(
+            FETCH_READ_TIMEOUT_MIN_SECONDS,
+            min(FETCH_READ_TIMEOUT_MAX_SECONDS, p95 * FETCH_READ_TIMEOUT_HEADROOM),
+        )
+        return timeout
+
+    def summary(self) -> str:
+        if not self.samples:
+            return "no successful fetch timings"
+        ordered = sorted(self.samples)
+        p50 = ordered[len(ordered) // 2]
+        p95 = ordered[min(len(ordered) - 1, max(0, int(len(ordered) * 0.95)))]
+        return (
+            f"samples={len(self.samples)} "
+            f"p50={p50:.2f}s p95={p95:.2f}s "
+            f"read_timeout={self.recommended_read_timeout_seconds():.2f}s"
+        )
 
 
 def has_valid_json(json_path: Path) -> bool:
@@ -419,6 +489,7 @@ def main() -> None:
             tokenized_year_dir.mkdir(parents=True, exist_ok=True)
             year_updated = False
             pending_tasks: dict[concurrent.futures.Future[tuple[str, bool]], str] = {}
+            fetch_timing_stats = FetchTimingStats()
 
             archive_lines = iter_archive_lines(zip_path)
             for line in iter_with_progress(archive_lines, year=year):
@@ -433,9 +504,27 @@ def main() -> None:
                     if not has_valid_json(json_path):
                         if has_not_found_marker(raw_path) and not has_downloaded_raw(raw_path):
                             continue
+                        if not args.retry_timeouts and has_timeout_marker(raw_path) and not has_downloaded_raw(raw_path):
+                            continue
                         if not has_downloaded_raw(raw_path):
                             try:
-                                atomic_write_text(raw_path, fetch_log_text(session, log_id))
+                                started_at = time.monotonic()
+                                atomic_write_text(
+                                    raw_path,
+                                    fetch_log_text(
+                                        session,
+                                        log_id,
+                                        read_timeout_seconds=fetch_timing_stats.recommended_read_timeout_seconds(),
+                                    ),
+                                )
+                                fetch_timing_stats.record_success(time.monotonic() - started_at)
+                            except requests.Timeout as exc:
+                                write_timeout_marker(raw_path, exc)
+                                print(
+                                    f"{log_id} timed out; marked to skip future fetches "
+                                    f"({fetch_timing_stats.summary()})"
+                                )
+                                continue
                             except requests.HTTPError as exc:
                                 response = exc.response
                                 if response is not None and response.status_code == 404:
@@ -444,6 +533,7 @@ def main() -> None:
                                     continue
                                 raise
                             clear_not_found_marker(raw_path)
+                            clear_timeout_marker(raw_path)
                             time.sleep(FETCH_SLEEP_SECONDS)
                     future = executor.submit(
                         _process_log_id,
@@ -482,6 +572,7 @@ def main() -> None:
                     json_dir=json_year_dir,
                     output_dir=hf_dataset_year_dir,
                 )
+            print(f"{year}: fetch timing summary: {fetch_timing_stats.summary()}")
 
 
 if __name__ == "__main__":
