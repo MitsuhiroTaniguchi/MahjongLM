@@ -17,9 +17,8 @@ def _convert(path: Path) -> dict:
         cwd=ROOT,
         check=True,
         capture_output=True,
-        text=True,
     )
-    return json.loads(proc.stdout)
+    return json.loads(proc.stdout.decode("utf-8"))
 
 
 def _convert_inline(raw: str) -> dict:

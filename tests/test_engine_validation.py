@@ -32,9 +32,8 @@ def _convert_sanma_sample() -> dict:
         cwd=ROOT,
         check=True,
         capture_output=True,
-        text=True,
     )
-    return json.loads(proc.stdout)
+    return json.loads(proc.stdout.decode("utf-8"))
 
 
 def test_validation_helpers_accept_minimal_game() -> None:
