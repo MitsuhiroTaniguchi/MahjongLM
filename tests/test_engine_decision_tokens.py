@@ -423,11 +423,10 @@ def test_self_resolution_emits_take_before_pass_in_sorted_order() -> None:
 
     tokenizer._finalize_self({"riichi"})
 
-    tail = tokenizer.tokens[-4:]
+    tail = tokenizer.tokens[-3:]
     assert tail == [
         "take_self_0_riichi",
         "pass_self_0_ankan",
-        "m1",
         "pass_self_0_tsumo",
     ]
 
@@ -732,8 +731,7 @@ def test_kaigang_after_minkan_discard_keeps_discard_reaction(
     assert "take_react_0_minkan" in tokens
     dora_tiles = [tokens[i + 1] for i, token in enumerate(tokens[:-1]) if token == "dora"]
     assert "z1" in dora_tiles
-    assert "discard_0_p1" in tokens
-    assert "tsumogiri" in tokens
+    assert "discard_0_p1_tsumogiri" in tokens
     assert "pass_react_1_chi_voluntary" in tokens
 
 
@@ -898,8 +896,7 @@ def test_red_tiles_are_preserved_in_qipai_draw_and_discard_tokens(
     haipai_idx = tokenizer.tokens.index("haipai_0")
     assert tokenizer.tokens[haipai_idx + 1] == "m0"
     assert "draw_0_m0" in tokenizer.tokens
-    assert "discard_0_m0" in tokenizer.tokens
-    assert "tsumogiri" in tokenizer.tokens
+    assert "discard_0_m0_tsumogiri" in tokenizer.tokens
 
 
 def test_discard_emits_no_tedashi_marker_when_choice_does_not_exist(
@@ -916,9 +913,7 @@ def test_discard_emits_no_tedashi_marker_when_choice_does_not_exist(
     tokenizer._on_draw({"l": 0, "p": "m1"}, is_gangzimo=False)
     tokenizer._on_discard({"l": 0, "p": "m1_"})
 
-    assert "discard_0_m1" in tokenizer.tokens
-    assert "tsumogiri" not in tokenizer.tokens
-    assert "tedashi" not in tokenizer.tokens
+    assert "discard_0_m1_tsumogiri" in tokenizer.tokens
 
 
 def test_discard_emits_tedashi_when_same_tile_choice_exists(
@@ -935,9 +930,7 @@ def test_discard_emits_tedashi_when_same_tile_choice_exists(
     tokenizer._on_draw({"l": 0, "p": "m1"}, is_gangzimo=False)
     tokenizer._on_discard({"l": 0, "p": "m1"})
 
-    assert "discard_0_m1" in tokenizer.tokens
-    assert "tedashi" in tokenizer.tokens
-    assert "tsumogiri" not in tokenizer.tokens
+    assert "discard_0_m1_tedashi" in tokenizer.tokens
 
 
 def test_discard_does_not_emit_marker_when_only_red_five_matches_index(
@@ -954,9 +947,7 @@ def test_discard_does_not_emit_marker_when_only_red_five_matches_index(
     tokenizer._on_draw({"l": 0, "p": "m5"}, is_gangzimo=False)
     tokenizer._on_discard({"l": 0, "p": "m5_"})
 
-    assert "discard_0_m5" in tokenizer.tokens
-    assert "tsumogiri" not in tokenizer.tokens
-    assert "tedashi" not in tokenizer.tokens
+    assert "discard_0_m5_tsumogiri" in tokenizer.tokens
 
 
 def test_discard_does_not_emit_marker_when_only_normal_five_matches_red_draw(
@@ -973,9 +964,7 @@ def test_discard_does_not_emit_marker_when_only_normal_five_matches_red_draw(
     tokenizer._on_draw({"l": 0, "p": "m0"}, is_gangzimo=False)
     tokenizer._on_discard({"l": 0, "p": "m0_"})
 
-    assert "discard_0_m0" in tokenizer.tokens
-    assert "tsumogiri" not in tokenizer.tokens
-    assert "tedashi" not in tokenizer.tokens
+    assert "discard_0_m0_tsumogiri" in tokenizer.tokens
 
 
 def test_riichi_discard_emits_tsumogiri_when_same_tile_choice_exists(
@@ -994,9 +983,7 @@ def test_riichi_discard_emits_tsumogiri_when_same_tile_choice_exists(
     tokenizer._on_discard({"l": 0, "p": "m1*_"})
 
     assert "take_self_0_riichi" in tokenizer.tokens
-    assert "discard_0_m1" in tokenizer.tokens
-    assert "tsumogiri" in tokenizer.tokens
-    assert "tedashi" not in tokenizer.tokens
+    assert "discard_0_m1_tsumogiri" in tokenizer.tokens
 
 
 def test_riichi_discard_emits_tedashi_when_same_tile_choice_exists(
@@ -1015,9 +1002,7 @@ def test_riichi_discard_emits_tedashi_when_same_tile_choice_exists(
     tokenizer._on_discard({"l": 0, "p": "m1*"})
 
     assert "take_self_0_riichi" in tokenizer.tokens
-    assert "discard_0_m1" in tokenizer.tokens
-    assert "tedashi" in tokenizer.tokens
-    assert "tsumogiri" not in tokenizer.tokens
+    assert "discard_0_m1_tedashi" in tokenizer.tokens
 
 
 def test_fulou_no_longer_emits_call_token(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1233,7 +1218,7 @@ def test_ankan_generates_reaction_decision_and_rob_kan_take(monkeypatch: pytest.
     assert tokenizer.tokens.count("take_react_1_ron") == 1
 
 
-def test_multiple_ankan_candidates_emit_tile_qualified_opt_take_and_pass() -> None:
+def test_multiple_ankan_candidates_only_reveal_tile_on_take() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
     actor = 0
@@ -1247,15 +1232,14 @@ def test_multiple_ankan_candidates_emit_tile_qualified_opt_take_and_pass() -> No
 
     tokenizer._finalize_self({"ankan"}, actor=actor, chosen_tiles={"ankan": "z1"})
 
-    assert tokenizer.tokens[-4:] == [
+    assert tokenizer.tokens[-3:] == [
         "take_self_0_ankan",
         "z1",
         "pass_self_0_ankan",
-        "m1",
     ]
 
 
-def test_multiple_kakan_candidates_emit_tile_qualified_options_on_draw() -> None:
+def test_multiple_kakan_candidates_do_not_emit_tiles_in_opt_block() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
     actor = 0
@@ -1270,7 +1254,7 @@ def test_multiple_kakan_candidates_emit_tile_qualified_options_on_draw() -> None
     tokenizer._on_draw({"l": actor, "p": "p1"}, is_gangzimo=False)
 
     opt_idx = tokenizer.tokens.index("opt_self_0_kakan")
-    assert tokenizer.tokens[opt_idx + 1 : opt_idx + 3] == ["m1", "z1"]
+    assert opt_idx + 1 >= len(tokenizer.tokens) or tokenizer.tokens[opt_idx + 1] not in {"m1", "z1"}
 
 
 @pytest.mark.parametrize(

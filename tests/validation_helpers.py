@@ -35,8 +35,19 @@ TILE_TOKENS = {
     *(f"z{i}" for i in range(1, 8)),
 }
 RED_CHOICE_TOKENS = {"red_chi_used", "red_chi_not_used", "red_pon_used", "red_pon_not_used"}
-DISCARD_MARKER_TOKENS = {"tedashi", "tsumogiri"}
+DISCARD_MARKER_TOKENS: set[str] = set()
 REACTION_PASS_SUFFIXES = ("_voluntary", "_forced_priority")
+
+
+def _is_discard_token(token: str) -> bool:
+    parts = token.split("_")
+    return (
+        len(parts) == 4
+        and parts[0] == "discard"
+        and parts[1].isdigit()
+        and parts[2] in TILE_TOKENS
+        and parts[3] in {"tedashi", "tsumogiri"}
+    )
 
 
 def _is_rank_token(token: str) -> bool:
@@ -235,11 +246,7 @@ class TokenStreamFSM:
             return True
         if token.startswith("pass_self_"):
             assert self.allow_post_tsumo_pass_self
-            parts = token.split("_")
-            if parts[-1] in {"ankan", "kakan", "penuki"}:
-                self.idx = _consume_tile_payload(self.tokens, self.idx + 1, minimum=1, exact=1)
-            else:
-                self.idx += 1
+            self.idx += 1
             if self.idx >= len(self.tokens) or not self.tokens[self.idx].startswith("pass_self_"):
                 self.allow_post_tsumo_pass_self = False
             return True
@@ -256,7 +263,7 @@ class TokenStreamFSM:
             self.idx += 1
             return True
         assert not token.startswith("draw_")
-        assert not token.startswith("discard_")
+        assert not _is_discard_token(token)
         assert token not in DISCARD_MARKER_TOKENS
         assert not token.startswith("chi_pos_")
         assert token not in RED_CHOICE_TOKENS
@@ -309,10 +316,7 @@ class TokenStreamFSM:
             if key.endswith("_kyushukyuhai"):
                 assert not self.saw_call_in_round
             self.seen_self.add(key)
-            if key.endswith("_ankan") or key.endswith("_kakan") or key.endswith("_penuki"):
-                self.idx = _consume_tile_payload(self.tokens, self.idx + 1, minimum=1)
-            else:
-                self.idx += 1
+            self.idx += 1
             return True
         if token.startswith("opt_react_"):
             self.seen_react.add(token.replace("opt_react_", "", 1))
@@ -325,18 +329,14 @@ class TokenStreamFSM:
                 self._enter_result_phase(allow_post_tsumo_pass_self=True)
             if parts[-1] in {"ankan", "kakan"}:
                 self.pending_kaigang_reveals += 1
-            if parts[-1] in {"ankan", "kakan", "penuki"}:
+            if parts[-1] in {"ankan", "kakan"}:
                 self.idx = _consume_tile_payload(self.tokens, self.idx + 1, minimum=1, exact=1)
             else:
                 self.idx += 1
             return True
         if token.startswith("pass_self_"):
             assert token.replace("pass_self_", "", 1) in self.seen_self
-            parts = token.split("_")
-            if parts[-1] in {"ankan", "kakan", "penuki"}:
-                self.idx = _consume_tile_payload(self.tokens, self.idx + 1, minimum=1, exact=1)
-            else:
-                self.idx += 1
+            self.idx += 1
             return True
         if token.startswith("take_react_"):
             assert token.replace("take_react_", "", 1) in self.seen_react
@@ -376,10 +376,8 @@ class TokenStreamFSM:
             self.idx = _consume_tile_payload(self.tokens, self.idx + 1, minimum=1, exact=1)
             self.pending_kaigang_reveals -= 1
             return True
-        if token.startswith("discard_"):
+        if _is_discard_token(token):
             self.idx += 1
-            if self.idx < len(self.tokens) and self.tokens[self.idx] in DISCARD_MARKER_TOKENS:
-                self.idx += 1
             return True
         if token.startswith("draw_"):
             self.idx += 1
@@ -514,16 +512,10 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
             token = emitted[idx]
             assert token.startswith("opt_self_")
             idx += 1
-            if token.endswith("_ankan") or token.endswith("_kakan") or token.endswith("_penuki"):
-                saw_tile = False
-                while idx < len(emitted) and emitted[idx] in TILE_TOKENS:
-                    saw_tile = True
-                    idx += 1
-                assert saw_tile
         return
 
     if event_key == "dapai":
-        discard_positions = [i for i, token in enumerate(emitted) if token.startswith("discard_")]
+        discard_positions = [i for i, token in enumerate(emitted) if _is_discard_token(token)]
         assert len(discard_positions) == 1
         discard_idx = discard_positions[0]
         prefix = emitted[:discard_idx]
@@ -535,17 +527,12 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
                 continue
             if token.startswith("pass_self_"):
                 idx += 1
-                if token.endswith("_ankan") or token.endswith("_kakan"):
-                    assert idx < len(prefix) and prefix[idx] in TILE_TOKENS
-                    idx += 1
                 continue
             if token.startswith("pass_react_"):
                 idx += 1
                 continue
             raise AssertionError(f"unexpected discard-prefix token: {token}")
         idx = discard_idx + 1
-        if idx < len(emitted) and emitted[idx] in DISCARD_MARKER_TOKENS:
-            idx += 1
         assert all(token.startswith("opt_react_") for token in emitted[idx:])
         return
 
@@ -583,9 +570,8 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
         take_positions = [i for i, token in enumerate(emitted) if token.startswith("take_self_")]
         assert len(take_positions) == 1
         take_idx = take_positions[0]
-        assert all(token.startswith("pass_self_") or token.startswith("opt_self_") or token in TILE_TOKENS for token in emitted[:take_idx])
+        assert all(token.startswith("pass_self_") or token.startswith("opt_self_") for token in emitted[:take_idx])
         assert emitted[take_idx].endswith("_penuki")
-        assert emitted[take_idx + 1] == "z4"
         return
 
     if event_key == "kaigang":

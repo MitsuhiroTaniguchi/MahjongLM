@@ -131,7 +131,7 @@ def test_event_token_slice_rejects_discard_options_before_discard() -> None:
             "dapai",
             [
                 "opt_react_1_ron",
-                "discard_0_m1",
+                "discard_0_m1_tedashi",
             ],
         )
 
@@ -171,7 +171,6 @@ def test_event_token_slice_rejects_tsumo_result_without_take() -> None:
             "hule",
             [
                 "pass_self_0_ankan",
-                "m1",
                 "score_delta_0",
                 "TENBO_ZERO",
                 "score_delta_1",

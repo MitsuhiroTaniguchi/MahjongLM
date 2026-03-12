@@ -1649,10 +1649,6 @@ class TenhouTokenizer:
         tile_idx = tile_to_index(tile_token)
         is_riichi = "*" in raw_tile
         is_tsumogiri = "_" in raw_tile
-        had_draw_tile_choice = (
-            self.players[actor].last_draw_tile == tile_token
-            and self._has_exact_discard_choice(actor, tile_token)
-        )
 
         chosen: Set[str] = {"riichi"} if is_riichi else set()
         self._finalize_self(chosen, actor=actor)
@@ -1663,9 +1659,8 @@ class TenhouTokenizer:
         self.players[actor].furiten_tiles.add(tile_idx)
         self._invalidate_wait_mask(actor)
 
-        self.tokens.append(f"discard_{actor}_{tile_token}")
-        if had_draw_tile_choice:
-            self.tokens.append("tsumogiri" if is_tsumogiri else "tedashi")
+        discard_kind = "tsumogiri" if is_tsumogiri else "tedashi"
+        self.tokens.append(f"discard_{actor}_{tile_token}_{discard_kind}")
 
         if is_riichi:
             self.players[actor].is_riichi = True
@@ -1687,16 +1682,6 @@ class TenhouTokenizer:
             self.expected_draw_actor = (actor + 1) % self.seat_count
         else:
             self.expected_draw_actor = (actor + 1) % self.seat_count
-
-    def _has_exact_discard_choice(self, actor: int, tile_token: str) -> bool:
-        player = self.players[actor]
-        tile_idx = tile_to_index(tile_token)
-        if tile_token[0] not in {"m", "p", "s"} or tile_token[1] not in {"0", "5"}:
-            return player.concealed[tile_idx] >= 2
-        if tile_token[1] == "0":
-            return player.red_fives[tile_token[0]] >= 2
-        normal_five_count = player.concealed[tile_idx] - player.red_fives[tile_token[0]]
-        return normal_five_count >= 2
 
     def _compute_reaction_options(self, discarder: int, tile_idx: int) -> Optional[ReactionDecision]:
         use_simulation_api = self._use_multi_player_simulation() and not (
@@ -2550,11 +2535,29 @@ class TenhouTokenizer:
                         seat=seat,
                         kind="take",
                         opt=opt,
-                        tile_token=chosen_tile,
+                        tile_token=chosen_tile if self._self_action_reveals_tile(opt, kind="take") else None,
                     )
                 )
-                for tile_token in self.pending_self.option_tiles[opt]:
-                    if tile_token != chosen_tile:
+                if self._self_action_reveals_tile(opt, kind="pass"):
+                    for tile_token in self.pending_self.option_tiles[opt]:
+                        if tile_token != chosen_tile:
+                            self.tokens.extend(
+                                self._build_self_action_block(
+                                    seat=seat,
+                                    kind="pass",
+                                    opt=opt,
+                                    tile_token=tile_token,
+                                )
+                            )
+                    continue
+                if any(tile_token != chosen_tile for tile_token in self.pending_self.option_tiles[opt]):
+                    self.tokens.extend(self._build_self_action_block(seat=seat, kind="pass", opt=opt))
+                continue
+            self.tokens.extend(self._build_self_action_block(seat=seat, kind="take", opt=opt))
+        for opt in sorted(self.pending_self.options - chosen_effective):
+            if opt in self.pending_self.option_tiles:
+                if self._self_action_reveals_tile(opt, kind="pass"):
+                    for tile_token in self.pending_self.option_tiles[opt]:
                         self.tokens.extend(
                             self._build_self_action_block(
                                 seat=seat,
@@ -2563,19 +2566,8 @@ class TenhouTokenizer:
                                 tile_token=tile_token,
                             )
                         )
-                continue
-            self.tokens.extend(self._build_self_action_block(seat=seat, kind="take", opt=opt))
-        for opt in sorted(self.pending_self.options - chosen_effective):
-            if opt in self.pending_self.option_tiles:
-                for tile_token in self.pending_self.option_tiles[opt]:
-                    self.tokens.extend(
-                        self._build_self_action_block(
-                            seat=seat,
-                            kind="pass",
-                            opt=opt,
-                            tile_token=tile_token,
-                        )
-                    )
+                else:
+                    self.tokens.extend(self._build_self_action_block(seat=seat, kind="pass", opt=opt))
                 continue
             self.tokens.extend(self._build_self_action_block(seat=seat, kind="pass", opt=opt))
         self.pending_self = None
@@ -2594,12 +2586,17 @@ class TenhouTokenizer:
 
     def _emit_self_options(self, actor: int, options: Set[str], option_tiles: Dict[str, List[str]]) -> None:
         for opt in sorted(options):
-            if opt in option_tiles:
+            if opt in option_tiles and self._self_action_reveals_tile(opt, kind="opt"):
                 self.tokens.extend(self._build_self_action_block(seat=actor, kind="opt", opt=opt))
                 for tile_token in option_tiles[opt]:
                     self.tokens.append(tile_token)
                 continue
             self.tokens.extend(self._build_self_action_block(seat=actor, kind="opt", opt=opt))
+
+    def _self_action_reveals_tile(self, opt: str, *, kind: str) -> bool:
+        if opt in {"ankan", "kakan"}:
+            return kind == "take"
+        return False
 
     def _ankan_candidate_tiles(self, actor: int, drawn_tile: Optional[int] = None) -> List[str]:
         p = self.players[actor]
