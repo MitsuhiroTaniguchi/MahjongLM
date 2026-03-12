@@ -520,10 +520,7 @@ def main() -> None:
                                 fetch_timing_stats.record_success(time.monotonic() - started_at)
                             except requests.Timeout as exc:
                                 write_timeout_marker(raw_path, exc)
-                                print(
-                                    f"{log_id} timed out; marked to skip future fetches "
-                                    f"({fetch_timing_stats.summary()})"
-                                )
+                                print(f"{log_id} timed out; marked to skip future fetches")
                                 continue
                             except requests.HTTPError as exc:
                                 response = exc.response
@@ -572,7 +569,6 @@ def main() -> None:
                     json_dir=json_year_dir,
                     output_dir=hf_dataset_year_dir,
                 )
-            print(f"{year}: fetch timing summary: {fetch_timing_stats.summary()}")
 
 
 if __name__ == "__main__":
