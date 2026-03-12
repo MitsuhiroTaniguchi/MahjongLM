@@ -1,5 +1,10 @@
 #!/usr/bin/perl -T
 
+# Derived from kobalab/tenhou-log (lib/convlog.js), MIT licensed.
+# Original work Copyright (c) Satoshi Kobayashi.
+# This file includes local modifications, including a Perl port and
+# three-player support.
+
 use strict;
 use warnings;
 use JSON qw(to_json);

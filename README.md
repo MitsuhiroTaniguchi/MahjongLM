@@ -163,3 +163,11 @@ Notes:
 - [tenhou_paifu_notes_kobalab.md](docs/references/tenhou_paifu_notes_kobalab.md)
 - [tokenizer_speed_plan.md](docs/performance/tokenizer_speed_plan.md)
 - [pymahjong_upstream_pr_notes.md](docs/performance/pymahjong_upstream_pr_notes.md)
+
+## License
+
+This repository's source code is licensed under `MIT`.
+
+Third-party code notices are collected in [THIRD_PARTY.md](THIRD_PARTY.md).
+Tenhou logs and derived datasets are not covered by the code license; see
+[TENHOU_DATA_NOTICE.md](TENHOU_DATA_NOTICE.md).

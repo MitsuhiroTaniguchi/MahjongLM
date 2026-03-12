@@ -165,3 +165,11 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH=src .venv/bin/python -m pytest -m "n
 - [tenhou_paifu_notes_kobalab.md](docs/references/tenhou_paifu_notes_kobalab.md)
 - [tokenizer_speed_plan.md](docs/performance/tokenizer_speed_plan.md)
 - [pymahjong_upstream_pr_notes.md](docs/performance/pymahjong_upstream_pr_notes.md)
+
+## ライセンス
+
+この repository のソースコードは `MIT` です。
+
+第三者コードの notice は [THIRD_PARTY.md](THIRD_PARTY.md) にまとめています。
+Tenhou 牌譜や派生 dataset はコードライセンスの対象外です。
+詳細は [TENHOU_DATA_NOTICE.md](TENHOU_DATA_NOTICE.md) を参照してください。
