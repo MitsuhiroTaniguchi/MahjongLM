@@ -390,6 +390,25 @@ def test_pingju_emits_opened_hands_for_non_empty_shoupai_entries_only() -> None:
     assert "opened_hand_3" not in tokenizer.tokens
 
 
+def test_pingju_accepts_false_for_hidden_shoupai_entries() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer.seat_count = 3
+    tokenizer._on_qipai(qipai_event(seat_count=3)["qipai"])
+
+    tokenizer._on_pingju(
+        {
+            "name": "流局",
+            "fenpei": [1000, -2000, 1000],
+            "shoupai": ["p12334056789s77,b", False, "p3466789s456z555,b,b"],
+        }
+    )
+
+    assert "pingju_ryukyoku" in tokenizer.tokens
+    assert "opened_hand_0" in tokenizer.tokens
+    assert "opened_hand_2" in tokenizer.tokens
+    assert "opened_hand_1" not in tokenizer.tokens
+
+
 def test_nagashimangan_does_not_emit_opened_hands() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())

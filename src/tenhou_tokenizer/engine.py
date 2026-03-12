@@ -2434,6 +2434,9 @@ class TenhouTokenizer:
             raise TokenizeError("pingju.shoupai must be a list")
         block: List[str] = []
         for seat, hand in enumerate(shoupai):
+            # Converter variants may use false/null for unrevealed hands in pingju.shoupai.
+            if hand in (None, False):
+                continue
             if not isinstance(hand, str):
                 raise TokenizeError(f"pingju.shoupai[{seat}] must be a string")
             if kyushukyuhai_actor is not None and seat != kyushukyuhai_actor:
