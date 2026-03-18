@@ -32,6 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb-run-name", type=str, default=None)
     parser.add_argument("--wandb-mode", type=str, default=os.getenv("WANDB_MODE", "online"))
     parser.add_argument("--tokenizer-path", type=Path, default=Path("tokenizer"))
+    parser.add_argument("--arch", type=str, default="custom", choices=["custom", "A", "B", "C", "D"])
     parser.add_argument("--use-cpu", action="store_true")
     parser.add_argument("--block-size", type=int, default=1024)
     parser.add_argument("--eval-ratio", type=float, default=0.01)
@@ -54,8 +55,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-head", type=int, default=12)
     parser.add_argument("--n-embd", type=int, default=768)
     parser.add_argument("--n-positions", type=int, default=1024)
+    parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--fp16", action="store_true")
     return parser.parse_args()
+
+
+ARCH_PRESETS = {
+    "A": {"n_layer": 20, "n_head": 10, "n_embd": 640},
+    "B": {"n_layer": 10, "n_head": 14, "n_embd": 896},
+    "C": {"n_layer": 16, "n_head": 11, "n_embd": 704},
+    "D": {"n_layer": 24, "n_head": 9, "n_embd": 576},
+}
 
 
 def build_block_dataset(dataset, block_size: int):
@@ -125,7 +135,8 @@ def infer_vocab_size(dataset, tokenizer_path: Path | None) -> int:
 
 def build_run_name(args: argparse.Namespace, block_size: int, vocab_size: int) -> str:
     dataset_tag = infer_dataset_tag(args.dataset_path)
-    model_tag = f"gpt2-v{vocab_size}-l{args.n_layer}-h{args.n_head}-d{args.n_embd}"
+    arch_tag = f"arch{args.arch}" if args.arch != "custom" else "custom"
+    model_tag = f"gpt2-{arch_tag}-v{vocab_size}-l{args.n_layer}-h{args.n_head}-d{args.n_embd}"
     train_tag = f"bs{block_size}-s{args.max_steps}-{format_learning_rate(args.learning_rate)}"
     suffix = "cpu" if (args.use_cpu or not torch.cuda.is_available()) else "gpu"
     stamp = datetime.now().strftime("%m%d-%H%M")
@@ -136,11 +147,19 @@ def main() -> None:
     args = parse_args()
     set_seed(args.seed)
 
+    if args.arch != "custom":
+        preset = ARCH_PRESETS[args.arch]
+        args.n_layer = preset["n_layer"]
+        args.n_head = preset["n_head"]
+        args.n_embd = preset["n_embd"]
+
     block_size = min(args.block_size, args.n_positions)
     use_cpu = args.use_cpu or not torch.cuda.is_available()
 
     dataset = load_from_disk(str(args.dataset_path))
     vocab_size = infer_vocab_size(dataset, args.tokenizer_path)
+    wandb_run_name = args.wandb_run_name or build_run_name(args, block_size, vocab_size)
+    run_output_dir = args.output_dir / wandb_run_name if args.report_to == "wandb" else args.output_dir
     split = dataset.train_test_split(test_size=args.eval_ratio, seed=args.seed, shuffle=True)
 
     if args.max_train_samples > 0:
@@ -172,7 +191,6 @@ def main() -> None:
         os.environ["WANDB_ENTITY"] = args.wandb_entity
         os.environ["WANDB_PROJECT"] = args.wandb_project
         os.environ["WANDB_MODE"] = args.wandb_mode
-        wandb_run_name = args.wandb_run_name or build_run_name(args, block_size, vocab_size)
         wandb_run = wandb.init(
             entity=args.wandb_entity,
             project=args.wandb_project,
@@ -181,6 +199,7 @@ def main() -> None:
             config={
                 "learning_rate": args.learning_rate,
                 "architecture": "GPT-2",
+                "arch": args.arch,
                 "dataset": str(args.dataset_path),
                 "vocab_size": vocab_size,
                 "epochs": args.num_train_epochs,
@@ -198,7 +217,7 @@ def main() -> None:
         wandb_run = None
 
     training_args = TrainingArguments(
-        output_dir=str(args.output_dir),
+        output_dir=str(run_output_dir),
         do_train=True,
         do_eval=True,
         eval_strategy="steps",
@@ -215,6 +234,7 @@ def main() -> None:
         eval_steps=args.eval_steps,
         save_total_limit=args.save_total_limit,
         max_steps=args.max_steps,
+        bf16=args.bf16,
         fp16=args.fp16,
         report_to=None if args.report_to == "none" else args.report_to,
         remove_unused_columns=False,
@@ -226,6 +246,7 @@ def main() -> None:
         print("Using CPU training.")
     else:
         print(f"Using GPU training on: {torch.cuda.get_device_name(0)}")
+    print(f"Output directory: {run_output_dir}")
 
     trainer = Trainer(
         model=model,
@@ -243,7 +264,7 @@ def main() -> None:
     metrics["train_samples"] = len(train_dataset)
     trainer.log_metrics("train", metrics)
     trainer.save_metrics("train", metrics)
-    trainer.save_model(args.output_dir)
+    trainer.save_model(run_output_dir)
 
     eval_metrics = trainer.evaluate()
     if "eval_loss" in eval_metrics:

@@ -1,0 +1,58 @@
+program: scripts/train_gpt2.py
+method: grid
+metric:
+  name: eval/loss
+  goal: minimize
+parameters:
+  dataset-path:
+    value: data/processed/2021
+  output-dir:
+    value: outputs/gpt2-sweep
+  report-to:
+    value: wandb
+  wandb-entity:
+    value: a21-3jck-
+  wandb-project:
+    value: mahjongLM_gpt2
+  tokenizer-path:
+    value: tokenizer
+  arch:
+    values: [A, B, C, D]
+  block-size:
+    value: 1024
+  eval-ratio:
+    value: 0.01
+  max-train-samples:
+    value: 2000
+  max-eval-samples:
+    value: 200
+  seed:
+    value: 42
+  num-train-epochs:
+    value: 1.0
+  per-device-train-batch-size:
+    value: 2
+  per-device-eval-batch-size:
+    value: 2
+  gradient-accumulation-steps:
+    value: 8
+  learning-rate:
+    value: 0.0003
+  weight-decay:
+    value: 0.1
+  warmup-ratio:
+    value: 0.01
+  logging-steps:
+    value: 50
+  save-steps:
+    value: 1000
+  eval-steps:
+    value: 1000
+  save-total-limit:
+    value: 2
+  max-steps:
+    value: 5000
+  n-positions:
+    value: 1024
+  bf16:
+    value: true

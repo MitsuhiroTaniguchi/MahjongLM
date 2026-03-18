@@ -65,9 +65,25 @@ python scripts/train_gpt2.py --wandb-entity a21-3jck- --wandb-project mahjongLM_
 
 If you omit `--wandb-run-name`, the script auto-generates one in this pattern:
 
-`mahjonglm-y2021-gpt2-v815-l12-h12-d768-bs1024-s50-lr5e-4-gpu-0319-0000`
+`mahjonglm-y2021-gpt2-archA-v815-l20-h10-d640-bs1024-s50-lr3e-4-gpu-0319-0000`
 
 That keeps the dataset year, vocab size, model size, block size, step count, learning rate, device type, and a short timestamp together in one place.
+
+## Sweep
+
+The 100M-class candidate table and sweep setup are saved here:
+
+- [docs/gpt2_hparam_candidates.md](docs/gpt2_hparam_candidates.md)
+- [sweeps/gpt2_arch_sweep.yaml](sweeps/gpt2_arch_sweep.yaml)
+
+To launch the sweep:
+
+```powershell
+wandb sweep sweeps/gpt2_arch_sweep.yaml
+wandb agent a21-3jck-/mahjongLM_gpt2/<sweep_id>
+```
+
+Each sweep run is written under `outputs/gpt2-sweep/<wandb-run-name>/`.
 
 ## Notes
 

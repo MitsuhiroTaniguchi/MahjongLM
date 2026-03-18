@@ -28,13 +28,13 @@ The parameter counts below are measured from `transformers.GPT2LMHeadModel` with
 | A | 20 | 640 | 10 | 99,648,640 | Closest to the 100M cap without exceeding it |
 | B | 10 | 896 | 14 | 98,103,936 | Wide baseline near the cap |
 | C | 16 | 704 | 11 | 96,600,768 | Balanced depth/width candidate |
-| D | 19 | 640 | 10 | 94,725,120 | Depth-heavy variant using the same width as A |
+| D | 24 | 576 | 9 | 96,791,616 | Deep, narrower variant near the cap |
 
 ## Suggested Run Name Pattern
 
 If `--wandb-run-name` is omitted, the script should generate names in this style:
 
-`mahjonglm-y2021-gpt2-v815-l20-h10-d640-bs1024-s50-lr3e-4-gpu-0319-0000`
+`mahjonglm-y2021-gpt2-archA-v815-l20-h10-d640-bs1024-s50-lr3e-4-gpu-0319-0000`
 
 ## Recommended Order
 
@@ -42,4 +42,3 @@ If `--wandb-run-name` is omitted, the script should generate names in this style
 2. B
 3. C
 4. D
-
