@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb-project", type=str, default="mahjongLM_gpt2")
     parser.add_argument("--wandb-run-name", type=str, default=None)
     parser.add_argument("--wandb-mode", type=str, default=os.getenv("WANDB_MODE", "online"))
-    parser.add_argument("--tokenizer-path", type=Path, default=None)
+    parser.add_argument("--tokenizer-path", type=Path, default=Path("tokenizer"))
     parser.add_argument("--use-cpu", action="store_true")
     parser.add_argument("--block-size", type=int, default=1024)
     parser.add_argument("--eval-ratio", type=float, default=0.01)
@@ -100,6 +100,11 @@ def format_learning_rate(learning_rate: float) -> str:
 
 def infer_vocab_size(dataset, tokenizer_path: Path | None) -> int:
     if tokenizer_path is not None and tokenizer_path.exists():
+        vocab_file = tokenizer_path / "vocab.txt"
+        if vocab_file.exists():
+            with vocab_file.open("r", encoding="utf-8") as f:
+                return sum(1 for _ in f)
+
         tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_path), use_fast=True)
         return len(tokenizer)
 

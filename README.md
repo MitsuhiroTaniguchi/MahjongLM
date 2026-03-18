@@ -72,5 +72,5 @@ That keeps the dataset year, vocab size, model size, block size, step count, lea
 ## Notes
 
 - The model is trained from scratch on the token IDs already present in the dataset.
-- The script uses the MahjongLM tokenizer size if you pass `--tokenizer-path`; otherwise it infers `vocab_size` from the maximum `input_ids` value in the dataset.
+- The script defaults to `tokenizer/` and uses its `vocab.txt` to infer `vocab_size`; if that path is missing, it falls back to the maximum `input_ids` value in the dataset.
 - The dataset does not include a validation split, so the training script creates one deterministically.
