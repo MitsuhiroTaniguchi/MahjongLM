@@ -8,6 +8,7 @@ from pathlib import Path
 
 from datasets import load_from_disk
 import torch
+import wandb
 from transformers import (
     GPT2Config,
     GPT2LMHeadModel,
@@ -23,7 +24,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-path", type=Path, default=Path("data/processed/2021"))
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/gpt2-mahjong-2021"))
     parser.add_argument("--report-to", type=str, default="wandb")
-    parser.add_argument("--wandb-project", type=str, default="MahjongLM")
+    parser.add_argument("--wandb-entity", type=str, default="a21-3jck-")
+    parser.add_argument("--wandb-project", type=str, default="mahjongLM_gpt2")
     parser.add_argument("--wandb-run-name", type=str, default=None)
     parser.add_argument("--wandb-mode", type=str, default=os.getenv("WANDB_MODE", "online"))
     parser.add_argument("--use-cpu", action="store_true")
@@ -115,10 +117,30 @@ def main() -> None:
     model.config.use_cache = False
 
     if args.report_to == "wandb":
-        os.environ.setdefault("WANDB_PROJECT", args.wandb_project)
-        if args.wandb_run_name:
-            os.environ.setdefault("WANDB_NAME", args.wandb_run_name)
-        os.environ.setdefault("WANDB_MODE", args.wandb_mode)
+        os.environ["WANDB_ENTITY"] = args.wandb_entity
+        os.environ["WANDB_PROJECT"] = args.wandb_project
+        os.environ["WANDB_MODE"] = args.wandb_mode
+        wandb_run = wandb.init(
+            entity=args.wandb_entity,
+            project=args.wandb_project,
+            name=args.wandb_run_name,
+            mode=args.wandb_mode,
+            config={
+                "learning_rate": args.learning_rate,
+                "architecture": "GPT-2",
+                "dataset": str(args.dataset_path),
+                "epochs": args.num_train_epochs,
+                "block_size": block_size,
+                "n_layer": args.n_layer,
+                "n_head": args.n_head,
+                "n_embd": args.n_embd,
+                "max_steps": args.max_steps,
+                "max_train_samples": args.max_train_samples,
+                "max_eval_samples": args.max_eval_samples,
+            },
+        )
+    else:
+        wandb_run = None
 
     training_args = TrainingArguments(
         output_dir=str(args.output_dir),
@@ -178,6 +200,9 @@ def main() -> None:
     eval_metrics["eval_samples"] = len(eval_dataset)
     trainer.log_metrics("eval", eval_metrics)
     trainer.save_metrics("eval", eval_metrics)
+
+    if wandb_run is not None:
+        wandb_run.finish()
 
 
 if __name__ == "__main__":

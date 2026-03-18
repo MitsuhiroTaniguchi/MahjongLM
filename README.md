@@ -60,7 +60,7 @@ To keep a short local smoke test on CPU, add `--use-cpu --report-to none`.
 To monitor a run in wandb with a custom name:
 
 ```powershell
-python scripts/train_gpt2.py --wandb-project MahjongLM --wandb-run-name gpt2-2021-smoke
+python scripts/train_gpt2.py --wandb-entity a21-3jck- --wandb-project mahjongLM_gpt2 --wandb-run-name gpt2-2021-smoke
 ```
 
 ## Notes
