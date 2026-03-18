@@ -65,12 +65,12 @@ python scripts/train_gpt2.py --wandb-entity a21-3jck- --wandb-project mahjongLM_
 
 If you omit `--wandb-run-name`, the script auto-generates one in this pattern:
 
-`mahjonglm-y2021-gpt2-l12-h12-d768-bs1024-s50-lr5e-4-gpu-0319-0000`
+`mahjonglm-y2021-gpt2-v815-l12-h12-d768-bs1024-s50-lr5e-4-gpu-0319-0000`
 
-That keeps the dataset year, model size, block size, step count, learning rate, device type, and a short timestamp together in one place.
+That keeps the dataset year, vocab size, model size, block size, step count, learning rate, device type, and a short timestamp together in one place.
 
 ## Notes
 
 - The model is trained from scratch on the token IDs already present in the dataset.
-- The script uses a GPT-2 style causal LM with `vocab_size=65536`, which is safe for the stored `uint16` token IDs.
+- The script uses the MahjongLM tokenizer size if you pass `--tokenizer-path`; otherwise it infers `vocab_size` from the maximum `input_ids` value in the dataset.
 - The dataset does not include a validation split, so the training script creates one deterministically.

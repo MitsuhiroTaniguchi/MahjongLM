@@ -8,9 +8,11 @@ from itertools import chain
 from pathlib import Path
 
 from datasets import load_from_disk
+import pyarrow.compute as pc
 import torch
 import wandb
 from transformers import (
+    AutoTokenizer,
     GPT2Config,
     GPT2LMHeadModel,
     Trainer,
@@ -29,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb-project", type=str, default="mahjongLM_gpt2")
     parser.add_argument("--wandb-run-name", type=str, default=None)
     parser.add_argument("--wandb-mode", type=str, default=os.getenv("WANDB_MODE", "online"))
+    parser.add_argument("--tokenizer-path", type=Path, default=None)
     parser.add_argument("--use-cpu", action="store_true")
     parser.add_argument("--block-size", type=int, default=1024)
     parser.add_argument("--eval-ratio", type=float, default=0.01)
@@ -95,9 +98,18 @@ def format_learning_rate(learning_rate: float) -> str:
     return f"lr{mantissa}e{int(exponent)}"
 
 
-def build_run_name(args: argparse.Namespace, block_size: int) -> str:
+def infer_vocab_size(dataset, tokenizer_path: Path | None) -> int:
+    if tokenizer_path is not None and tokenizer_path.exists():
+        tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_path), use_fast=True)
+        return len(tokenizer)
+
+    max_token_id = pc.max(pc.list_flatten(dataset.data.column("input_ids"))).as_py()
+    return int(max_token_id) + 1
+
+
+def build_run_name(args: argparse.Namespace, block_size: int, vocab_size: int) -> str:
     dataset_tag = infer_dataset_tag(args.dataset_path)
-    model_tag = f"gpt2-l{args.n_layer}-h{args.n_head}-d{args.n_embd}"
+    model_tag = f"gpt2-v{vocab_size}-l{args.n_layer}-h{args.n_head}-d{args.n_embd}"
     train_tag = f"bs{block_size}-s{args.max_steps}-{format_learning_rate(args.learning_rate)}"
     suffix = "cpu" if (args.use_cpu or not torch.cuda.is_available()) else "gpu"
     stamp = datetime.now().strftime("%m%d-%H%M")
@@ -112,6 +124,7 @@ def main() -> None:
     use_cpu = args.use_cpu or not torch.cuda.is_available()
 
     dataset = load_from_disk(str(args.dataset_path))
+    vocab_size = infer_vocab_size(dataset, args.tokenizer_path)
     split = dataset.train_test_split(test_size=args.eval_ratio, seed=args.seed, shuffle=True)
 
     if args.max_train_samples > 0:
@@ -126,7 +139,7 @@ def main() -> None:
     eval_dataset.set_format(type="torch")
 
     config = GPT2Config(
-        vocab_size=65536,
+        vocab_size=vocab_size,
         n_positions=block_size,
         n_ctx=block_size,
         n_layer=args.n_layer,
@@ -143,7 +156,7 @@ def main() -> None:
         os.environ["WANDB_ENTITY"] = args.wandb_entity
         os.environ["WANDB_PROJECT"] = args.wandb_project
         os.environ["WANDB_MODE"] = args.wandb_mode
-        wandb_run_name = args.wandb_run_name or build_run_name(args, block_size)
+        wandb_run_name = args.wandb_run_name or build_run_name(args, block_size, vocab_size)
         wandb_run = wandb.init(
             entity=args.wandb_entity,
             project=args.wandb_project,
@@ -153,6 +166,7 @@ def main() -> None:
                 "learning_rate": args.learning_rate,
                 "architecture": "GPT-2",
                 "dataset": str(args.dataset_path),
+                "vocab_size": vocab_size,
                 "epochs": args.num_train_epochs,
                 "block_size": block_size,
                 "n_layer": args.n_layer,
