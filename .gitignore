@@ -1,0 +1,20 @@
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+outputs/
+checkpoints/
+
+# Data is kept locally but not committed.
+data/raw/
+data/processed/
+
+# Python bytecode.
+*.pyc
+
