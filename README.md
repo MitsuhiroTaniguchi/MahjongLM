@@ -65,9 +65,9 @@ python scripts/train_gpt2.py --wandb-entity a21-3jck- --wandb-project mahjongLM_
 
 If you omit `--wandb-run-name`, the script auto-generates one in this pattern:
 
-`mahjonglm-y2021-gpt2-l12-h12-d768-bs1024-s50-gpu-0319-0000`
+`mahjonglm-y2021-gpt2-l12-h12-d768-bs1024-s50-lr5e-4-gpu-0319-0000`
 
-That keeps the dataset year, model size, block size, step count, device type, and a short timestamp together in one place.
+That keeps the dataset year, model size, block size, step count, learning rate, device type, and a short timestamp together in one place.
 
 ## Notes
 

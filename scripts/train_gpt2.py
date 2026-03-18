@@ -90,10 +90,15 @@ def infer_dataset_tag(dataset_path: Path) -> str:
     return dataset_path.name or "dataset"
 
 
+def format_learning_rate(learning_rate: float) -> str:
+    mantissa, exponent = f"{learning_rate:.0e}".split("e")
+    return f"lr{mantissa}e{int(exponent)}"
+
+
 def build_run_name(args: argparse.Namespace, block_size: int) -> str:
     dataset_tag = infer_dataset_tag(args.dataset_path)
     model_tag = f"gpt2-l{args.n_layer}-h{args.n_head}-d{args.n_embd}"
-    train_tag = f"bs{block_size}-s{args.max_steps}"
+    train_tag = f"bs{block_size}-s{args.max_steps}-{format_learning_rate(args.learning_rate)}"
     suffix = "cpu" if (args.use_cpu or not torch.cuda.is_available()) else "gpu"
     stamp = datetime.now().strftime("%m%d-%H%M")
     return f"mahjonglm-{dataset_tag}-{model_tag}-{train_tag}-{suffix}-{stamp}"
