@@ -25,6 +25,24 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
+If you want GPU acceleration on NVIDIA hardware, use the CUDA wheel set:
+
+```powershell
+pip install -r requirements-gpu.txt
+```
+
+Then verify with:
+
+```powershell
+python -c "import torch; print(torch.cuda.is_available())"
+```
+
+For wandb monitoring:
+
+```powershell
+wandb login
+```
+
 Prepare the dataset again if needed:
 
 ```powershell
@@ -37,9 +55,16 @@ Start GPT-2 training:
 python scripts/train_gpt2.py --dataset-path data/processed/2021 --output-dir outputs/gpt2-mahjong-2021
 ```
 
+To keep a short local smoke test on CPU, add `--use-cpu --report-to none`.
+
+To monitor a run in wandb with a custom name:
+
+```powershell
+python scripts/train_gpt2.py --wandb-project MahjongLM --wandb-run-name gpt2-2021-smoke
+```
+
 ## Notes
 
 - The model is trained from scratch on the token IDs already present in the dataset.
 - The script uses a GPT-2 style causal LM with `vocab_size=65536`, which is safe for the stored `uint16` token IDs.
 - The dataset does not include a validation split, so the training script creates one deterministically.
-

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 from itertools import chain
 from pathlib import Path
 
 from datasets import load_from_disk
+import torch
 from transformers import (
     GPT2Config,
     GPT2LMHeadModel,
@@ -20,6 +22,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a GPT-2 style model on MahjongLM.")
     parser.add_argument("--dataset-path", type=Path, default=Path("data/processed/2021"))
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/gpt2-mahjong-2021"))
+    parser.add_argument("--report-to", type=str, default="wandb")
+    parser.add_argument("--wandb-project", type=str, default="MahjongLM")
+    parser.add_argument("--wandb-run-name", type=str, default=None)
+    parser.add_argument("--wandb-mode", type=str, default=os.getenv("WANDB_MODE", "online"))
+    parser.add_argument("--use-cpu", action="store_true")
     parser.add_argument("--block-size", type=int, default=1024)
     parser.add_argument("--eval-ratio", type=float, default=0.01)
     parser.add_argument("--max-train-samples", type=int, default=2000)
@@ -77,6 +84,7 @@ def main() -> None:
     set_seed(args.seed)
 
     block_size = min(args.block_size, args.n_positions)
+    use_cpu = args.use_cpu or not torch.cuda.is_available()
 
     dataset = load_from_disk(str(args.dataset_path))
     split = dataset.train_test_split(test_size=args.eval_ratio, seed=args.seed, shuffle=True)
@@ -106,6 +114,12 @@ def main() -> None:
     model = GPT2LMHeadModel(config)
     model.config.use_cache = False
 
+    if args.report_to == "wandb":
+        os.environ.setdefault("WANDB_PROJECT", args.wandb_project)
+        if args.wandb_run_name:
+            os.environ.setdefault("WANDB_NAME", args.wandb_run_name)
+        os.environ.setdefault("WANDB_MODE", args.wandb_mode)
+
     training_args = TrainingArguments(
         output_dir=str(args.output_dir),
         do_train=True,
@@ -125,11 +139,16 @@ def main() -> None:
         save_total_limit=args.save_total_limit,
         max_steps=args.max_steps,
         fp16=args.fp16,
-        report_to="none",
+        report_to=None if args.report_to == "none" else args.report_to,
         remove_unused_columns=False,
-        use_cpu=True,
+        use_cpu=use_cpu,
         seed=args.seed,
     )
+
+    if use_cpu:
+        print("Using CPU training.")
+    else:
+        print(f"Using GPU training on: {torch.cuda.get_device_name(0)}")
 
     trainer = Trainer(
         model=model,
