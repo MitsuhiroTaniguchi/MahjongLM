@@ -12,12 +12,12 @@ import pyarrow.compute as pc
 import torch
 import wandb
 from transformers import (
-    AutoTokenizer,
     GPT2Config,
     GPT2LMHeadModel,
     Trainer,
     TrainingArguments,
     default_data_collator,
+    PreTrainedTokenizerFast,
     set_seed,
 )
 
@@ -100,12 +100,23 @@ def format_learning_rate(learning_rate: float) -> str:
 
 def infer_vocab_size(dataset, tokenizer_path: Path | None) -> int:
     if tokenizer_path is not None and tokenizer_path.exists():
+        tokenizer_file = tokenizer_path / "tokenizer.json"
+        if tokenizer_file.exists():
+            tokenizer = PreTrainedTokenizerFast(
+                tokenizer_file=str(tokenizer_file),
+                unk_token="<unk>",
+                pad_token="<pad>",
+                bos_token="<bos>",
+                eos_token="<eos>",
+            )
+            return len(tokenizer)
+
         vocab_file = tokenizer_path / "vocab.txt"
         if vocab_file.exists():
             with vocab_file.open("r", encoding="utf-8") as f:
                 return sum(1 for _ in f)
 
-        tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_path), use_fast=True)
+        tokenizer = PreTrainedTokenizerFast.from_pretrained(str(tokenizer_path))
         return len(tokenizer)
 
     max_token_id = pc.max(pc.list_flatten(dataset.data.column("input_ids"))).as_py()
