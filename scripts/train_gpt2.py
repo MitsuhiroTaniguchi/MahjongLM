@@ -22,6 +22,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/gpt2-mahjong-2021"))
     parser.add_argument("--block-size", type=int, default=1024)
     parser.add_argument("--eval-ratio", type=float, default=0.01)
+    parser.add_argument("--max-train-samples", type=int, default=2000)
+    parser.add_argument("--max-eval-samples", type=int, default=200)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-train-epochs", type=float, default=1.0)
     parser.add_argument("--per-device-train-batch-size", type=int, default=2)
@@ -34,6 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-steps", type=int, default=1000)
     parser.add_argument("--eval-steps", type=int, default=1000)
     parser.add_argument("--save-total-limit", type=int, default=2)
+    parser.add_argument("--max-steps", type=int, default=50)
     parser.add_argument("--n-layer", type=int, default=12)
     parser.add_argument("--n-head", type=int, default=12)
     parser.add_argument("--n-embd", type=int, default=768)
@@ -78,6 +81,11 @@ def main() -> None:
     dataset = load_from_disk(str(args.dataset_path))
     split = dataset.train_test_split(test_size=args.eval_ratio, seed=args.seed, shuffle=True)
 
+    if args.max_train_samples > 0:
+        split["train"] = split["train"].select(range(min(args.max_train_samples, len(split["train"]))))
+    if args.max_eval_samples > 0:
+        split["test"] = split["test"].select(range(min(args.max_eval_samples, len(split["test"]))))
+
     train_dataset = build_block_dataset(split["train"], block_size)
     eval_dataset = build_block_dataset(split["test"], block_size)
 
@@ -100,10 +108,9 @@ def main() -> None:
 
     training_args = TrainingArguments(
         output_dir=str(args.output_dir),
-        overwrite_output_dir=True,
         do_train=True,
         do_eval=True,
-        evaluation_strategy="steps",
+        eval_strategy="steps",
         save_strategy="steps",
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
@@ -116,9 +123,11 @@ def main() -> None:
         save_steps=args.save_steps,
         eval_steps=args.eval_steps,
         save_total_limit=args.save_total_limit,
+        max_steps=args.max_steps,
         fp16=args.fp16,
         report_to="none",
         remove_unused_columns=False,
+        use_cpu=True,
         seed=args.seed,
     )
 
