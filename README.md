@@ -63,6 +63,12 @@ To monitor a run in wandb with a custom name:
 python scripts/train_gpt2.py --wandb-entity a21-3jck- --wandb-project mahjongLM_gpt2 --wandb-run-name gpt2-2021-smoke
 ```
 
+If you omit `--wandb-run-name`, the script auto-generates one in this pattern:
+
+`mahjonglm-y2021-gpt2-l12-h12-d768-bs1024-s50-gpu-0319-0000`
+
+That keeps the dataset year, model size, block size, step count, device type, and a short timestamp together in one place.
+
 ## Notes
 
 - The model is trained from scratch on the token IDs already present in the dataset.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import math
 import os
+from datetime import datetime
 from itertools import chain
 from pathlib import Path
 
@@ -81,6 +82,23 @@ def build_block_dataset(dataset, block_size: int):
     )
 
 
+def infer_dataset_tag(dataset_path: Path) -> str:
+    parts = dataset_path.parts
+    for part in reversed(parts):
+        if part.isdigit():
+            return f"y{part}"
+    return dataset_path.name or "dataset"
+
+
+def build_run_name(args: argparse.Namespace, block_size: int) -> str:
+    dataset_tag = infer_dataset_tag(args.dataset_path)
+    model_tag = f"gpt2-l{args.n_layer}-h{args.n_head}-d{args.n_embd}"
+    train_tag = f"bs{block_size}-s{args.max_steps}"
+    suffix = "cpu" if (args.use_cpu or not torch.cuda.is_available()) else "gpu"
+    stamp = datetime.now().strftime("%m%d-%H%M")
+    return f"mahjonglm-{dataset_tag}-{model_tag}-{train_tag}-{suffix}-{stamp}"
+
+
 def main() -> None:
     args = parse_args()
     set_seed(args.seed)
@@ -120,10 +138,11 @@ def main() -> None:
         os.environ["WANDB_ENTITY"] = args.wandb_entity
         os.environ["WANDB_PROJECT"] = args.wandb_project
         os.environ["WANDB_MODE"] = args.wandb_mode
+        wandb_run_name = args.wandb_run_name or build_run_name(args, block_size)
         wandb_run = wandb.init(
             entity=args.wandb_entity,
             project=args.wandb_project,
-            name=args.wandb_run_name,
+            name=wandb_run_name,
             mode=args.wandb_mode,
             config={
                 "learning_rate": args.learning_rate,
@@ -137,6 +156,7 @@ def main() -> None:
                 "max_steps": args.max_steps,
                 "max_train_samples": args.max_train_samples,
                 "max_eval_samples": args.max_eval_samples,
+                "wandb_run_name": wandb_run_name,
             },
         )
     else:
