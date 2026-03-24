@@ -1093,7 +1093,12 @@ def train(
             config=model_config,
         )
     if training_config.gradient_checkpointing:
-        model.gradient_checkpointing_enable()
+        gradient_checkpointing_kwargs = None
+        if training_config.model_family == "qwen3" and getattr(model_config, "use_mamba3_hybrid", False):
+            # Official Mamba-3 kernels are not compatible with the default
+            # non-reentrant HF checkpointing path in our stack.
+            gradient_checkpointing_kwargs = {"use_reentrant": True}
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs)
     if training_config.torch_compile and hasattr(torch, "compile"):
         model = torch.compile(model)
     model.to(device)
