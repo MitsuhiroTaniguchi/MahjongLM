@@ -104,75 +104,24 @@ def _patch_qwen3_with_xsa(model) -> None:
 
 def _patch_qwen3_with_gated_attention(model) -> None:
     import torch
-    from transformers.models.qwen3.modeling_qwen3 import (
-        ALL_ATTENTION_FUNCTIONS,
-        Qwen3Attention,
-        apply_rotary_pos_emb,
-        eager_attention_forward,
-    )
-
-    class Qwen3GatedAttention(Qwen3Attention):
-        def __init__(self, config, layer_idx: int):
-            super().__init__(config, layer_idx)
-            self.q_proj = torch.nn.Linear(
-                config.hidden_size,
-                config.num_attention_heads * self.head_dim * 2,
-                bias=config.attention_bias,
-            )
-
-        def forward(
-            self,
-            hidden_states: torch.Tensor,
-            position_embeddings: tuple[torch.Tensor, torch.Tensor],
-            attention_mask: torch.Tensor | None,
-            past_key_values=None,
-            cache_position=None,
-            **kwargs,
-        ) -> tuple[torch.Tensor, torch.Tensor | None]:
-            input_shape = hidden_states.shape[:-1]
-            hidden_shape = (*input_shape, -1, self.head_dim)
-
-            query_states, gate = torch.chunk(
-                self.q_proj(hidden_states).view(*input_shape, -1, self.head_dim * 2), 2, dim=-1
-            )
-            gate = gate.reshape(*input_shape, -1)
-
-            query_states = self.q_norm(query_states.view(hidden_shape)).transpose(1, 2)
-            key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
-            value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
-
-            cos, sin = position_embeddings
-            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
-
-            if past_key_values is not None:
-                cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-                key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
-
-            attention_interface = ALL_ATTENTION_FUNCTIONS.get_interface(
-                self.config._attn_implementation, eager_attention_forward
-            )
-            attn_output, attn_weights = attention_interface(
-                self,
-                query_states,
-                key_states,
-                value_states,
-                attention_mask,
-                dropout=0.0 if not self.training else self.attention_dropout,
-                scaling=self.scaling,
-                sliding_window=self.sliding_window,
-                **kwargs,
-            )
-
-            attn_output = attn_output.reshape(*input_shape, -1).contiguous()
-            attn_output = attn_output * torch.sigmoid(gate)
-            attn_output = self.o_proj(attn_output)
-            return attn_output, attn_weights
+    from types import SimpleNamespace
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5Attention
 
     for layer_idx, layer in enumerate(model.model.layers):
         if not hasattr(layer, "self_attn"):
             continue
         old_attn = layer.self_attn
-        new_attn = Qwen3GatedAttention(model.config, layer_idx)
+        qwen35_attention_config = SimpleNamespace(
+            hidden_size=model.config.hidden_size,
+            num_attention_heads=model.config.num_attention_heads,
+            num_key_value_heads=model.config.num_key_value_heads,
+            head_dim=model.config.head_dim,
+            attention_dropout=model.config.attention_dropout,
+            attention_bias=model.config.attention_bias,
+            rms_norm_eps=model.config.rms_norm_eps,
+            _attn_implementation=model.config._attn_implementation,
+        )
+        new_attn = Qwen3_5Attention(qwen35_attention_config, layer_idx)
         new_attn.to(device=old_attn.q_proj.weight.device, dtype=old_attn.q_proj.weight.dtype)
         with torch.no_grad():
             q_out = old_attn.q_proj.weight.shape[0]
