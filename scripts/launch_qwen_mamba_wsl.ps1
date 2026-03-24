@@ -68,9 +68,13 @@ export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
 export COMPILER_PATH=/usr/bin
 export LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu
+export WANDB_DIR='$workspaceLinux/wandb'
 cd '$workspaceLinux'
 source /root/mimo-venv/bin/activate
-/root/mimo-venv/bin/python $argString > '$stdoutLogLinux' 2> '$stderrLogLinux'
+run_status=0
+/root/mimo-venv/bin/python $argString > '$stdoutLogLinux' 2> '$stderrLogLinux' || run_status=`$?
+/root/mimo-venv/bin/wandb sync --include-online --mark-synced '$workspaceLinux/wandb/latest-run' >> '$stderrLogLinux' 2>&1 || true
+exit `$run_status
 "@
 
 $process = Start-Process `
