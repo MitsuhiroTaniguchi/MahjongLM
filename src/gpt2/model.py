@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .config import TinyGPT2Config, TinyQwen3Config
+from .mamba3_adapter import OfficialMamba3SISO
 
 
 def _patch_qwen3_with_xsa(model) -> None:
@@ -101,6 +102,51 @@ def _patch_qwen3_with_xsa(model) -> None:
         layer.self_attn = new_attn
 
 
+def _patch_qwen3_with_mamba3_hybrid(model, model_config: TinyQwen3Config) -> None:
+    import torch.nn as nn
+
+    class Qwen3Mamba3MixerAsAttention(nn.Module):
+        def __init__(self, config, layer_idx: int):
+            super().__init__()
+            self.layer_idx = layer_idx
+            self.mamba3 = OfficialMamba3SISO(
+                d_model=config.hidden_size,
+                d_state=model_config.mamba3_d_state,
+                expand=model_config.mamba3_expand,
+                headdim=model_config.mamba3_headdim,
+                ngroups=model_config.mamba3_ngroups,
+                rope_fraction=model_config.mamba3_rope_fraction,
+                is_outproj_norm=model_config.mamba3_is_outproj_norm,
+                chunk_size=model_config.mamba3_chunk_size,
+                layer_idx=layer_idx,
+                device=model.model.layers[layer_idx].self_attn.q_proj.weight.device,
+                dtype=model.model.layers[layer_idx].self_attn.q_proj.weight.dtype,
+            )
+
+        def forward(
+            self,
+            hidden_states,
+            position_embeddings,
+            attention_mask,
+            past_key_values=None,
+            cache_position=None,
+            **kwargs,
+        ):
+            del position_embeddings, attention_mask, cache_position, kwargs
+            if past_key_values is not None:
+                raise NotImplementedError("Mamba3 hybrid currently does not support KV-cache inference.")
+            return self.mamba3(hidden_states), None
+
+    attention_layer_idx = [
+        idx for idx in range(model_config.num_hidden_layers) if (idx + 1) % model_config.mamba3_attention_period == 0
+    ]
+    model.config.mamba3_attention_layer_idx = attention_layer_idx
+    for layer_idx, layer in enumerate(model.model.layers):
+        if layer_idx in attention_layer_idx:
+            continue
+        layer.self_attn = Qwen3Mamba3MixerAsAttention(model.config, layer_idx)
+
+
 def build_tiny_gpt2_model(
     *,
     vocab_size: int,
@@ -193,9 +239,20 @@ def build_tiny_qwen3_model(
     if attn_implementation is not None:
         hf_config._attn_implementation = attn_implementation
     hf_config.use_exclusive_self_attention = model_config.use_exclusive_self_attention
+    hf_config.use_mamba3_hybrid = model_config.use_mamba3_hybrid
+    hf_config.mamba3_attention_period = model_config.mamba3_attention_period
+    hf_config.mamba3_d_state = model_config.mamba3_d_state
+    hf_config.mamba3_expand = model_config.mamba3_expand
+    hf_config.mamba3_headdim = model_config.mamba3_headdim
+    hf_config.mamba3_ngroups = model_config.mamba3_ngroups
+    hf_config.mamba3_rope_fraction = model_config.mamba3_rope_fraction
+    hf_config.mamba3_chunk_size = model_config.mamba3_chunk_size
+    hf_config.mamba3_is_outproj_norm = model_config.mamba3_is_outproj_norm
     model = Qwen3ForCausalLM(hf_config)
     if model_config.use_exclusive_self_attention:
         _patch_qwen3_with_xsa(model)
+    if model_config.use_mamba3_hybrid:
+        _patch_qwen3_with_mamba3_hybrid(model, model_config)
     if dtype is not None:
         model = model.to(dtype=dtype)
     return model
@@ -244,6 +301,27 @@ def load_saved_causal_lm(
         model = Qwen3ForCausalLM(hf_config)
         if getattr(hf_config, "use_exclusive_self_attention", False):
             _patch_qwen3_with_xsa(model)
+        if getattr(hf_config, "use_mamba3_hybrid", False):
+            model_config = TinyQwen3Config(
+                hidden_size=hf_config.hidden_size,
+                intermediate_size=hf_config.intermediate_size,
+                num_hidden_layers=hf_config.num_hidden_layers,
+                num_attention_heads=hf_config.num_attention_heads,
+                num_key_value_heads=hf_config.num_key_value_heads,
+                head_dim=hf_config.head_dim,
+                max_position_embeddings=hf_config.max_position_embeddings,
+                use_exclusive_self_attention=getattr(hf_config, "use_exclusive_self_attention", False),
+                use_mamba3_hybrid=getattr(hf_config, "use_mamba3_hybrid", False),
+                mamba3_attention_period=getattr(hf_config, "mamba3_attention_period", 4),
+                mamba3_d_state=getattr(hf_config, "mamba3_d_state", 128),
+                mamba3_expand=getattr(hf_config, "mamba3_expand", 2),
+                mamba3_headdim=getattr(hf_config, "mamba3_headdim", 64),
+                mamba3_ngroups=getattr(hf_config, "mamba3_ngroups", 1),
+                mamba3_rope_fraction=getattr(hf_config, "mamba3_rope_fraction", 0.5),
+                mamba3_chunk_size=getattr(hf_config, "mamba3_chunk_size", 64),
+                mamba3_is_outproj_norm=getattr(hf_config, "mamba3_is_outproj_norm", False),
+            )
+            _patch_qwen3_with_mamba3_hybrid(model, model_config)
     else:
         raise ValueError(f"unsupported saved model_type: {hf_config.model_type}")
 

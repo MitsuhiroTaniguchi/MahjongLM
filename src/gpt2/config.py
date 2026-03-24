@@ -53,6 +53,15 @@ class TinyQwen3Config:
     use_sliding_window: bool = False
     sliding_window: int | None = None
     use_exclusive_self_attention: bool = False
+    use_mamba3_hybrid: bool = False
+    mamba3_attention_period: int = 4
+    mamba3_d_state: int = 128
+    mamba3_expand: int = 2
+    mamba3_headdim: int = 64
+    mamba3_ngroups: int = 1
+    mamba3_rope_fraction: float = 0.5
+    mamba3_chunk_size: int = 64
+    mamba3_is_outproj_norm: bool = False
 
     def validate(self) -> None:
         if self.hidden_size <= 0:
@@ -73,6 +82,22 @@ class TinyQwen3Config:
             raise ValueError("max_position_embeddings is too small for practical training")
         if self.hidden_act != "silu":
             raise ValueError("TinyQwen3Config currently supports hidden_act='silu' only")
+        if self.use_exclusive_self_attention and self.use_mamba3_hybrid:
+            raise ValueError("use_exclusive_self_attention and use_mamba3_hybrid are mutually exclusive")
+        if self.mamba3_attention_period <= 0:
+            raise ValueError("mamba3_attention_period must be positive")
+        if self.mamba3_d_state <= 0:
+            raise ValueError("mamba3_d_state must be positive")
+        if self.mamba3_expand <= 0:
+            raise ValueError("mamba3_expand must be positive")
+        if self.mamba3_headdim <= 0:
+            raise ValueError("mamba3_headdim must be positive")
+        if self.mamba3_ngroups <= 0:
+            raise ValueError("mamba3_ngroups must be positive")
+        if self.mamba3_rope_fraction not in {0.5, 1.0}:
+            raise ValueError("mamba3_rope_fraction must be 0.5 or 1.0")
+        if self.mamba3_chunk_size <= 0:
+            raise ValueError("mamba3_chunk_size must be positive")
 
 
 @dataclass(frozen=True)

@@ -1373,6 +1373,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qwen-head-dim", type=int, default=128)
     parser.add_argument("--qwen-max-position-embeddings", type=int, default=8192)
     parser.add_argument("--use-exclusive-self-attention", action="store_true")
+    parser.add_argument("--use-mamba3-hybrid", action="store_true")
+    parser.add_argument("--mamba3-attention-period", type=int, default=4)
+    parser.add_argument("--mamba3-d-state", type=int, default=128)
+    parser.add_argument("--mamba3-expand", type=int, default=2)
+    parser.add_argument("--mamba3-headdim", type=int, default=64)
+    parser.add_argument("--mamba3-ngroups", type=int, default=1)
+    parser.add_argument("--mamba3-rope-fraction", type=float, default=0.5)
+    parser.add_argument("--mamba3-chunk-size", type=int, default=64)
+    parser.add_argument("--mamba3-outproj-norm", action="store_true")
     parser.add_argument("--max-seq-length", type=int, default=8192)
     parser.add_argument("--max-tokens-per-batch", type=int, default=65536)
     parser.add_argument(
@@ -1485,6 +1494,15 @@ def main() -> None:
             head_dim=args.qwen_head_dim,
             max_position_embeddings=args.qwen_max_position_embeddings,
             use_exclusive_self_attention=args.use_exclusive_self_attention,
+            use_mamba3_hybrid=args.use_mamba3_hybrid,
+            mamba3_attention_period=args.mamba3_attention_period,
+            mamba3_d_state=args.mamba3_d_state,
+            mamba3_expand=args.mamba3_expand,
+            mamba3_headdim=args.mamba3_headdim,
+            mamba3_ngroups=args.mamba3_ngroups,
+            mamba3_rope_fraction=args.mamba3_rope_fraction,
+            mamba3_chunk_size=args.mamba3_chunk_size,
+            mamba3_is_outproj_norm=args.mamba3_outproj_norm,
         )
     training_config = TrainingConfig(
         output_dir=args.output_dir,
