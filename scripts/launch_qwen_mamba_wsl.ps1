@@ -72,7 +72,7 @@ export LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu
 $(if ($wandbApiKey) { "export WANDB_API_KEY='$($wandbApiKey -replace "'", "'\\''")'" })
 cd '$workspaceLinux'
 source /root/mimo-venv/bin/activate
-python $argString > '$stdoutLogLinux' 2> '$stderrLogLinux'
+/root/mimo-venv/bin/python $argString > '$stdoutLogLinux' 2> '$stderrLogLinux'
 "@
 
 $process = Start-Process `
