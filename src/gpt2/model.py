@@ -339,7 +339,15 @@ def load_saved_causal_lm(
         raise ValueError(f"unsupported saved model_type: {hf_config.model_type}")
 
     state_dict = _load_pretrained_state_dict(model_dir)
-    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=True)
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    tied_lm_head_missing = (
+        hf_config.model_type == "qwen3"
+        and getattr(hf_config, "tie_word_embeddings", True)
+        and missing_keys == ["lm_head.weight"]
+    )
+    if tied_lm_head_missing:
+        model.tie_weights()
+        missing_keys = []
     if missing_keys or unexpected_keys:
         raise RuntimeError(
             f"checkpoint load mismatch for {model_dir}: missing={missing_keys}, unexpected={unexpected_keys}"
