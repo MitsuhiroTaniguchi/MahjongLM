@@ -70,10 +70,7 @@ export COMPILER_PATH=/usr/bin
 export LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu
 cd '$workspaceLinux'
 source /root/mimo-venv/bin/activate
-run_status=0
-/root/mimo-venv/bin/python $argString > '$stdoutLogLinux' 2> '$stderrLogLinux' || run_status=`$?
-/root/mimo-venv/bin/wandb sync --include-online --mark-synced '$workspaceLinux/wandb/latest-run' >> '$stderrLogLinux' 2>&1 || true
-exit `$run_status
+/root/mimo-venv/bin/python $argString > '$stdoutLogLinux' 2> '$stderrLogLinux'
 "@
 
 $process = Start-Process `
