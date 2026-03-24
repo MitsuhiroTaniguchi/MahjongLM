@@ -53,6 +53,7 @@ class TinyQwen3Config:
     use_sliding_window: bool = False
     sliding_window: int | None = None
     use_exclusive_self_attention: bool = False
+    use_gated_attention: bool = False
     use_mamba3_hybrid: bool = False
     mamba3_attention_period: int = 4
     mamba3_d_state: int = 128
@@ -84,6 +85,8 @@ class TinyQwen3Config:
             raise ValueError("max_position_embeddings is too small for practical training")
         if self.hidden_act != "silu":
             raise ValueError("TinyQwen3Config currently supports hidden_act='silu' only")
+        if self.use_exclusive_self_attention and self.use_gated_attention:
+            raise ValueError("use_exclusive_self_attention and use_gated_attention are mutually exclusive")
         if self.mamba3_attention_period <= 0:
             raise ValueError("mamba3_attention_period must be positive")
         if self.mamba3_d_state <= 0:

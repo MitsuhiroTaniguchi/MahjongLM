@@ -102,6 +102,93 @@ def _patch_qwen3_with_xsa(model) -> None:
         layer.self_attn = new_attn
 
 
+def _patch_qwen3_with_gated_attention(model) -> None:
+    import torch
+    from transformers.models.qwen3.modeling_qwen3 import (
+        ALL_ATTENTION_FUNCTIONS,
+        Qwen3Attention,
+        apply_rotary_pos_emb,
+        eager_attention_forward,
+    )
+
+    class Qwen3GatedAttention(Qwen3Attention):
+        def __init__(self, config, layer_idx: int):
+            super().__init__(config, layer_idx)
+            self.q_proj = torch.nn.Linear(
+                config.hidden_size,
+                config.num_attention_heads * self.head_dim * 2,
+                bias=config.attention_bias,
+            )
+
+        def forward(
+            self,
+            hidden_states: torch.Tensor,
+            position_embeddings: tuple[torch.Tensor, torch.Tensor],
+            attention_mask: torch.Tensor | None,
+            past_key_values=None,
+            cache_position=None,
+            **kwargs,
+        ) -> tuple[torch.Tensor, torch.Tensor | None]:
+            input_shape = hidden_states.shape[:-1]
+            hidden_shape = (*input_shape, -1, self.head_dim)
+
+            query_states, gate = torch.chunk(
+                self.q_proj(hidden_states).view(*input_shape, -1, self.head_dim * 2), 2, dim=-1
+            )
+            gate = gate.reshape(*input_shape, -1)
+
+            query_states = self.q_norm(query_states.view(hidden_shape)).transpose(1, 2)
+            key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+            value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+
+            cos, sin = position_embeddings
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+            if past_key_values is not None:
+                cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+                key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
+
+            attention_interface = ALL_ATTENTION_FUNCTIONS.get_interface(
+                self.config._attn_implementation, eager_attention_forward
+            )
+            attn_output, attn_weights = attention_interface(
+                self,
+                query_states,
+                key_states,
+                value_states,
+                attention_mask,
+                dropout=0.0 if not self.training else self.attention_dropout,
+                scaling=self.scaling,
+                sliding_window=self.sliding_window,
+                **kwargs,
+            )
+
+            attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+            attn_output = attn_output * torch.sigmoid(gate)
+            attn_output = self.o_proj(attn_output)
+            return attn_output, attn_weights
+
+    for layer_idx, layer in enumerate(model.model.layers):
+        if not hasattr(layer, "self_attn"):
+            continue
+        old_attn = layer.self_attn
+        new_attn = Qwen3GatedAttention(model.config, layer_idx)
+        new_attn.to(device=old_attn.q_proj.weight.device, dtype=old_attn.q_proj.weight.dtype)
+        with torch.no_grad():
+            q_out = old_attn.q_proj.weight.shape[0]
+            new_attn.q_proj.weight.zero_()
+            new_attn.q_proj.weight[:q_out].copy_(old_attn.q_proj.weight)
+            if old_attn.q_proj.bias is not None and new_attn.q_proj.bias is not None:
+                new_attn.q_proj.bias.zero_()
+                new_attn.q_proj.bias[:q_out].copy_(old_attn.q_proj.bias)
+            new_attn.k_proj.load_state_dict(old_attn.k_proj.state_dict())
+            new_attn.v_proj.load_state_dict(old_attn.v_proj.state_dict())
+            new_attn.o_proj.load_state_dict(old_attn.o_proj.state_dict())
+            new_attn.q_norm.load_state_dict(old_attn.q_norm.state_dict())
+            new_attn.k_norm.load_state_dict(old_attn.k_norm.state_dict())
+        layer.self_attn = new_attn
+
+
 def _patch_qwen3_with_mamba3_hybrid(model, model_config: TinyQwen3Config) -> None:
     from transformers.modeling_layers import GradientCheckpointingLayer
 
@@ -248,6 +335,7 @@ def build_tiny_qwen3_model(
     if attn_implementation is not None:
         hf_config._attn_implementation = attn_implementation
     hf_config.use_exclusive_self_attention = model_config.use_exclusive_self_attention
+    hf_config.use_gated_attention = model_config.use_gated_attention
     hf_config.use_mamba3_hybrid = model_config.use_mamba3_hybrid
     hf_config.mamba3_attention_period = model_config.mamba3_attention_period
     hf_config.mamba3_d_state = model_config.mamba3_d_state
@@ -262,6 +350,8 @@ def build_tiny_qwen3_model(
     model = Qwen3ForCausalLM(hf_config)
     if model_config.use_exclusive_self_attention:
         _patch_qwen3_with_xsa(model)
+    if model_config.use_gated_attention:
+        _patch_qwen3_with_gated_attention(model)
     if model_config.use_mamba3_hybrid:
         _patch_qwen3_with_mamba3_hybrid(model, model_config)
     if dtype is not None:
@@ -312,6 +402,8 @@ def load_saved_causal_lm(
         model = Qwen3ForCausalLM(hf_config)
         if getattr(hf_config, "use_exclusive_self_attention", False):
             _patch_qwen3_with_xsa(model)
+        if getattr(hf_config, "use_gated_attention", False):
+            _patch_qwen3_with_gated_attention(model)
         if getattr(hf_config, "use_mamba3_hybrid", False):
             model_config = TinyQwen3Config(
                 hidden_size=hf_config.hidden_size,
@@ -322,6 +414,7 @@ def load_saved_causal_lm(
                 head_dim=hf_config.head_dim,
                 max_position_embeddings=hf_config.max_position_embeddings,
                 use_exclusive_self_attention=getattr(hf_config, "use_exclusive_self_attention", False),
+                use_gated_attention=getattr(hf_config, "use_gated_attention", False),
                 use_mamba3_hybrid=getattr(hf_config, "use_mamba3_hybrid", False),
                 mamba3_attention_period=getattr(hf_config, "mamba3_attention_period", 4),
                 mamba3_d_state=getattr(hf_config, "mamba3_d_state", 128),
