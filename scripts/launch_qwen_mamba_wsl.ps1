@@ -66,6 +66,9 @@ export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
 export COMPILER_PATH=/usr/bin
 export LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu
+pkill -f train_qwen3.py || true
+pkill -f wandb-core || true
+pkill -f gpu_stats || true
 cd '$workspaceLinux'
 source /root/mimo-venv/bin/activate
 /root/mimo-venv/bin/python $argString > '$stdoutLogLinux' 2> '$stderrLogLinux'
