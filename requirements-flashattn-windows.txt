@@ -1,0 +1,3 @@
+# Windows + Python 3.11 + CUDA 12.9 wheel used in this workspace.
+# This is only for the current RTX 5090 / torch 2.8.0+cu129 setup.
+https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows/resolve/main/flash_attn-2.8.2+cu129torch2.8.0cxx11abiTRUE-cp311-cp311-win_amd64.whl

@@ -15,6 +15,12 @@ wandb/
 # Data is kept locally but not committed.
 data/raw/
 data/processed/
+data/cache/
+
+# Local experiment environments and caches.
+.venv-unsloth-probe/
+unsloth_compiled_cache/
+wandb_recovery/
 
 # Python bytecode.
 *.pyc
