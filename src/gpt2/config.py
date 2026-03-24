@@ -84,8 +84,6 @@ class TinyQwen3Config:
             raise ValueError("max_position_embeddings is too small for practical training")
         if self.hidden_act != "silu":
             raise ValueError("TinyQwen3Config currently supports hidden_act='silu' only")
-        if self.use_exclusive_self_attention and self.use_mamba3_hybrid:
-            raise ValueError("use_exclusive_self_attention and use_mamba3_hybrid are mutually exclusive")
         if self.mamba3_attention_period <= 0:
             raise ValueError("mamba3_attention_period must be positive")
         if self.mamba3_d_state <= 0:
