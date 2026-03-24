@@ -34,7 +34,7 @@ $baseArgs = @(
     "--packing-mode", "unpadded",
     "--attn-implementation", "flash_attention_2",
     "--per-device-train-batch-size", "40",
-    "--per-device-eval-batch-size", "4",
+    "--per-device-eval-batch-size", "40",
     "--gradient-accumulation-steps", "1",
     "--optimizer-name", "muon",
     "--use-muon-plus",
