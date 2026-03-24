@@ -30,7 +30,7 @@ $wandbApiKey = $env:WANDB_API_KEY
 $baseArgs = @(
     "scripts/train_qwen3.py",
     "--model-family", "qwen3",
-    "--qwen-arch", "QM100S96",
+    "--qwen-arch", "QM95S192",
     "--packing-mode", "unpadded",
     "--attn-implementation", "flash_attention_2",
     "--per-device-train-batch-size", "40",

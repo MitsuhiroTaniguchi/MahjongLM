@@ -1,16 +1,17 @@
-# Mamba-3 Hybrid 100M Candidates
+# Mamba-3 Hybrid Candidates Near 100M
 
-Target:
-- Preserve the current Qwen3/XSA baseline attention geometry:
+Goal:
+- Preserve the current strong Qwen/XSA baseline geometry:
   - `hidden_size=768`
   - `intermediate_size=2304`
   - `num_attention_heads=12`
   - `num_key_value_heads=6`
   - `head_dim=64`
-- Replace non-attention layers with Mamba-3 in a `3:1` pattern (`mamba3_attention_period=4`)
-- Keep the hybrid close to `100M` parameters without forcing unusually large Mamba widths
+- Replace layers in an exact `3:1` hybrid pattern
+  - `mamba3_attention_period=4`
+  - therefore use a layer count divisible by `4`
 
-Primary sources:
+Primary references:
 - Mamba-2 / SSD: [Transformers are SSMs: Generalized Models and Efficient Algorithms Through Structured State Space Duality](https://arxiv.org/abs/2405.21060)
 - Mamba-3 official implementation defaults:
   - `d_state=128`
@@ -19,34 +20,53 @@ Primary sources:
   - `ngroups=1`
   - [official module](https://github.com/state-spaces/mamba/blob/main/mamba_ssm/modules/mamba3.py)
 
-Interpretation for this repo:
-- Forcing the current `14`-layer Qwen baseline into a hybrid keeps too few parameters unless the Mamba block is made unnaturally wide.
-- The more natural 100M regime is to keep `expand=2` and `headdim=64`, then increase depth.
+Why the earlier `22L` idea was wrong:
+- The current hybrid implementation keeps every 4th layer as attention.
+- With `22` layers that gives `17` Mamba + `5` attention, not an exact `3:1`.
+- Exact `3:1` requires `16`, `20`, `24`, ... layers.
 
-Measured candidates (repo-local exact parameter counts):
-- `QM100S64`
-  - `22 layers`
-  - `mamba3_expand=2`
-  - `mamba3_d_state=64`
-  - params: `99,074,864`
-- `QM100S96`
-  - `22 layers`
-  - `mamba3_expand=2`
-  - `mamba3_d_state=96`
-  - params: `100,042,096`
-- `22 layers / d_state=128`
-  - params: `101,009,328`
-  - viable, but heavier than needed
+Measured exact-3:1 candidates (repo-local parameter counts):
 
-Recommended defaults:
-- SISO starting point: `QM100S96`
-  - closest to 100M
-  - keeps official-style `expand=2`
-  - moderate `d_state`
-- safer memory fallback: `QM100S64`
-  - slightly under 100M
-  - same depth and geometry
+## `QM95S192`
+- `20` layers
+- `15` Mamba + `5` attention
+- `mamba3_expand=2`
+- `mamba3_d_state=192`
+- params: `95,070,928`
+- Interpretation:
+  - closest candidate that keeps the official-style `expand=2`
+  - more conservative for memory than forcing an exact 100M count
 
-Why not `14` layers?
-- With `14` layers and the current `3:1` replacement pattern, `expand=2` lands far below 100M.
-- Reaching 100M at `14` layers requires `expand=4`, which is harder to justify from the official defaults and is likely worse for memory at fixed `bs=40`.
+## `QM100S384`
+- `20` layers
+- `15` Mamba + `5` attention
+- `mamba3_expand=2`
+- `mamba3_d_state=384`
+- params: `100,191,568`
+- Interpretation:
+  - exact-3:1 and very close to 100M
+  - but `d_state=384` is far above the official default and likely expensive in memory/state size
+
+## `QM99E3S256`
+- `16` layers
+- `12` Mamba + `4` attention
+- `mamba3_expand=3`
+- `mamba3_d_state=256`
+- params: `99,187,040`
+- Interpretation:
+  - also close to 100M
+  - but reaches it by widening the Mamba block beyond the official `expand=2` default
+
+Recommendation:
+- Practical starting point: `QM95S192`
+  - exact `3:1`
+  - stays closer to the official `expand=2` design
+  - safer for fixed `bs=40`
+- Exact-count experiment: `QM100S384`
+  - use if matching ~100M matters more than keeping Mamba internals moderate
+- Alternative width-heavy experiment: `QM99E3S256`
+  - use if we specifically want to test whether larger `expand` scales better than larger `d_state`
+
+Current launcher default:
+- [launch_qwen_mamba_wsl.ps1](/C:/Users/taniguchi/MahjongLM/scripts/launch_qwen_mamba_wsl.ps1)
+- points to `QM95S192`
