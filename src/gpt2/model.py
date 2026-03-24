@@ -5,6 +5,102 @@ from pathlib import Path
 from .config import TinyGPT2Config, TinyQwen3Config
 
 
+def _patch_qwen3_with_xsa(model) -> None:
+    import torch
+    from transformers.models.qwen3.modeling_qwen3 import (
+        ALL_ATTENTION_FUNCTIONS,
+        Qwen3Attention,
+        apply_rotary_pos_emb,
+        eager_attention_forward,
+        repeat_kv,
+    )
+
+    class Qwen3ExclusiveSelfAttention(Qwen3Attention):
+        def __init__(self, config, layer_idx: int):
+            super().__init__(config, layer_idx)
+            self.xsa_eps = 1e-6
+
+        def _apply_xsa(self, attn_output: torch.Tensor, value_states: torch.Tensor) -> torch.Tensor:
+            batch_size, seq_len, num_heads, head_dim = attn_output.shape
+            base_value_states = value_states.transpose(1, 2)
+            if base_value_states.shape[1] != seq_len:
+                base_value_states = base_value_states[:, -seq_len:, :, :]
+            if num_heads != base_value_states.shape[2] * self.num_key_value_groups:
+                repeated_value_states = repeat_kv(value_states, self.num_key_value_groups).transpose(1, 2)
+                if repeated_value_states.shape[1] != seq_len:
+                    repeated_value_states = repeated_value_states[:, -seq_len:, :, :]
+                denom = repeated_value_states.square().sum(dim=-1, keepdim=True, dtype=torch.float32).clamp_min(self.xsa_eps)
+                dot = (attn_output * repeated_value_states).sum(dim=-1, keepdim=True, dtype=torch.float32)
+                coeff = (dot / denom).to(dtype=attn_output.dtype)
+                return attn_output - coeff * repeated_value_states
+
+            grouped_attn_output = attn_output.reshape(
+                batch_size,
+                seq_len,
+                base_value_states.shape[2],
+                self.num_key_value_groups,
+                head_dim,
+            )
+            grouped_value_states = base_value_states.unsqueeze(3)
+            denom = (
+                base_value_states.square().sum(dim=-1, keepdim=True, dtype=torch.float32).unsqueeze(3).clamp_min(self.xsa_eps)
+            )
+            dot = (grouped_attn_output * grouped_value_states).sum(dim=-1, keepdim=True, dtype=torch.float32)
+            coeff = (dot / denom).to(dtype=attn_output.dtype)
+            corrected = grouped_attn_output - coeff * grouped_value_states
+            return corrected.reshape_as(attn_output)
+
+        def forward(
+            self,
+            hidden_states,
+            position_embeddings,
+            attention_mask,
+            past_key_values=None,
+            cache_position=None,
+            **kwargs,
+        ):
+            input_shape = hidden_states.shape[:-1]
+            hidden_shape = (*input_shape, -1, self.head_dim)
+
+            query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+            key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+            value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+
+            cos, sin = position_embeddings
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+            if past_key_values is not None:
+                cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+                key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
+
+            attention_interface = ALL_ATTENTION_FUNCTIONS.get_interface(
+                self.config._attn_implementation, eager_attention_forward
+            )
+            attn_output, attn_weights = attention_interface(
+                self,
+                query_states,
+                key_states,
+                value_states,
+                attention_mask,
+                dropout=0.0 if not self.training else self.attention_dropout,
+                scaling=self.scaling,
+                sliding_window=self.sliding_window,
+                **kwargs,
+            )
+
+            attn_output = self._apply_xsa(attn_output, value_states)
+            attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+            attn_output = self.o_proj(attn_output)
+            return attn_output, attn_weights
+
+    for layer_idx, layer in enumerate(model.model.layers):
+        old_attn = layer.self_attn
+        new_attn = Qwen3ExclusiveSelfAttention(model.config, layer_idx)
+        new_attn.load_state_dict(old_attn.state_dict())
+        new_attn.to(device=old_attn.q_proj.weight.device, dtype=old_attn.q_proj.weight.dtype)
+        layer.self_attn = new_attn
+
+
 def build_tiny_gpt2_model(
     *,
     vocab_size: int,
@@ -96,7 +192,10 @@ def build_tiny_qwen3_model(
         hf_config.dtype = dtype
     if attn_implementation is not None:
         hf_config._attn_implementation = attn_implementation
+    hf_config.use_exclusive_self_attention = model_config.use_exclusive_self_attention
     model = Qwen3ForCausalLM(hf_config)
+    if model_config.use_exclusive_self_attention:
+        _patch_qwen3_with_xsa(model)
     if dtype is not None:
         model = model.to(dtype=dtype)
     return model
@@ -143,6 +242,8 @@ def load_saved_causal_lm(
         model = GPT2LMHeadModel(hf_config)
     elif hf_config.model_type == "qwen3":
         model = Qwen3ForCausalLM(hf_config)
+        if getattr(hf_config, "use_exclusive_self_attention", False):
+            _patch_qwen3_with_xsa(model)
     else:
         raise ValueError(f"unsupported saved model_type: {hf_config.model_type}")
 

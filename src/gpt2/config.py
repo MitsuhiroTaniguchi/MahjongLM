@@ -52,6 +52,7 @@ class TinyQwen3Config:
     tie_word_embeddings: bool = True
     use_sliding_window: bool = False
     sliding_window: int | None = None
+    use_exclusive_self_attention: bool = False
 
     def validate(self) -> None:
         if self.hidden_size <= 0:

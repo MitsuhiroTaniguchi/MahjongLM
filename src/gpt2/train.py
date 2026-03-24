@@ -1372,6 +1372,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qwen-num-key-value-heads", type=int, default=8)
     parser.add_argument("--qwen-head-dim", type=int, default=128)
     parser.add_argument("--qwen-max-position-embeddings", type=int, default=8192)
+    parser.add_argument("--use-exclusive-self-attention", action="store_true")
     parser.add_argument("--max-seq-length", type=int, default=8192)
     parser.add_argument("--max-tokens-per-batch", type=int, default=65536)
     parser.add_argument(
@@ -1483,6 +1484,7 @@ def main() -> None:
             num_key_value_heads=args.qwen_num_key_value_heads,
             head_dim=args.qwen_head_dim,
             max_position_embeddings=args.qwen_max_position_embeddings,
+            use_exclusive_self_attention=args.use_exclusive_self_attention,
         )
     training_config = TrainingConfig(
         output_dir=args.output_dir,
