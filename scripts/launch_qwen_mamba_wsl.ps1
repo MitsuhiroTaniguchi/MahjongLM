@@ -25,7 +25,6 @@ $stdoutLogLinux = $stdoutLog -replace '^C:', '/mnt/c'
 $stdoutLogLinux = $stdoutLogLinux -replace '\\', '/'
 $stderrLogLinux = $stderrLog -replace '^C:', '/mnt/c'
 $stderrLogLinux = $stderrLogLinux -replace '\\', '/'
-$wandbApiKey = if ($env:WANDB_API_KEY) { $env:WANDB_API_KEY -replace '\s', '' } else { $null }
 
 $baseArgs = @(
     "scripts/train_qwen3.py",
@@ -47,8 +46,6 @@ $baseArgs = @(
     "--save-interval", "200",
     "--label-smoothing", "0.01",
     "--gradient-checkpointing",
-    "--separate-eval-process",
-    "--eval-device", "cpu",
     "--mamba3-chunk-size", "64",
     "--wandb-project", "mahjongLM_qwen_arch",
     "--wandb-run-name", $runName,
@@ -69,7 +66,6 @@ export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
 export COMPILER_PATH=/usr/bin
 export LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu
-$(if ($wandbApiKey) { "export WANDB_API_KEY='$($wandbApiKey -replace "'", "'\\''")'" })
 cd '$workspaceLinux'
 source /root/mimo-venv/bin/activate
 /root/mimo-venv/bin/python $argString > '$stdoutLogLinux' 2> '$stderrLogLinux'
