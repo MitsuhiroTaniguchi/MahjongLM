@@ -103,9 +103,9 @@ def _patch_qwen3_with_xsa(model) -> None:
 
 
 def _patch_qwen3_with_mamba3_hybrid(model, model_config: TinyQwen3Config) -> None:
-    import torch.nn as nn
+    from transformers.modeling_layers import GradientCheckpointingLayer
 
-    class Qwen3Mamba3DecoderLayer(nn.Module):
+    class Qwen3Mamba3DecoderLayer(GradientCheckpointingLayer):
         attention_type = "full_attention"
 
         def __init__(self, config, layer_idx: int, reference_layer):
