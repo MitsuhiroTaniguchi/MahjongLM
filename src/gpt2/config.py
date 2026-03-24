@@ -59,6 +59,8 @@ class TinyQwen3Config:
     mamba3_expand: int = 2
     mamba3_headdim: int = 64
     mamba3_ngroups: int = 1
+    mamba3_is_mimo: bool = False
+    mamba3_mimo_rank: int = 4
     mamba3_rope_fraction: float = 0.5
     mamba3_chunk_size: int = 64
     mamba3_is_outproj_norm: bool = False
@@ -94,6 +96,8 @@ class TinyQwen3Config:
             raise ValueError("mamba3_headdim must be positive")
         if self.mamba3_ngroups <= 0:
             raise ValueError("mamba3_ngroups must be positive")
+        if self.mamba3_mimo_rank <= 0:
+            raise ValueError("mamba3_mimo_rank must be positive")
         if self.mamba3_rope_fraction not in {0.5, 1.0}:
             raise ValueError("mamba3_rope_fraction must be 0.5 or 1.0")
         if self.mamba3_chunk_size <= 0:

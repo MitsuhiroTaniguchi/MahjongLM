@@ -1379,6 +1379,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mamba3-expand", type=int, default=2)
     parser.add_argument("--mamba3-headdim", type=int, default=64)
     parser.add_argument("--mamba3-ngroups", type=int, default=1)
+    parser.add_argument("--mamba3-is-mimo", action="store_true")
+    parser.add_argument("--mamba3-mimo-rank", type=int, default=4)
     parser.add_argument("--mamba3-rope-fraction", type=float, default=0.5)
     parser.add_argument("--mamba3-chunk-size", type=int, default=64)
     parser.add_argument("--mamba3-outproj-norm", action="store_true")
@@ -1500,6 +1502,8 @@ def main() -> None:
             mamba3_expand=args.mamba3_expand,
             mamba3_headdim=args.mamba3_headdim,
             mamba3_ngroups=args.mamba3_ngroups,
+            mamba3_is_mimo=args.mamba3_is_mimo,
+            mamba3_mimo_rank=args.mamba3_mimo_rank,
             mamba3_rope_fraction=args.mamba3_rope_fraction,
             mamba3_chunk_size=args.mamba3_chunk_size,
             mamba3_is_outproj_norm=args.mamba3_outproj_norm,

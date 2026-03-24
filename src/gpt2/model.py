@@ -115,6 +115,8 @@ def _patch_qwen3_with_mamba3_hybrid(model, model_config: TinyQwen3Config) -> Non
                 expand=model_config.mamba3_expand,
                 headdim=model_config.mamba3_headdim,
                 ngroups=model_config.mamba3_ngroups,
+                is_mimo=model_config.mamba3_is_mimo,
+                mimo_rank=model_config.mamba3_mimo_rank,
                 rope_fraction=model_config.mamba3_rope_fraction,
                 is_outproj_norm=model_config.mamba3_is_outproj_norm,
                 chunk_size=model_config.mamba3_chunk_size,
@@ -245,6 +247,8 @@ def build_tiny_qwen3_model(
     hf_config.mamba3_expand = model_config.mamba3_expand
     hf_config.mamba3_headdim = model_config.mamba3_headdim
     hf_config.mamba3_ngroups = model_config.mamba3_ngroups
+    hf_config.mamba3_is_mimo = model_config.mamba3_is_mimo
+    hf_config.mamba3_mimo_rank = model_config.mamba3_mimo_rank
     hf_config.mamba3_rope_fraction = model_config.mamba3_rope_fraction
     hf_config.mamba3_chunk_size = model_config.mamba3_chunk_size
     hf_config.mamba3_is_outproj_norm = model_config.mamba3_is_outproj_norm
@@ -317,6 +321,8 @@ def load_saved_causal_lm(
                 mamba3_expand=getattr(hf_config, "mamba3_expand", 2),
                 mamba3_headdim=getattr(hf_config, "mamba3_headdim", 64),
                 mamba3_ngroups=getattr(hf_config, "mamba3_ngroups", 1),
+                mamba3_is_mimo=getattr(hf_config, "mamba3_is_mimo", False),
+                mamba3_mimo_rank=getattr(hf_config, "mamba3_mimo_rank", 4),
                 mamba3_rope_fraction=getattr(hf_config, "mamba3_rope_fraction", 0.5),
                 mamba3_chunk_size=getattr(hf_config, "mamba3_chunk_size", 64),
                 mamba3_is_outproj_norm=getattr(hf_config, "mamba3_is_outproj_norm", False),
