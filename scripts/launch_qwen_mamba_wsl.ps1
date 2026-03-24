@@ -68,7 +68,6 @@ export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
 export COMPILER_PATH=/usr/bin
 export LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu
-export WANDB_DIR='$workspaceLinux/wandb'
 cd '$workspaceLinux'
 source /root/mimo-venv/bin/activate
 run_status=0
