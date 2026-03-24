@@ -56,6 +56,7 @@ class TinyQwen3Config:
     use_gated_attention: bool = False
     use_mamba3_hybrid: bool = False
     mamba3_attention_period: int = 4
+    mamba3_attention_offset: int = 3
     mamba3_d_state: int = 128
     mamba3_expand: int = 2
     mamba3_headdim: int = 64
@@ -89,6 +90,10 @@ class TinyQwen3Config:
             raise ValueError("use_exclusive_self_attention and use_gated_attention are mutually exclusive")
         if self.mamba3_attention_period <= 0:
             raise ValueError("mamba3_attention_period must be positive")
+        if self.mamba3_attention_offset < 0:
+            raise ValueError("mamba3_attention_offset must be non-negative")
+        if self.mamba3_attention_offset >= self.mamba3_attention_period:
+            raise ValueError("mamba3_attention_offset must be smaller than mamba3_attention_period")
         if self.mamba3_d_state <= 0:
             raise ValueError("mamba3_d_state must be positive")
         if self.mamba3_expand <= 0:

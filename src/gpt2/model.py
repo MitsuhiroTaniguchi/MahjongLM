@@ -183,7 +183,9 @@ def _patch_qwen3_with_mamba3_hybrid(model, model_config: TinyQwen3Config) -> Non
             return hidden_states
 
     attention_layer_idx = [
-        idx for idx in range(model_config.num_hidden_layers) if (idx + 1) % model_config.mamba3_attention_period == 0
+        idx
+        for idx in range(model_config.num_hidden_layers)
+        if idx % model_config.mamba3_attention_period == model_config.mamba3_attention_offset
     ]
     model.config.mamba3_attention_layer_idx = attention_layer_idx
     for layer_idx, layer in enumerate(model.model.layers):
