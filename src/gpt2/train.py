@@ -833,6 +833,9 @@ def _evaluate_via_subprocess(
     training_config: TrainingConfig,
     eval_dataset_dirs: tuple[Path, ...],
 ) -> dict[str, float]:
+    eval_attn_implementation = training_config.attn_implementation
+    if training_config.eval_device == "cpu" and training_config.attn_implementation == "flash_attention_2":
+        eval_attn_implementation = "sdpa"
     command = [
         sys.executable,
         "-u",
@@ -844,7 +847,7 @@ def _evaluate_via_subprocess(
         "--packing-mode",
         training_config.packing_mode,
         "--attn-implementation",
-        training_config.attn_implementation,
+        eval_attn_implementation,
         "--max-seq-length",
         str(training_config.max_seq_length),
         "--pad-to-multiple-of",
