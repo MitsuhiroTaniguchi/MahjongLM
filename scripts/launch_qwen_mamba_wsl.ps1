@@ -25,7 +25,7 @@ $stdoutLogLinux = $stdoutLog -replace '^C:', '/mnt/c'
 $stdoutLogLinux = $stdoutLogLinux -replace '\\', '/'
 $stderrLogLinux = $stderrLog -replace '^C:', '/mnt/c'
 $stderrLogLinux = $stderrLogLinux -replace '\\', '/'
-$wandbApiKey = if ($env:WANDB_API_KEY) { $env:WANDB_API_KEY.Trim() } else { $null }
+$wandbApiKey = if ($env:WANDB_API_KEY) { $env:WANDB_API_KEY -replace '\s', '' } else { $null }
 
 $baseArgs = @(
     "scripts/train_qwen3.py",
