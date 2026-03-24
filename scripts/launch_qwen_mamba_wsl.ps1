@@ -25,6 +25,7 @@ $stdoutLogLinux = $stdoutLog -replace '^C:', '/mnt/c'
 $stdoutLogLinux = $stdoutLogLinux -replace '\\', '/'
 $stderrLogLinux = $stderrLog -replace '^C:', '/mnt/c'
 $stderrLogLinux = $stderrLogLinux -replace '\\', '/'
+$wandbApiKey = $env:WANDB_API_KEY
 
 $baseArgs = @(
     "scripts/train_qwen3.py",
@@ -60,7 +61,7 @@ $baseArgs = @(
 )
 
 $quotedArgs = @($baseArgs + $ExtraArgs) | ForEach-Object {
-    "'" + ($_ -replace "'", "'\"'\"'") + "'"
+    "'" + ($_ -replace "'", "'\\''") + "'"
 }
 $argString = [string]::Join(" ", $quotedArgs)
 
@@ -72,6 +73,7 @@ export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
 export COMPILER_PATH=/usr/bin
 export LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu
+$(if ($wandbApiKey) { "export WANDB_API_KEY='$($wandbApiKey -replace "'", "'\\''")'" })
 cd '$workspaceLinux'
 source /root/mimo-venv/bin/activate
 python $argString > '$stdoutLogLinux' 2> '$stderrLogLinux'
