@@ -166,6 +166,7 @@ def _init_wandb(config: TrainingConfig, model_config: TinyGPT2Config | TinyQwen3
     for metric_name in (
         "train/loss",
         "train/lr",
+        "train/lr_aux",
         "train/grad_norm",
         "train/packing_efficiency",
         "train/packed_rows",
@@ -1334,7 +1335,7 @@ def train(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a GPT-2 or Qwen3 style model on MahjongLM.")
-    parser.add_argument("--dataset-dir", action="append", type=Path, default=[Path("data/processed/2021")])
+    parser.add_argument("--dataset-dir", action="append", type=Path, default=[])
     parser.add_argument("--eval-dataset-dir", action="append", type=Path, default=[])
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/gpt2-mahjong-8192"))
     parser.add_argument("--tokenizer-dir", type=Path, default=Path("tokenizer"))
@@ -1382,7 +1383,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mamba3-is-mimo", action="store_true")
     parser.add_argument("--mamba3-mimo-rank", type=int, default=4)
     parser.add_argument("--mamba3-rope-fraction", type=float, default=0.5)
-    parser.add_argument("--mamba3-chunk-size", type=int, default=64)
+    parser.add_argument("--mamba3-chunk-size", type=int, default=0)
     parser.add_argument("--mamba3-outproj-norm", action="store_true")
     parser.add_argument("--max-seq-length", type=int, default=8192)
     parser.add_argument("--max-tokens-per-batch", type=int, default=65536)
@@ -1457,6 +1458,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if not args.dataset_dir:
+        args.dataset_dir = [Path("data/processed/2021")]
     if args.model_family == "gpt2":
         if args.arch != "custom":
             if args.arch not in ARCH_PRESETS:
@@ -1487,6 +1490,9 @@ def main() -> None:
             args.qwen_head_dim = preset.head_dim
             args.qwen_max_position_embeddings = preset.max_position_embeddings
 
+        resolved_mamba3_chunk_size = args.mamba3_chunk_size
+        if resolved_mamba3_chunk_size == 0:
+            resolved_mamba3_chunk_size = 8 if args.mamba3_is_mimo else 64
         model_config = TinyQwen3Config(
             hidden_size=args.qwen_hidden_size,
             intermediate_size=args.qwen_intermediate_size,
@@ -1505,7 +1511,7 @@ def main() -> None:
             mamba3_is_mimo=args.mamba3_is_mimo,
             mamba3_mimo_rank=args.mamba3_mimo_rank,
             mamba3_rope_fraction=args.mamba3_rope_fraction,
-            mamba3_chunk_size=args.mamba3_chunk_size,
+            mamba3_chunk_size=resolved_mamba3_chunk_size,
             mamba3_is_outproj_norm=args.mamba3_outproj_norm,
         )
     training_config = TrainingConfig(

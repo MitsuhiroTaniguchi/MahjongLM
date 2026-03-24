@@ -41,7 +41,7 @@ def load_official_mamba3_siso_deps():
         from mamba_ssm.ops.triton.mamba3.mamba3_siso_combined import mamba3_siso_combined
 
         return RMSNormGated, angle_dt, mamba3_siso_combined
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         root = Path(__file__).resolve().parents[2] / "external" / "mamba" / "mamba_ssm"
         if not root.is_dir():
             raise ModuleNotFoundError(
@@ -77,7 +77,7 @@ def load_official_mamba3_mimo_deps():
         from mamba_ssm.ops.tilelang.mamba3.mamba3_mimo import mamba3_mimo
 
         return RMSNormGated, angle_dt, mamba3_mimo
-    except Exception as exc:
+    except (ImportError, ModuleNotFoundError) as exc:
         root = Path(__file__).resolve().parents[2] / "external" / "mamba" / "mamba_ssm"
         if not root.is_dir():
             raise ModuleNotFoundError(
@@ -108,7 +108,7 @@ def load_official_mamba3_mimo_deps():
         return layernorm_mod.RMSNorm, angle_mod.angle_dt, mimo_mod.mamba3_mimo
 
 
-class OfficialMamba3SISO(nn.Module):
+class OfficialMamba3Block(nn.Module):
     """Training-time SISO Mamba-3 block adapted from the official implementation.
 
     This keeps the official forward-path structure and defaults, but intentionally omits
@@ -234,8 +234,8 @@ class OfficialMamba3SISO(nn.Module):
             [
                 self.d_inner,
                 self.d_inner,
-                self.d_state * self.num_bc_heads,
-                self.d_state * self.num_bc_heads,
+                self.d_state * self.num_bc_heads * self.mimo_rank,
+                self.d_state * self.num_bc_heads * self.mimo_rank,
                 self.nheads,
                 self.nheads,
                 self.nheads,

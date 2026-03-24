@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .config import TinyGPT2Config, TinyQwen3Config
-from .mamba3_adapter import OfficialMamba3SISO
+from .mamba3_adapter import OfficialMamba3Block
 
 
 def _patch_qwen3_with_xsa(model) -> None:
@@ -105,11 +105,14 @@ def _patch_qwen3_with_xsa(model) -> None:
 def _patch_qwen3_with_mamba3_hybrid(model, model_config: TinyQwen3Config) -> None:
     import torch.nn as nn
 
-    class Qwen3Mamba3MixerAsAttention(nn.Module):
-        def __init__(self, config, layer_idx: int):
+    class Qwen3Mamba3DecoderLayer(nn.Module):
+        attention_type = "full_attention"
+
+        def __init__(self, config, layer_idx: int, reference_layer):
             super().__init__()
             self.layer_idx = layer_idx
-            self.mamba3 = OfficialMamba3SISO(
+            self.input_layernorm = reference_layer.input_layernorm
+            self.mamba3 = OfficialMamba3Block(
                 d_model=config.hidden_size,
                 d_state=model_config.mamba3_d_state,
                 expand=model_config.mamba3_expand,
@@ -121,8 +124,8 @@ def _patch_qwen3_with_mamba3_hybrid(model, model_config: TinyQwen3Config) -> Non
                 is_outproj_norm=model_config.mamba3_is_outproj_norm,
                 chunk_size=model_config.mamba3_chunk_size,
                 layer_idx=layer_idx,
-                device=model.model.layers[layer_idx].self_attn.q_proj.weight.device,
-                dtype=model.model.layers[layer_idx].self_attn.q_proj.weight.dtype,
+                device=reference_layer.self_attn.q_proj.weight.device,
+                dtype=reference_layer.self_attn.q_proj.weight.dtype,
             )
 
         def forward(
@@ -137,7 +140,11 @@ def _patch_qwen3_with_mamba3_hybrid(model, model_config: TinyQwen3Config) -> Non
             del position_embeddings, attention_mask, cache_position, kwargs
             if past_key_values is not None:
                 raise NotImplementedError("Mamba3 hybrid currently does not support KV-cache inference.")
-            return self.mamba3(hidden_states), None
+            residual = hidden_states
+            hidden_states = self.input_layernorm(hidden_states)
+            hidden_states = self.mamba3(hidden_states)
+            hidden_states = residual + hidden_states
+            return hidden_states
 
     attention_layer_idx = [
         idx for idx in range(model_config.num_hidden_layers) if (idx + 1) % model_config.mamba3_attention_period == 0
@@ -146,7 +153,7 @@ def _patch_qwen3_with_mamba3_hybrid(model, model_config: TinyQwen3Config) -> Non
     for layer_idx, layer in enumerate(model.model.layers):
         if layer_idx in attention_layer_idx:
             continue
-        layer.self_attn = Qwen3Mamba3MixerAsAttention(model.config, layer_idx)
+        model.model.layers[layer_idx] = Qwen3Mamba3DecoderLayer(model.config, layer_idx, layer)
 
 
 def build_tiny_gpt2_model(
