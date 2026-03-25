@@ -67,6 +67,12 @@ class TinyQwen3Config:
     mamba3_rope_fraction: float = 0.5
     mamba3_chunk_size: int = 0
     mamba3_is_outproj_norm: bool = False
+    qwen3_5_full_attention_interval: int = 4
+    qwen3_5_linear_conv_kernel_dim: int = 4
+    qwen3_5_linear_key_head_dim: int = 0
+    qwen3_5_linear_value_head_dim: int = 0
+    qwen3_5_linear_num_key_heads: int = 0
+    qwen3_5_linear_num_value_heads: int = 0
 
     def validate(self) -> None:
         if self.hidden_size <= 0:
@@ -109,6 +115,18 @@ class TinyQwen3Config:
             raise ValueError("mamba3_rope_fraction must be 0.5 or 1.0")
         if self.mamba3_chunk_size < 0:
             raise ValueError("mamba3_chunk_size must be non-negative")
+        if self.qwen3_5_full_attention_interval <= 0:
+            raise ValueError("qwen3_5_full_attention_interval must be positive")
+        if self.qwen3_5_linear_conv_kernel_dim <= 0:
+            raise ValueError("qwen3_5_linear_conv_kernel_dim must be positive")
+        if self.qwen3_5_linear_key_head_dim < 0:
+            raise ValueError("qwen3_5_linear_key_head_dim must be non-negative")
+        if self.qwen3_5_linear_value_head_dim < 0:
+            raise ValueError("qwen3_5_linear_value_head_dim must be non-negative")
+        if self.qwen3_5_linear_num_key_heads < 0:
+            raise ValueError("qwen3_5_linear_num_key_heads must be non-negative")
+        if self.qwen3_5_linear_num_value_heads < 0:
+            raise ValueError("qwen3_5_linear_num_value_heads must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -178,8 +196,8 @@ class TrainingConfig:
     def validate(self) -> None:
         if not self.dataset_dirs:
             raise ValueError("dataset_dirs must not be empty")
-        if self.model_family not in {"gpt2", "qwen3"}:
-            raise ValueError("model_family must be one of: gpt2, qwen3")
+        if self.model_family not in {"gpt2", "qwen3", "qwen3_5"}:
+            raise ValueError("model_family must be one of: gpt2, qwen3, qwen3_5")
         if self.packing_mode not in {"packed", "unpadded"}:
             raise ValueError("packing_mode must be one of: packed, unpadded")
         if self.max_seq_length <= 0:

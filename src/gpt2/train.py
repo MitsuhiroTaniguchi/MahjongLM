@@ -34,7 +34,7 @@ from .data import (
     validate_grouped_dataset,
 )
 from .muon import SingleDeviceMuonWithAuxAdam
-from .model import build_tiny_gpt2_model, build_tiny_qwen3_model, count_parameters
+from .model import build_tiny_gpt2_model, build_tiny_qwen3_model, build_tiny_qwen3_5_model, count_parameters
 from tenhou_tokenizer import load_hf_tokenizer
 
 
@@ -1171,9 +1171,20 @@ def train(
             dtype=autocast_dtype,
             config=model_config,
         )
-    else:
+    elif training_config.model_family == "qwen3":
         assert isinstance(model_config, TinyQwen3Config)
         model = build_tiny_qwen3_model(
+            vocab_size=tokenizer.vocab_size,
+            bos_token_id=tokenizer.bos_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.pad_token_id,
+            attn_implementation=training_config.attn_implementation,
+            dtype=autocast_dtype,
+            config=model_config,
+        )
+    else:
+        assert isinstance(model_config, TinyQwen3Config)
+        model = build_tiny_qwen3_5_model(
             vocab_size=tokenizer.vocab_size,
             bos_token_id=tokenizer.bos_token_id,
             eos_token_id=tokenizer.eos_token_id,
@@ -1512,7 +1523,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-dataset-dir", action="append", type=Path, default=[])
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/gpt2-mahjong-8192"))
     parser.add_argument("--tokenizer-dir", type=Path, default=Path("tokenizer"))
-    parser.add_argument("--model-family", type=str, default="gpt2", choices=["gpt2", "qwen3"])
+    parser.add_argument("--model-family", type=str, default="gpt2", choices=["gpt2", "qwen3", "qwen3_5"])
     parser.add_argument(
         "--packing-mode",
         type=str,

@@ -370,6 +370,73 @@ def build_tiny_qwen3_model(
     return model
 
 
+def build_tiny_qwen3_5_model(
+    *,
+    vocab_size: int,
+    bos_token_id: int,
+    eos_token_id: int,
+    pad_token_id: int,
+    attn_implementation: str | None = None,
+    dtype=None,
+    config: TinyQwen3Config | None = None,
+):
+    try:
+        from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
+    except ModuleNotFoundError as exc:  # pragma: no cover - dependency guard
+        raise ModuleNotFoundError("transformers with torch support is required for training") from exc
+
+    model_config = config if config is not None else TinyQwen3Config()
+    model_config.validate()
+
+    linear_key_head_dim = model_config.qwen3_5_linear_key_head_dim or model_config.head_dim
+    linear_value_head_dim = model_config.qwen3_5_linear_value_head_dim or model_config.head_dim
+    linear_num_key_heads = model_config.qwen3_5_linear_num_key_heads or model_config.num_key_value_heads
+    linear_num_value_heads = model_config.qwen3_5_linear_num_value_heads or model_config.num_attention_heads
+    layer_types = [
+        "full_attention"
+        if idx % model_config.qwen3_5_full_attention_interval == model_config.mamba3_attention_offset
+        else "linear_attention"
+        for idx in range(model_config.num_hidden_layers)
+    ]
+
+    hf_config = Qwen3_5TextConfig(
+        vocab_size=vocab_size,
+        hidden_size=model_config.hidden_size,
+        intermediate_size=model_config.intermediate_size,
+        num_hidden_layers=model_config.num_hidden_layers,
+        num_attention_heads=model_config.num_attention_heads,
+        num_key_value_heads=model_config.num_key_value_heads,
+        hidden_act=model_config.hidden_act,
+        rms_norm_eps=model_config.rms_norm_eps,
+        attention_bias=model_config.attention_bias,
+        attention_dropout=model_config.attention_dropout,
+        head_dim=model_config.head_dim,
+        max_position_embeddings=model_config.max_position_embeddings,
+        tie_word_embeddings=model_config.tie_word_embeddings,
+        rope_parameters={
+            "rope_type": "default",
+            "rope_theta": model_config.rope_theta,
+            "partial_rotary_factor": 0.25,
+        },
+        layer_types=layer_types,
+        linear_conv_kernel_dim=model_config.qwen3_5_linear_conv_kernel_dim,
+        linear_key_head_dim=linear_key_head_dim,
+        linear_value_head_dim=linear_value_head_dim,
+        linear_num_key_heads=linear_num_key_heads,
+        linear_num_value_heads=linear_num_value_heads,
+        use_cache=False,
+    )
+    if dtype is not None:
+        hf_config.dtype = dtype
+    if attn_implementation is not None:
+        hf_config._attn_implementation = attn_implementation
+
+    model = Qwen3_5ForCausalLM(hf_config)
+    if dtype is not None:
+        model = model.to(dtype=dtype)
+    return model
+
+
 def _load_pretrained_state_dict(model_dir: Path):
     try:
         from safetensors.torch import load_file as load_safetensors_file
@@ -396,7 +463,7 @@ def load_saved_causal_lm(
     dtype=None,
 ):
     try:
-        from transformers import AutoConfig, GPT2LMHeadModel, Qwen3ForCausalLM
+        from transformers import AutoConfig, GPT2LMHeadModel, Qwen3ForCausalLM, Qwen3_5ForCausalLM
     except ModuleNotFoundError as exc:  # pragma: no cover - dependency guard
         raise ModuleNotFoundError("transformers with torch support is required for loading checkpoints") from exc
 
@@ -444,13 +511,15 @@ def load_saved_causal_lm(
                 _patch_qwen3_with_mamba3_hybrid(model, model_config)
             if model_config.use_mamba3_pre_attention:
                 _patch_qwen3_with_mamba3_pre_attention(model, model_config)
+    elif hf_config.model_type == "qwen3_5_text":
+        model = Qwen3_5ForCausalLM(hf_config)
     else:
         raise ValueError(f"unsupported saved model_type: {hf_config.model_type}")
 
     state_dict = _load_pretrained_state_dict(model_dir)
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     tied_lm_head_missing = (
-        hf_config.model_type == "qwen3"
+        hf_config.model_type in {"qwen3", "qwen3_5_text"}
         and getattr(hf_config, "tie_word_embeddings", True)
         and missing_keys == ["lm_head.weight"]
     )
