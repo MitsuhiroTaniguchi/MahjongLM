@@ -28,6 +28,26 @@ $stderrLogLinux = $stderrLogLinux -replace '\\', '/'
 
 wsl.exe -d $Distro -u root -- sh -lc "pkill -f '^/root/mimo-venv/bin/python .*train_qwen3.py' || true; pkill -f wandb-core || true; pkill -f gpu_stats || true" | Out-Null
 
+function Test-ArgPresent {
+    param(
+        [string[]]$ArgsList,
+        [string]$Name
+    )
+    return $ArgsList -contains $Name
+}
+
+$effectiveExtraArgs = @($ExtraArgs)
+$isMimoRun = Test-ArgPresent -ArgsList $effectiveExtraArgs -Name "--mamba3-is-mimo"
+
+if ($isMimoRun) {
+    if (-not (Test-ArgPresent -ArgsList $effectiveExtraArgs -Name "--mamba3-chunk-size")) {
+        $effectiveExtraArgs += @("--mamba3-chunk-size", "8")
+    }
+    if (-not (Test-ArgPresent -ArgsList $effectiveExtraArgs -Name "--pad-to-multiple-of")) {
+        $effectiveExtraArgs += @("--pad-to-multiple-of", "256")
+    }
+}
+
 $baseArgs = @(
     "scripts/train_qwen3.py",
     "--model-family", "qwen3",
@@ -48,14 +68,13 @@ $baseArgs = @(
     "--save-interval", "200",
     "--label-smoothing", "0.01",
     "--gradient-checkpointing",
-    "--mamba3-chunk-size", "64",
     "--wandb-project", "mahjongLM_qwen_arch",
     "--wandb-run-name", $runName,
     "--output-dir", $outputDirLinux,
     "--stop-file", $stopFileLinux
 )
 
-$quotedArgs = @($baseArgs + $ExtraArgs) | ForEach-Object {
+$quotedArgs = @($baseArgs + $effectiveExtraArgs) | ForEach-Object {
     "'" + ($_ -replace "'", "'\\''") + "'"
 }
 $argString = [string]::Join(" ", $quotedArgs)
