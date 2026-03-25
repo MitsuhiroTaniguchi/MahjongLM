@@ -265,6 +265,9 @@ class OfficialMamba3Block(nn.Module):
         if self.is_mimo:
             q_bias = self.C_bias.float()
             k_bias = self.B_bias.float()
+            mimo_v = self.mimo_x.float()
+            mimo_z = self.mimo_z.float()
+            mimo_out = self.mimo_o.float() if not self.is_outproj_norm else None
             y = mamba3_mimo(
                 Q=C,
                 K=B,
@@ -274,9 +277,9 @@ class OfficialMamba3Block(nn.Module):
                 Trap=trap,
                 Q_bias=q_bias,
                 K_bias=k_bias,
-                MIMO_V=self.mimo_x,
-                MIMO_Z=self.mimo_z,
-                MIMO_Out=self.mimo_o if not self.is_outproj_norm else None,
+                MIMO_V=mimo_v,
+                MIMO_Z=mimo_z,
+                MIMO_Out=mimo_out,
                 Angles=angles,
                 D=self.D,
                 Z=z if not self.is_outproj_norm else None,
