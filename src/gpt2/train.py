@@ -1575,6 +1575,21 @@ def main() -> None:
             args.qwen_num_key_value_heads = preset.num_key_value_heads
             args.qwen_head_dim = preset.head_dim
             args.qwen_max_position_embeddings = preset.max_position_embeddings
+            args.use_exclusive_self_attention = preset.use_exclusive_self_attention
+            args.use_gated_attention = preset.use_gated_attention
+            args.use_mamba3_hybrid = preset.use_mamba3_hybrid
+            args.use_mamba3_pre_attention = preset.use_mamba3_pre_attention
+            args.mamba3_attention_period = preset.mamba3_attention_period
+            args.mamba3_attention_offset = preset.mamba3_attention_offset
+            args.mamba3_d_state = preset.mamba3_d_state
+            args.mamba3_expand = preset.mamba3_expand
+            args.mamba3_headdim = preset.mamba3_headdim
+            args.mamba3_ngroups = preset.mamba3_ngroups
+            args.mamba3_is_mimo = preset.mamba3_is_mimo
+            args.mamba3_mimo_rank = preset.mamba3_mimo_rank
+            args.mamba3_rope_fraction = preset.mamba3_rope_fraction
+            args.mamba3_chunk_size = preset.mamba3_chunk_size
+            args.mamba3_outproj_norm = preset.mamba3_is_outproj_norm
 
         resolved_mamba3_chunk_size = args.mamba3_chunk_size
         if resolved_mamba3_chunk_size == 0:
