@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 from .config import TinyGPT2Config, TinyQwen3Config
@@ -194,6 +195,61 @@ def _patch_qwen3_with_mamba3_hybrid(model, model_config: TinyQwen3Config) -> Non
         model.model.layers[layer_idx] = Qwen3Mamba3DecoderLayer(model.config, layer_idx, layer)
 
 
+def _patch_qwen3_with_mamba3_pre_attention(model, model_config: TinyQwen3Config) -> None:
+    from transformers.modeling_layers import GradientCheckpointingLayer
+
+    class Qwen3Mamba3PreAttentionLayer(GradientCheckpointingLayer):
+        attention_type = "full_attention"
+
+        def __init__(self, config, layer_idx: int, reference_layer):
+            super().__init__()
+            self.layer_idx = layer_idx
+            self.pre_mamba_norm = copy.deepcopy(reference_layer.input_layernorm)
+            self.pre_mamba = OfficialMamba3Block(
+                d_model=config.hidden_size,
+                d_state=model_config.mamba3_d_state,
+                expand=model_config.mamba3_expand,
+                headdim=model_config.mamba3_headdim,
+                ngroups=model_config.mamba3_ngroups,
+                is_mimo=model_config.mamba3_is_mimo,
+                mimo_rank=model_config.mamba3_mimo_rank,
+                rope_fraction=model_config.mamba3_rope_fraction,
+                is_outproj_norm=model_config.mamba3_is_outproj_norm,
+                chunk_size=model_config.mamba3_chunk_size,
+                layer_idx=layer_idx,
+                device=reference_layer.self_attn.q_proj.weight.device,
+                dtype=reference_layer.self_attn.q_proj.weight.dtype,
+            )
+            self.base_layer = reference_layer
+
+        def forward(
+            self,
+            hidden_states,
+            position_embeddings,
+            attention_mask,
+            past_key_values=None,
+            cache_position=None,
+            **kwargs,
+        ):
+            residual = hidden_states
+            hidden_states = self.pre_mamba_norm(hidden_states)
+            hidden_states = self.pre_mamba(hidden_states)
+            hidden_states = residual + hidden_states
+            return self.base_layer(
+                hidden_states,
+                position_embeddings=position_embeddings,
+                attention_mask=attention_mask,
+                past_key_values=past_key_values,
+                cache_position=cache_position,
+                **kwargs,
+            )
+
+    for layer_idx, layer in enumerate(model.model.layers):
+        if not hasattr(layer, "self_attn"):
+            continue
+        model.model.layers[layer_idx] = Qwen3Mamba3PreAttentionLayer(model.config, layer_idx, layer)
+
+
 def build_tiny_gpt2_model(
     *,
     vocab_size: int,
@@ -288,7 +344,9 @@ def build_tiny_qwen3_model(
     hf_config.use_exclusive_self_attention = model_config.use_exclusive_self_attention
     hf_config.use_gated_attention = model_config.use_gated_attention
     hf_config.use_mamba3_hybrid = model_config.use_mamba3_hybrid
+    hf_config.use_mamba3_pre_attention = model_config.use_mamba3_pre_attention
     hf_config.mamba3_attention_period = model_config.mamba3_attention_period
+    hf_config.mamba3_attention_offset = model_config.mamba3_attention_offset
     hf_config.mamba3_d_state = model_config.mamba3_d_state
     hf_config.mamba3_expand = model_config.mamba3_expand
     hf_config.mamba3_headdim = model_config.mamba3_headdim
@@ -305,6 +363,8 @@ def build_tiny_qwen3_model(
         _patch_qwen3_with_gated_attention(model)
     if model_config.use_mamba3_hybrid:
         _patch_qwen3_with_mamba3_hybrid(model, model_config)
+    if model_config.use_mamba3_pre_attention:
+        _patch_qwen3_with_mamba3_pre_attention(model, model_config)
     if dtype is not None:
         model = model.to(dtype=dtype)
     return model
@@ -355,7 +415,7 @@ def load_saved_causal_lm(
             _patch_qwen3_with_xsa(model)
         if getattr(hf_config, "use_gated_attention", False):
             _patch_qwen3_with_gated_attention(model)
-        if getattr(hf_config, "use_mamba3_hybrid", False):
+        if getattr(hf_config, "use_mamba3_hybrid", False) or getattr(hf_config, "use_mamba3_pre_attention", False):
             model_config = TinyQwen3Config(
                 hidden_size=hf_config.hidden_size,
                 intermediate_size=hf_config.intermediate_size,
@@ -367,7 +427,9 @@ def load_saved_causal_lm(
                 use_exclusive_self_attention=getattr(hf_config, "use_exclusive_self_attention", False),
                 use_gated_attention=getattr(hf_config, "use_gated_attention", False),
                 use_mamba3_hybrid=getattr(hf_config, "use_mamba3_hybrid", False),
+                use_mamba3_pre_attention=getattr(hf_config, "use_mamba3_pre_attention", False),
                 mamba3_attention_period=getattr(hf_config, "mamba3_attention_period", 4),
+                mamba3_attention_offset=getattr(hf_config, "mamba3_attention_offset", 3),
                 mamba3_d_state=getattr(hf_config, "mamba3_d_state", 128),
                 mamba3_expand=getattr(hf_config, "mamba3_expand", 2),
                 mamba3_headdim=getattr(hf_config, "mamba3_headdim", 64),
@@ -378,7 +440,10 @@ def load_saved_causal_lm(
                 mamba3_chunk_size=getattr(hf_config, "mamba3_chunk_size", 64),
                 mamba3_is_outproj_norm=getattr(hf_config, "mamba3_is_outproj_norm", False),
             )
-            _patch_qwen3_with_mamba3_hybrid(model, model_config)
+            if model_config.use_mamba3_hybrid:
+                _patch_qwen3_with_mamba3_hybrid(model, model_config)
+            if model_config.use_mamba3_pre_attention:
+                _patch_qwen3_with_mamba3_pre_attention(model, model_config)
     else:
         raise ValueError(f"unsupported saved model_type: {hf_config.model_type}")
 

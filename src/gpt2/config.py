@@ -55,6 +55,7 @@ class TinyQwen3Config:
     use_exclusive_self_attention: bool = False
     use_gated_attention: bool = False
     use_mamba3_hybrid: bool = False
+    use_mamba3_pre_attention: bool = False
     mamba3_attention_period: int = 4
     mamba3_attention_offset: int = 3
     mamba3_d_state: int = 128
@@ -88,6 +89,8 @@ class TinyQwen3Config:
             raise ValueError("TinyQwen3Config currently supports hidden_act='silu' only")
         if self.use_exclusive_self_attention and self.use_gated_attention:
             raise ValueError("use_exclusive_self_attention and use_gated_attention are mutually exclusive")
+        if self.use_mamba3_hybrid and self.use_mamba3_pre_attention:
+            raise ValueError("use_mamba3_hybrid and use_mamba3_pre_attention are mutually exclusive")
         if self.mamba3_attention_period <= 0:
             raise ValueError("mamba3_attention_period must be positive")
         if self.mamba3_attention_offset < 0:

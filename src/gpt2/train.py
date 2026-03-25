@@ -1459,6 +1459,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-exclusive-self-attention", action="store_true")
     parser.add_argument("--use-gated-attention", action="store_true")
     parser.add_argument("--use-mamba3-hybrid", action="store_true")
+    parser.add_argument("--use-mamba3-pre-attention", action="store_true")
     parser.add_argument("--mamba3-attention-period", type=int, default=4)
     parser.add_argument("--mamba3-attention-offset", type=int, default=3)
     parser.add_argument("--mamba3-d-state", type=int, default=128)
@@ -1589,6 +1590,7 @@ def main() -> None:
             use_exclusive_self_attention=args.use_exclusive_self_attention,
             use_gated_attention=args.use_gated_attention,
             use_mamba3_hybrid=args.use_mamba3_hybrid,
+            use_mamba3_pre_attention=args.use_mamba3_pre_attention,
             mamba3_attention_period=args.mamba3_attention_period,
             mamba3_attention_offset=args.mamba3_attention_offset,
             mamba3_d_state=args.mamba3_d_state,
