@@ -1634,6 +1634,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    cli_options = {token for token in sys.argv[1:] if token.startswith("--")}
+
+    def _apply_preset_value(option: str, attr: str, value) -> None:
+        if option not in cli_options:
+            setattr(args, attr, value)
+
     if not args.dataset_dir:
         args.dataset_dir = [Path("data/processed/2021")]
     if args.model_family == "gpt2":
@@ -1658,28 +1664,28 @@ def main() -> None:
             if args.qwen_arch not in QWEN3_ARCH_PRESETS:
                 raise ValueError(f"unknown Qwen3 arch preset: {args.qwen_arch}")
             preset = QWEN3_ARCH_PRESETS[args.qwen_arch]
-            args.qwen_hidden_size = preset.hidden_size
-            args.qwen_intermediate_size = preset.intermediate_size
-            args.qwen_num_hidden_layers = preset.num_hidden_layers
-            args.qwen_num_attention_heads = preset.num_attention_heads
-            args.qwen_num_key_value_heads = preset.num_key_value_heads
-            args.qwen_head_dim = preset.head_dim
-            args.qwen_max_position_embeddings = preset.max_position_embeddings
-            args.use_exclusive_self_attention = preset.use_exclusive_self_attention
-            args.use_gated_attention = preset.use_gated_attention
-            args.use_mamba3_hybrid = preset.use_mamba3_hybrid
-            args.use_mamba3_pre_attention = preset.use_mamba3_pre_attention
-            args.mamba3_attention_period = preset.mamba3_attention_period
-            args.mamba3_attention_offset = preset.mamba3_attention_offset
-            args.mamba3_d_state = preset.mamba3_d_state
-            args.mamba3_expand = preset.mamba3_expand
-            args.mamba3_headdim = preset.mamba3_headdim
-            args.mamba3_ngroups = preset.mamba3_ngroups
-            args.mamba3_is_mimo = preset.mamba3_is_mimo
-            args.mamba3_mimo_rank = preset.mamba3_mimo_rank
-            args.mamba3_rope_fraction = preset.mamba3_rope_fraction
-            args.mamba3_chunk_size = preset.mamba3_chunk_size
-            args.mamba3_outproj_norm = preset.mamba3_is_outproj_norm
+            _apply_preset_value("--qwen-hidden-size", "qwen_hidden_size", preset.hidden_size)
+            _apply_preset_value("--qwen-intermediate-size", "qwen_intermediate_size", preset.intermediate_size)
+            _apply_preset_value("--qwen-num-hidden-layers", "qwen_num_hidden_layers", preset.num_hidden_layers)
+            _apply_preset_value("--qwen-num-attention-heads", "qwen_num_attention_heads", preset.num_attention_heads)
+            _apply_preset_value("--qwen-num-key-value-heads", "qwen_num_key_value_heads", preset.num_key_value_heads)
+            _apply_preset_value("--qwen-head-dim", "qwen_head_dim", preset.head_dim)
+            _apply_preset_value("--qwen-max-position-embeddings", "qwen_max_position_embeddings", preset.max_position_embeddings)
+            _apply_preset_value("--use-exclusive-self-attention", "use_exclusive_self_attention", preset.use_exclusive_self_attention)
+            _apply_preset_value("--use-gated-attention", "use_gated_attention", preset.use_gated_attention)
+            _apply_preset_value("--use-mamba3-hybrid", "use_mamba3_hybrid", preset.use_mamba3_hybrid)
+            _apply_preset_value("--use-mamba3-pre-attention", "use_mamba3_pre_attention", preset.use_mamba3_pre_attention)
+            _apply_preset_value("--mamba3-attention-period", "mamba3_attention_period", preset.mamba3_attention_period)
+            _apply_preset_value("--mamba3-attention-offset", "mamba3_attention_offset", preset.mamba3_attention_offset)
+            _apply_preset_value("--mamba3-d-state", "mamba3_d_state", preset.mamba3_d_state)
+            _apply_preset_value("--mamba3-expand", "mamba3_expand", preset.mamba3_expand)
+            _apply_preset_value("--mamba3-headdim", "mamba3_headdim", preset.mamba3_headdim)
+            _apply_preset_value("--mamba3-ngroups", "mamba3_ngroups", preset.mamba3_ngroups)
+            _apply_preset_value("--mamba3-is-mimo", "mamba3_is_mimo", preset.mamba3_is_mimo)
+            _apply_preset_value("--mamba3-mimo-rank", "mamba3_mimo_rank", preset.mamba3_mimo_rank)
+            _apply_preset_value("--mamba3-rope-fraction", "mamba3_rope_fraction", preset.mamba3_rope_fraction)
+            _apply_preset_value("--mamba3-chunk-size", "mamba3_chunk_size", preset.mamba3_chunk_size)
+            _apply_preset_value("--mamba3-outproj-norm", "mamba3_outproj_norm", preset.mamba3_is_outproj_norm)
 
         resolved_mamba3_chunk_size = args.mamba3_chunk_size
         if resolved_mamba3_chunk_size == 0:
