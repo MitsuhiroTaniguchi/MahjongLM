@@ -268,6 +268,8 @@ class OfficialMamba3Block(nn.Module):
             mimo_v = self.mimo_x.float()
             mimo_z = self.mimo_z.float()
             mimo_out = self.mimo_o.float() if not self.is_outproj_norm else None
+            angles_fp32 = angles.float()
+            d_skip = self.D.float()
             y = mamba3_mimo(
                 Q=C,
                 K=B,
@@ -280,8 +282,8 @@ class OfficialMamba3Block(nn.Module):
                 MIMO_V=mimo_v,
                 MIMO_Z=mimo_z,
                 MIMO_Out=mimo_out,
-                Angles=angles,
-                D=self.D,
+                Angles=angles_fp32,
+                D=d_skip,
                 Z=z if not self.is_outproj_norm else None,
                 chunk_size=self.chunk_size,
                 rotary_dim_divisor=self.rotary_dim_divisor,
