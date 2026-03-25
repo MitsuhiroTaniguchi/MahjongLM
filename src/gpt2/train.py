@@ -1562,6 +1562,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mamba3-chunk-size", type=int, default=0)
     parser.add_argument("--mamba3-outproj-norm", action="store_true")
     parser.add_argument("--max-seq-length", type=int, default=8192)
+    parser.add_argument("--pad-to-multiple-of", type=int, default=8)
     parser.add_argument("--max-tokens-per-batch", type=int, default=65536)
     parser.add_argument(
         "--eval-max-tokens-per-batch",
@@ -1723,6 +1724,7 @@ def main() -> None:
         packing_mode=args.packing_mode,
         attn_implementation=args.attn_implementation,
         max_seq_length=args.max_seq_length,
+        pad_to_multiple_of=args.pad_to_multiple_of,
         max_tokens_per_batch=args.max_tokens_per_batch,
         eval_max_tokens_per_batch=args.eval_max_tokens_per_batch,
         per_device_train_batch_size=args.per_device_train_batch_size,
