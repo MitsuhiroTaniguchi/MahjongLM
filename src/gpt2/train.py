@@ -570,25 +570,30 @@ def _save_checkpoint(
 
 
 def _evaluate(model, dataloader, device, autocast_dtype, torch) -> dict[str, float]:
+    return _evaluate_over_dataloaders(model, [dataloader], device, autocast_dtype, torch)
+
+
+def _evaluate_over_dataloaders(model, dataloaders, device, autocast_dtype, torch) -> dict[str, float]:
     model.eval()
     losses: list[float] = []
     packed_tokens = 0
     padded_tokens = 0
     with torch.no_grad():
-        for batch in dataloader:
-            assert isinstance(batch, (PackedBatch, UnpackedBatch))
-            with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=autocast_dtype is not None):
-                outputs = model(
-                    input_ids=batch.input_ids.to(device),
-                    attention_mask=batch.attention_mask.to(device),
-                    labels=batch.labels.to(device),
-                )
-            # Eval metrics should stay comparable across runs, so always use raw causal LM loss here.
-            loss = outputs.loss
-            losses.append(float(loss.detach().cpu()))
-            packed_tokens += batch.stats.packed_tokens
-            padded_tokens += batch.stats.padded_tokens
-            del outputs, loss, batch
+        for dataloader in dataloaders:
+            for batch in dataloader:
+                assert isinstance(batch, (PackedBatch, UnpackedBatch))
+                with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=autocast_dtype is not None):
+                    outputs = model(
+                        input_ids=batch.input_ids.to(device),
+                        attention_mask=batch.attention_mask.to(device),
+                        labels=batch.labels.to(device),
+                    )
+                # Eval metrics should stay comparable across runs, so always use raw causal LM loss here.
+                loss = outputs.loss
+                losses.append(float(loss.detach().cpu()))
+                packed_tokens += batch.stats.packed_tokens
+                padded_tokens += batch.stats.padded_tokens
+                del outputs, loss, batch
     model.train()
     mean_loss = sum(losses) / len(losses)
     return {
@@ -860,16 +865,31 @@ def _run_eval_if_needed(
         )
     else:
         _release_cuda_memory(torch, device)
-        eval_loader = _build_eval_loader(
-            eval_dataset=eval_dataset,
-            training_config=training_config,
-            collator=collator,
-            device=device,
-            seed=training_config.seed,
-            DataLoader=DataLoader,
-        )
-        eval_metrics = _evaluate(model, eval_loader, device, autocast_dtype, torch)
-        del eval_loader
+        if isinstance(eval_dataset, list):
+            eval_loaders = [
+                _build_eval_loader(
+                    eval_dataset=dataset,
+                    training_config=training_config,
+                    collator=collator,
+                    device=device,
+                    seed=training_config.seed + dataset_idx,
+                    DataLoader=DataLoader,
+                )
+                for dataset_idx, dataset in enumerate(eval_dataset)
+            ]
+            eval_metrics = _evaluate_over_dataloaders(model, eval_loaders, device, autocast_dtype, torch)
+            del eval_loaders
+        else:
+            eval_loader = _build_eval_loader(
+                eval_dataset=eval_dataset,
+                training_config=training_config,
+                collator=collator,
+                device=device,
+                seed=training_config.seed,
+                DataLoader=DataLoader,
+            )
+            eval_metrics = _evaluate(model, eval_loader, device, autocast_dtype, torch)
+            del eval_loader
         _release_cuda_memory(torch, device)
 
     latest_metrics.update(eval_metrics)
@@ -1144,6 +1164,35 @@ def _prepare_train_eval_datasets(training_config: TrainingConfig):
     return train_dataset, eval_dataset, split_metadata
 
 
+def _prepare_yearly_train_eval_datasets(training_config: TrainingConfig):
+    yearly_train_datasets: list[tuple[Path, object]] = []
+    yearly_eval_datasets: list[tuple[Path, object]] = []
+    aggregate_metadata: dict[str, int | float | str | list[str]] = {
+        "cache_hit": "per_year",
+        "train_rows": 0,
+        "train_groups": 0,
+        "eval_rows": 0,
+        "eval_groups": 0,
+        "eval_dataset_dirs": [],
+    }
+    for dataset_dir in training_config.dataset_dirs:
+        yearly_config = replace(
+            training_config,
+            dataset_dirs=(dataset_dir,),
+            eval_dataset_dirs=(),
+        )
+        train_dataset, eval_dataset, split_metadata = _prepare_train_eval_datasets(yearly_config)
+        yearly_train_datasets.append((dataset_dir, train_dataset))
+        if eval_dataset is not None:
+            yearly_eval_datasets.append((dataset_dir, eval_dataset))
+        aggregate_metadata["train_rows"] += int(split_metadata["train_rows"])
+        aggregate_metadata["train_groups"] += int(split_metadata["train_groups"])
+        aggregate_metadata["eval_rows"] += int(split_metadata["eval_rows"])
+        aggregate_metadata["eval_groups"] += int(split_metadata["eval_groups"])
+        aggregate_metadata["eval_dataset_dirs"].extend(split_metadata.get("eval_dataset_dirs", []))
+    return yearly_train_datasets, yearly_eval_datasets, aggregate_metadata
+
+
 def train(
     *,
     model_config: TinyGPT2Config | TinyQwen3Config,
@@ -1198,7 +1247,13 @@ def train(
     if tokenizer.eos_token_id is None or tokenizer.pad_token_id is None or tokenizer.bos_token_id is None:
         raise ValueError("tokenizer must define bos/eos/pad token ids")
 
-    train_dataset, eval_dataset, split_metadata = _prepare_train_eval_datasets(training_config)
+    if len(training_config.dataset_dirs) > 1 and not training_config.eval_dataset_dirs:
+        yearly_train_datasets, yearly_eval_datasets, split_metadata = _prepare_yearly_train_eval_datasets(training_config)
+        train_dataset_plan = yearly_train_datasets
+        eval_dataset = [dataset for _dataset_dir, dataset in yearly_eval_datasets] if yearly_eval_datasets else None
+    else:
+        train_dataset, eval_dataset, split_metadata = _prepare_train_eval_datasets(training_config)
+        train_dataset_plan = [(training_config.dataset_dirs[0], train_dataset)]
     _wandb_summary_update_if_available(
         wandb,
         {
@@ -1282,18 +1337,24 @@ def train(
         )
     )
     if training_config.train_steps > 0:
-        optimizer_steps_per_epoch = _count_optimizer_steps_for_epoch(
-            train_dataset=train_dataset,
-            training_config=training_config,
-            epoch_index=0,
+        optimizer_steps_per_epoch = sum(
+            _count_optimizer_steps_for_epoch(
+                train_dataset=dataset,
+                training_config=training_config,
+                epoch_index=dataset_index,
+            )
+            for dataset_index, (_dataset_dir, dataset) in enumerate(train_dataset_plan)
         )
         target_train_steps = training_config.train_steps
     else:
         per_epoch_optimizer_steps = [
-            _count_optimizer_steps_for_epoch(
-                train_dataset=train_dataset,
-                training_config=training_config,
-                epoch_index=epoch_index,
+            sum(
+                _count_optimizer_steps_for_epoch(
+                    train_dataset=dataset,
+                    training_config=training_config,
+                    epoch_index=epoch_index * max(1, len(train_dataset_plan)) + dataset_index,
+                )
+                for dataset_index, (_dataset_dir, dataset) in enumerate(train_dataset_plan)
             )
             for epoch_index in range(training_config.train_epochs)
         ]
@@ -1375,95 +1436,100 @@ def train(
             if global_step >= target_train_steps or early_stopped or _stop_requested(training_config):
                 interrupted = interrupted or _stop_requested(training_config)
                 break
-            train_loader = DataLoader(
-                train_dataset,
-                batch_sampler=_build_batch_sampler(
-                    train_dataset,
-                    training_config=training_config,
-                    max_tokens_per_batch=training_config.max_tokens_per_batch,
-                    shuffle=True,
-                    seed=training_config.seed + epoch,
-                ),
-                collate_fn=collator,
-                num_workers=training_config.dataloader_num_workers,
-                pin_memory=training_config.pin_memory and device.type == "cuda",
-            )
-            for batch in train_loader:
+            for dataset_index, (_dataset_dir, train_dataset) in enumerate(train_dataset_plan):
                 if global_step >= target_train_steps or early_stopped or _stop_requested(training_config):
                     interrupted = interrupted or _stop_requested(training_config)
                     break
-                (
-                    step_transition,
-                    global_step,
-                    accumulation_step,
-                    accum_segment_count,
-                    accum_packed_row_count,
-                    accum_packed_tokens,
-                    accum_padded_tokens,
-                    latest_train_loss_value,
-                ) = _run_train_batch(
-                    batch=batch,
-                    model=model,
-                    device=device,
-                    autocast_dtype=autocast_dtype,
-                    torch=torch,
-                    training_config=training_config,
-                    optimizer=optimizer,
-                    scheduler=scheduler,
-                    wandb=wandb,
-                    start_time=start_time,
-                    global_step=global_step,
-                    target_train_steps=target_train_steps,
-                    accumulation_step=accumulation_step,
-                    accum_segment_count=accum_segment_count,
-                    accum_packed_row_count=accum_packed_row_count,
-                    accum_packed_tokens=accum_packed_tokens,
-                    accum_padded_tokens=accum_padded_tokens,
-                )
-                if step_transition is None:
-                    continue
-                latest_metrics = step_transition.latest_metrics
-                saved_checkpoint_this_step = False
-                if eval_dataset is not None and step_transition.should_run_eval:
-                    latest_metrics, saved_checkpoint_this_step = _run_eval_if_needed(
-                        global_step=step_transition.global_step,
-                        target_train_steps=target_train_steps,
-                        latest_metrics=latest_metrics,
-                        model=model,
-                        optimizer=optimizer,
-                        scheduler=scheduler,
-                        output_dir=output_dir,
+                train_loader = DataLoader(
+                    train_dataset,
+                    batch_sampler=_build_batch_sampler(
+                        train_dataset,
                         training_config=training_config,
-                        model_config=model_config,
-                        split_metadata=split_metadata,
-                        eval_dataset=eval_dataset,
-                        collator=collator,
-                        DataLoader=DataLoader,
+                        max_tokens_per_batch=training_config.max_tokens_per_batch,
+                        shuffle=True,
+                        seed=training_config.seed + epoch * max(1, len(train_dataset_plan)) + dataset_index,
+                    ),
+                    collate_fn=collator,
+                    num_workers=training_config.dataloader_num_workers,
+                    pin_memory=training_config.pin_memory and device.type == "cuda",
+                )
+                for batch in train_loader:
+                    if global_step >= target_train_steps or early_stopped or _stop_requested(training_config):
+                        interrupted = interrupted or _stop_requested(training_config)
+                        break
+                    (
+                        step_transition,
+                        global_step,
+                        accumulation_step,
+                        accum_segment_count,
+                        accum_packed_row_count,
+                        accum_packed_tokens,
+                        accum_padded_tokens,
+                        latest_train_loss_value,
+                    ) = _run_train_batch(
+                        batch=batch,
+                        model=model,
                         device=device,
                         autocast_dtype=autocast_dtype,
                         torch=torch,
-                        wandb=wandb,
-                    )
-                    best_early_stopping_metric, non_improving_evals, early_stopped = _update_early_stopping(
                         training_config=training_config,
-                        latest_metrics=latest_metrics,
-                        best_metric=best_early_stopping_metric,
-                        non_improving_evals=non_improving_evals,
-                        global_step=step_transition.global_step,
-                        wandb=wandb,
-                    )
-                if step_transition.should_save_checkpoint and not saved_checkpoint_this_step:
-                    _save_checkpoint(
-                        output_dir=output_dir,
-                        step=step_transition.global_step,
-                        model=model,
                         optimizer=optimizer,
                         scheduler=scheduler,
-                        config=training_config,
-                        model_config=model_config,
+                        wandb=wandb,
+                        start_time=start_time,
+                        global_step=global_step,
+                        target_train_steps=target_train_steps,
+                        accumulation_step=accumulation_step,
+                        accum_segment_count=accum_segment_count,
+                        accum_packed_row_count=accum_packed_row_count,
+                        accum_packed_tokens=accum_packed_tokens,
+                        accum_padded_tokens=accum_padded_tokens,
                     )
-                if early_stopped:
-                    break
+                    if step_transition is None:
+                        continue
+                    latest_metrics = step_transition.latest_metrics
+                    saved_checkpoint_this_step = False
+                    if eval_dataset is not None and step_transition.should_run_eval:
+                        latest_metrics, saved_checkpoint_this_step = _run_eval_if_needed(
+                            global_step=step_transition.global_step,
+                            target_train_steps=target_train_steps,
+                            latest_metrics=latest_metrics,
+                            model=model,
+                            optimizer=optimizer,
+                            scheduler=scheduler,
+                            output_dir=output_dir,
+                            training_config=training_config,
+                            model_config=model_config,
+                            split_metadata=split_metadata,
+                            eval_dataset=eval_dataset,
+                            collator=collator,
+                            DataLoader=DataLoader,
+                            device=device,
+                            autocast_dtype=autocast_dtype,
+                            torch=torch,
+                            wandb=wandb,
+                        )
+                        best_early_stopping_metric, non_improving_evals, early_stopped = _update_early_stopping(
+                            training_config=training_config,
+                            latest_metrics=latest_metrics,
+                            best_metric=best_early_stopping_metric,
+                            non_improving_evals=non_improving_evals,
+                            global_step=step_transition.global_step,
+                            wandb=wandb,
+                        )
+                    if step_transition.should_save_checkpoint and not saved_checkpoint_this_step:
+                        _save_checkpoint(
+                            output_dir=output_dir,
+                            step=step_transition.global_step,
+                            model=model,
+                            optimizer=optimizer,
+                            scheduler=scheduler,
+                            config=training_config,
+                            model_config=model_config,
+                        )
+                    if early_stopped:
+                        break
+                del train_loader
             if accumulation_step % training_config.gradient_accumulation_steps != 0 and global_step < target_train_steps and not interrupted:
                 step_transition = _flush_partial_optimizer_step(
                     model=model,
