@@ -1327,14 +1327,17 @@ def train(
             return_tensors="pt",
         )
 
-    batches_per_epoch = len(
-        _build_batch_sampler(
-            train_dataset,
-            training_config=training_config,
-            max_tokens_per_batch=training_config.max_tokens_per_batch,
-            shuffle=True,
-            seed=training_config.seed,
+    batches_per_epoch = sum(
+        len(
+            _build_batch_sampler(
+                dataset,
+                training_config=training_config,
+                max_tokens_per_batch=training_config.max_tokens_per_batch,
+                shuffle=True,
+                seed=training_config.seed + dataset_index,
+            )
         )
+        for dataset_index, (_dataset_dir, dataset) in enumerate(train_dataset_plan)
     )
     if training_config.train_steps > 0:
         optimizer_steps_per_epoch = sum(
