@@ -1642,7 +1642,16 @@ def main() -> None:
             setattr(args, attr, value)
 
     if not args.dataset_dir:
-        args.dataset_dir = [Path("data/processed/2021")]
+        processed_root = Path("data/processed")
+        auto_dataset_dirs = sorted(
+            path
+            for path in processed_root.iterdir()
+            if path.is_dir() and path.name != ".ingested" and (path / "dataset_info.json").is_file()
+        ) if processed_root.is_dir() else []
+        if not auto_dataset_dirs:
+            args.dataset_dir = [Path("data/processed/2021")]
+        else:
+            args.dataset_dir = auto_dataset_dirs
     if args.model_family == "gpt2":
         if args.arch != "custom":
             if args.arch not in ARCH_PRESETS:
