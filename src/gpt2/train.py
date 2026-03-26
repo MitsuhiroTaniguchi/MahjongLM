@@ -34,7 +34,7 @@ from .data import (
     validate_grouped_dataset,
 )
 from .muon import SingleDeviceMuonWithAuxAdam
-from .model import build_tiny_gpt2_model, build_tiny_qwen3_model, count_parameters
+from .model import build_tiny_gpt2_model, build_tiny_qwen3_model, count_parameters, load_saved_causal_lm
 from tenhou_tokenizer import load_hf_tokenizer
 
 
@@ -306,7 +306,13 @@ def _resolve_dtype(torch, config: TrainingConfig, device) -> object | None:
     return None
 
 
-def _init_wandb(config: TrainingConfig, model_config: TinyGPT2Config | TinyQwen3Config, run_metadata: dict) -> object | None:
+def _init_wandb(
+    config: TrainingConfig,
+    model_config: TinyGPT2Config | TinyQwen3Config,
+    run_metadata: dict,
+    *,
+    resume_run_id: str | None = None,
+) -> object | None:
     if config.wandb_mode == "disabled":
         return None
     try:
@@ -320,6 +326,8 @@ def _init_wandb(config: TrainingConfig, model_config: TinyGPT2Config | TinyQwen3
         entity=config.wandb_entity,
         name=config.wandb_run_name,
         mode=config.wandb_mode,
+        id=resume_run_id,
+        resume="must" if resume_run_id else None,
         tags=list(config.wandb_tags),
         config={
             "training": json.loads(config.to_json()),
@@ -529,6 +537,16 @@ def _checkpoint_dir(output_dir: Path, step: int) -> Path:
     return output_dir / "checkpoints" / f"step_{step:07d}"
 
 
+def _latest_checkpoint_dir(output_dir: Path) -> Path | None:
+    checkpoint_root = output_dir / "checkpoints"
+    if not checkpoint_root.is_dir():
+        return None
+    checkpoints = sorted(path for path in checkpoint_root.iterdir() if path.is_dir())
+    if not checkpoints:
+        return None
+    return checkpoints[-1]
+
+
 def _trim_checkpoints(output_dir: Path, keep_last: int) -> None:
     checkpoint_root = output_dir / "checkpoints"
     if not checkpoint_root.is_dir():
@@ -549,6 +567,8 @@ def _save_checkpoint(
     scheduler,
     config: TrainingConfig,
     model_config: TinyGPT2Config | TinyQwen3Config,
+    runtime_state: dict | None = None,
+    wandb_run_id: str | None = None,
 ) -> None:
     torch, _, _ = _require_training_deps()
     ckpt_dir = _checkpoint_dir(output_dir, step)
@@ -563,10 +583,117 @@ def _save_checkpoint(
                 "scheduler": scheduler.state_dict(),
                 "step": step,
                 "rng_state": torch.random.get_rng_state(),
+                "python_random_state": random.getstate(),
+                "numpy_random_state": np.random.get_state(),
+                "cuda_rng_state": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+                "runtime_state": runtime_state or {},
+                "wandb_run_id": wandb_run_id,
             },
             ckpt_dir / "trainer_state.pt",
         )
     _trim_checkpoints(output_dir, config.keep_last_checkpoints)
+
+
+def _load_trainer_state(checkpoint_dir: Path, torch) -> dict:
+    trainer_state_path = Path(checkpoint_dir) / "trainer_state.pt"
+    if not trainer_state_path.is_file():
+        raise FileNotFoundError(f"trainer_state.pt not found under {checkpoint_dir}")
+    return torch.load(trainer_state_path, map_location="cpu")
+
+
+def _restore_rng_state(*, trainer_state: dict, torch, device) -> None:
+    rng_state = trainer_state.get("rng_state")
+    if rng_state is not None:
+        torch.random.set_rng_state(rng_state)
+    python_random_state = trainer_state.get("python_random_state")
+    if python_random_state is not None:
+        random.setstate(python_random_state)
+    numpy_random_state = trainer_state.get("numpy_random_state")
+    if numpy_random_state is not None:
+        np.random.set_state(numpy_random_state)
+    cuda_rng_state = trainer_state.get("cuda_rng_state")
+    if cuda_rng_state is not None and device.type == "cuda" and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(cuda_rng_state)
+
+
+def _dataset_seed_index(*, epoch_index: int, dataset_index: int, dataset_count: int) -> int:
+    return epoch_index * max(1, dataset_count) + dataset_index
+
+
+def _count_batches_for_dataset_epoch(*, train_dataset, training_config: TrainingConfig, epoch_index: int) -> int:
+    sampler = _build_batch_sampler(
+        train_dataset,
+        training_config=training_config,
+        max_tokens_per_batch=training_config.max_tokens_per_batch,
+        shuffle=True,
+        seed=training_config.seed + epoch_index,
+    )
+    return len(sampler)
+
+
+def _infer_resume_runtime_state(
+    *,
+    trainer_state: dict,
+    train_dataset_plan,
+    training_config: TrainingConfig,
+) -> dict:
+    runtime_state = dict(trainer_state.get("runtime_state") or {})
+    if runtime_state.get("dataset_index") is not None:
+        return runtime_state
+
+    global_step = int(trainer_state.get("step", 0))
+    dataset_count = max(1, len(train_dataset_plan))
+    remaining_steps = global_step
+    epoch_index = 0
+
+    while True:
+        for dataset_index, (_dataset_dir, train_dataset) in enumerate(train_dataset_plan):
+            seed_index = _dataset_seed_index(
+                epoch_index=epoch_index,
+                dataset_index=dataset_index,
+                dataset_count=dataset_count,
+            )
+            batch_count = _count_batches_for_dataset_epoch(
+                train_dataset=train_dataset,
+                training_config=training_config,
+                epoch_index=seed_index,
+            )
+            optimizer_steps = math.ceil(batch_count / training_config.gradient_accumulation_steps)
+            if remaining_steps >= optimizer_steps:
+                remaining_steps -= optimizer_steps
+                continue
+            batches_seen_in_dataset = min(
+                batch_count,
+                remaining_steps * training_config.gradient_accumulation_steps,
+            )
+            return {
+                "epoch": epoch_index,
+                "dataset_index": dataset_index,
+                "batches_seen_in_dataset": batches_seen_in_dataset,
+                "accumulation_step": 0,
+                "accum_segment_count": 0,
+                "accum_packed_row_count": 0,
+                "accum_packed_tokens": 0,
+                "accum_padded_tokens": 0,
+                "latest_train_loss_value": 0.0,
+                "best_early_stopping_metric": None,
+                "non_improving_evals": 0,
+            }
+        epoch_index += 1
+        if training_config.train_steps == 0 and epoch_index >= training_config.train_epochs:
+            return {
+                "epoch": max(0, training_config.train_epochs - 1),
+                "dataset_index": max(0, dataset_count - 1),
+                "batches_seen_in_dataset": 0,
+                "accumulation_step": 0,
+                "accum_segment_count": 0,
+                "accum_packed_row_count": 0,
+                "accum_packed_tokens": 0,
+                "accum_padded_tokens": 0,
+                "latest_train_loss_value": 0.0,
+                "best_early_stopping_metric": None,
+                "non_improving_evals": 0,
+            }
 
 
 def _evaluate(model, dataloader, device, autocast_dtype, torch) -> dict[str, float]:
@@ -1232,6 +1359,21 @@ def train(
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
+    resume_checkpoint_dir = None
+    if training_config.resume_from_checkpoint is not None:
+        resume_checkpoint_dir = training_config.resume_from_checkpoint
+    elif training_config.resume_latest_checkpoint:
+        resume_checkpoint_dir = _latest_checkpoint_dir(training_config.output_dir)
+    if resume_checkpoint_dir is not None:
+        resume_checkpoint_dir = Path(resume_checkpoint_dir)
+
+    resume_trainer_state = None
+    resume_run_id = training_config.wandb_resume_run_id
+    if resume_checkpoint_dir is not None:
+        resume_trainer_state = _load_trainer_state(resume_checkpoint_dir, torch)
+        if resume_run_id is None:
+            resume_run_id = resume_trainer_state.get("wandb_run_id")
+
     early_run_metadata = {
         "device": "pending",
         "train_group_count": "pending",
@@ -1240,7 +1382,7 @@ def train(
         "attn_implementation": training_config.attn_implementation,
         "packing_mode": training_config.packing_mode,
     }
-    wandb = _init_wandb(training_config, model_config, early_run_metadata)
+    wandb = _init_wandb(training_config, model_config, early_run_metadata, resume_run_id=resume_run_id)
     _wandb_summary_update_if_available(wandb, {"status/stage": "preparing_dataset"})
 
     tokenizer = load_hf_tokenizer(training_config.tokenizer_dir)
@@ -1268,7 +1410,13 @@ def train(
 
     device = _select_device(torch)
     autocast_dtype = _resolve_dtype(torch, training_config, device)
-    if training_config.model_family == "gpt2":
+    if resume_checkpoint_dir is not None:
+        model = load_saved_causal_lm(
+            model_dir=resume_checkpoint_dir / "model",
+            attn_implementation=training_config.attn_implementation,
+            dtype=autocast_dtype,
+        )
+    elif training_config.model_family == "gpt2":
         assert isinstance(model_config, TinyGPT2Config)
         model = build_tiny_gpt2_model(
             vocab_size=tokenizer.vocab_size,
@@ -1422,6 +1570,55 @@ def train(
     failed_exception: Exception | None = None
     best_early_stopping_metric: float | None = None
     non_improving_evals = 0
+    resume_epoch = 0
+    resume_dataset_index = 0
+    resume_batches_seen_in_dataset = 0
+    current_runtime_state = {
+        "epoch": 0,
+        "dataset_index": 0,
+        "batches_seen_in_dataset": 0,
+        "accumulation_step": 0,
+        "accum_segment_count": 0,
+        "accum_packed_row_count": 0,
+        "accum_packed_tokens": 0,
+        "accum_padded_tokens": 0,
+        "latest_train_loss_value": 0.0,
+        "best_early_stopping_metric": None,
+        "non_improving_evals": 0,
+    }
+
+    if resume_trainer_state is not None:
+        optimizer.load_state_dict(resume_trainer_state["optimizer"])
+        scheduler.load_state_dict(resume_trainer_state["scheduler"])
+        global_step = int(resume_trainer_state.get("step", 0))
+        _restore_rng_state(trainer_state=resume_trainer_state, torch=torch, device=device)
+        inferred_runtime_state = _infer_resume_runtime_state(
+            trainer_state=resume_trainer_state,
+            train_dataset_plan=train_dataset_plan,
+            training_config=training_config,
+        )
+        resume_epoch = int(inferred_runtime_state.get("epoch", 0))
+        resume_dataset_index = int(inferred_runtime_state.get("dataset_index", 0))
+        resume_batches_seen_in_dataset = int(inferred_runtime_state.get("batches_seen_in_dataset", 0))
+        accumulation_step = int(inferred_runtime_state.get("accumulation_step", 0))
+        accum_segment_count = int(inferred_runtime_state.get("accum_segment_count", 0))
+        accum_packed_row_count = int(inferred_runtime_state.get("accum_packed_row_count", 0))
+        accum_packed_tokens = int(inferred_runtime_state.get("accum_packed_tokens", 0))
+        accum_padded_tokens = int(inferred_runtime_state.get("accum_padded_tokens", 0))
+        latest_train_loss_value = float(inferred_runtime_state.get("latest_train_loss_value", 0.0))
+        best_early_stopping_metric = inferred_runtime_state.get("best_early_stopping_metric")
+        non_improving_evals = int(inferred_runtime_state.get("non_improving_evals", 0))
+        _wandb_summary_update_if_available(
+            wandb,
+            {
+                "status/stage": "resumed_training",
+                "resume/checkpoint_dir": str(resume_checkpoint_dir),
+                "resume/global_step": global_step,
+                "resume/epoch": resume_epoch,
+                "resume/dataset_index": resume_dataset_index,
+                "resume/batches_seen_in_dataset": resume_batches_seen_in_dataset,
+            },
+        )
 
     try:
         if training_config.detect_anomaly:
@@ -1440,9 +1637,36 @@ def train(
                 interrupted = interrupted or _stop_requested(training_config)
                 break
             for dataset_index, (_dataset_dir, train_dataset) in enumerate(train_dataset_plan):
+                if epoch < resume_epoch:
+                    continue
+                if epoch == resume_epoch and dataset_index < resume_dataset_index:
+                    continue
                 if global_step >= target_train_steps or early_stopped or _stop_requested(training_config):
                     interrupted = interrupted or _stop_requested(training_config)
                     break
+                dataset_seed_index = _dataset_seed_index(
+                    epoch_index=epoch,
+                    dataset_index=dataset_index,
+                    dataset_count=len(train_dataset_plan),
+                )
+                dataset_batch_skip = (
+                    resume_batches_seen_in_dataset
+                    if epoch == resume_epoch and dataset_index == resume_dataset_index
+                    else 0
+                )
+                current_runtime_state = {
+                    "epoch": epoch,
+                    "dataset_index": dataset_index,
+                    "batches_seen_in_dataset": dataset_batch_skip,
+                    "accumulation_step": accumulation_step,
+                    "accum_segment_count": accum_segment_count,
+                    "accum_packed_row_count": accum_packed_row_count,
+                    "accum_packed_tokens": accum_packed_tokens,
+                    "accum_padded_tokens": accum_padded_tokens,
+                    "latest_train_loss_value": latest_train_loss_value,
+                    "best_early_stopping_metric": best_early_stopping_metric,
+                    "non_improving_evals": non_improving_evals,
+                }
                 train_loader = DataLoader(
                     train_dataset,
                     batch_sampler=_build_batch_sampler(
@@ -1450,13 +1674,16 @@ def train(
                         training_config=training_config,
                         max_tokens_per_batch=training_config.max_tokens_per_batch,
                         shuffle=True,
-                        seed=training_config.seed + epoch * max(1, len(train_dataset_plan)) + dataset_index,
+                        seed=training_config.seed + dataset_seed_index,
                     ),
                     collate_fn=collator,
                     num_workers=training_config.dataloader_num_workers,
                     pin_memory=training_config.pin_memory and device.type == "cuda",
                 )
-                for batch in train_loader:
+                for batch_index, batch in enumerate(train_loader):
+                    if batch_index < dataset_batch_skip:
+                        continue
+                    current_runtime_state["batches_seen_in_dataset"] = batch_index
                     if global_step >= target_train_steps or early_stopped or _stop_requested(training_config):
                         interrupted = interrupted or _stop_requested(training_config)
                         break
@@ -1487,6 +1714,19 @@ def train(
                         accum_packed_row_count=accum_packed_row_count,
                         accum_packed_tokens=accum_packed_tokens,
                         accum_padded_tokens=accum_padded_tokens,
+                    )
+                    current_runtime_state.update(
+                        {
+                            "batches_seen_in_dataset": batch_index + 1,
+                            "accumulation_step": accumulation_step,
+                            "accum_segment_count": accum_segment_count,
+                            "accum_packed_row_count": accum_packed_row_count,
+                            "accum_packed_tokens": accum_packed_tokens,
+                            "accum_padded_tokens": accum_padded_tokens,
+                            "latest_train_loss_value": latest_train_loss_value,
+                            "best_early_stopping_metric": best_early_stopping_metric,
+                            "non_improving_evals": non_improving_evals,
+                        }
                     )
                     if step_transition is None:
                         continue
@@ -1520,6 +1760,8 @@ def train(
                             global_step=step_transition.global_step,
                             wandb=wandb,
                         )
+                        current_runtime_state["best_early_stopping_metric"] = best_early_stopping_metric
+                        current_runtime_state["non_improving_evals"] = non_improving_evals
                     if step_transition.should_save_checkpoint and not saved_checkpoint_this_step:
                         _save_checkpoint(
                             output_dir=output_dir,
@@ -1529,11 +1771,27 @@ def train(
                             scheduler=scheduler,
                             config=training_config,
                             model_config=model_config,
+                            runtime_state=current_runtime_state,
+                            wandb_run_id=getattr(wandb, "id", None),
                         )
                     if early_stopped:
                         break
                 del train_loader
+                resume_batches_seen_in_dataset = 0
             if accumulation_step % training_config.gradient_accumulation_steps != 0 and global_step < target_train_steps and not interrupted:
+                current_runtime_state = {
+                    "epoch": epoch,
+                    "dataset_index": dataset_index,
+                    "batches_seen_in_dataset": current_runtime_state.get("batches_seen_in_dataset", 0),
+                    "accumulation_step": accumulation_step,
+                    "accum_segment_count": accum_segment_count,
+                    "accum_packed_row_count": accum_packed_row_count,
+                    "accum_packed_tokens": accum_packed_tokens,
+                    "accum_padded_tokens": accum_padded_tokens,
+                    "latest_train_loss_value": latest_train_loss_value,
+                    "best_early_stopping_metric": best_early_stopping_metric,
+                    "non_improving_evals": non_improving_evals,
+                }
                 step_transition = _flush_partial_optimizer_step(
                     model=model,
                     optimizer=optimizer,
@@ -1595,10 +1853,13 @@ def train(
                         scheduler=scheduler,
                         config=training_config,
                         model_config=model_config,
+                        runtime_state=current_runtime_state,
+                        wandb_run_id=getattr(wandb, "id", None),
                     )
                 if early_stopped:
                     break
             accumulation_step = 0
+            resume_dataset_index = 0
             if training_config.train_steps == 0:
                 continue
     except KeyboardInterrupt:
@@ -1778,6 +2039,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb-project", type=str, default="mahjongLM_gpt2")
     parser.add_argument("--wandb-entity", type=str, default="a21-3jck-")
     parser.add_argument("--wandb-run-name", type=str, default=None)
+    parser.add_argument("--wandb-run-id", type=str, default=None)
     parser.add_argument("--wandb-mode", type=str, default="online", choices=["online", "offline", "disabled"])
     parser.add_argument("--wandb-tags", action="append", default=[])
     parser.add_argument("--stop-file", type=Path, default=None)
@@ -1786,6 +2048,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-save-optimizer-state", action="store_false", dest="save_optimizer_state", default=True)
     parser.add_argument("--separate-eval-process", action="store_true", dest="use_separate_eval_process", default=False)
     parser.add_argument("--eval-device", type=str, default="cuda", choices=["cpu", "cuda"])
+    parser.add_argument("--resume-from-checkpoint", type=Path, default=None)
+    parser.add_argument("--resume-latest-checkpoint", action="store_true")
     return parser.parse_args()
 
 
@@ -1930,6 +2194,7 @@ def main() -> None:
         wandb_project=args.wandb_project,
         wandb_entity=args.wandb_entity,
         wandb_run_name=args.wandb_run_name,
+        wandb_resume_run_id=args.wandb_run_id,
         wandb_mode=args.wandb_mode,
         wandb_tags=tuple(args.wandb_tags),
         stop_file=args.stop_file,
@@ -1938,6 +2203,8 @@ def main() -> None:
         save_optimizer_state=args.save_optimizer_state,
         use_separate_eval_process=args.use_separate_eval_process,
         eval_device=args.eval_device,
+        resume_from_checkpoint=args.resume_from_checkpoint,
+        resume_latest_checkpoint=args.resume_latest_checkpoint,
     )
     metrics = train(model_config=model_config, training_config=training_config)
     print(json.dumps(metrics, ensure_ascii=False, indent=2))

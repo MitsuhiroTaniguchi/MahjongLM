@@ -170,6 +170,9 @@ class TrainingConfig:
     validate_dataset: bool = False
     use_separate_eval_process: bool = False
     eval_device: str = "cuda"
+    resume_from_checkpoint: Path | None = None
+    resume_latest_checkpoint: bool = False
+    wandb_resume_run_id: str | None = None
 
     def validate(self) -> None:
         if not self.dataset_dirs:
@@ -248,6 +251,8 @@ class TrainingConfig:
             raise ValueError("wandb_mode must be one of: online, offline, disabled")
         if self.eval_device not in {"cpu", "cuda"}:
             raise ValueError("eval_device must be one of: cpu, cuda")
+        if self.resume_from_checkpoint is not None and self.resume_latest_checkpoint:
+            raise ValueError("resume_from_checkpoint and resume_latest_checkpoint are mutually exclusive")
 
     def to_json(self) -> str:
         payload = asdict(self)
@@ -257,4 +262,7 @@ class TrainingConfig:
         payload["tokenizer_dir"] = str(self.tokenizer_dir)
         payload["cache_dir"] = str(self.cache_dir)
         payload["stop_file"] = str(self.stop_file) if self.stop_file is not None else None
+        payload["resume_from_checkpoint"] = (
+            str(self.resume_from_checkpoint) if self.resume_from_checkpoint is not None else None
+        )
         return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
