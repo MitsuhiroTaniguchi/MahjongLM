@@ -12,7 +12,7 @@ $extra = @(
   "--per-device-eval-batch-size", "32",
   "--gradient-accumulation-steps", "4",
   "--train-steps", "7500",
-  "--eval-interval", "500",
+  "--eval-interval", "100",
   "--early-stopping-patience", "0",
   "--lr-scheduler-type", "linear",
   "--wandb-project", "mahjongLM_pretraining",
