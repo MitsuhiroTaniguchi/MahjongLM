@@ -127,6 +127,8 @@ class TrainingConfig:
     train_steps: int = 0
     train_epochs: int = 1
     eval_interval: int = 200
+    early_stopping_metric: str | None = None
+    early_stopping_patience: int = 0
     save_interval: int = 200
     log_interval: int = 10
     optimizer_name: str = "adamw"
@@ -204,6 +206,10 @@ class TrainingConfig:
             raise ValueError("either train_steps or train_epochs must be positive")
         if self.eval_interval <= 0:
             raise ValueError("eval_interval must be positive")
+        if self.early_stopping_patience < 0:
+            raise ValueError("early_stopping_patience must be non-negative")
+        if self.early_stopping_patience > 0 and not self.early_stopping_metric:
+            raise ValueError("early_stopping_metric must be set when early_stopping_patience is positive")
         if self.save_interval <= 0:
             raise ValueError("save_interval must be positive")
         if self.log_interval <= 0:

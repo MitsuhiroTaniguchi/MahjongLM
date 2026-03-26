@@ -2,13 +2,14 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$RunLabel,
     [string[]]$ExtraArgs = @(),
-    [string]$Distro = "Ubuntu-MIMO"
+    [string]$Distro = "Ubuntu-MIMO",
+    [switch]$ExactRunName
 )
 
 $ErrorActionPreference = "Stop"
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$runName = "$RunLabel-$timestamp"
+$runName = if ($ExactRunName) { $RunLabel } else { "$RunLabel-$timestamp" }
 $outputDir = Join-Path "C:\Users\taniguchi\MahjongLM\outputs" $runName
 $stopFile = Join-Path $outputDir "STOP"
 $stdoutLog = Join-Path $outputDir "stdout.log"

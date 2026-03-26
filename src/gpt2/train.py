@@ -878,6 +878,59 @@ def _run_eval_if_needed(
     return latest_metrics, saved_checkpoint_this_step
 
 
+def _update_early_stopping(
+    *,
+    training_config: TrainingConfig,
+    latest_metrics: dict[str, float],
+    best_metric: float | None,
+    non_improving_evals: int,
+    global_step: int,
+    wandb,
+) -> tuple[float | None, int, bool]:
+    metric_name = training_config.early_stopping_metric
+    patience = training_config.early_stopping_patience
+    if not metric_name or patience <= 0:
+        return best_metric, non_improving_evals, False
+    if metric_name not in latest_metrics:
+        return best_metric, non_improving_evals, False
+
+    metric_value = float(latest_metrics[metric_name])
+    improved = best_metric is None or metric_value < best_metric
+    if improved:
+        best_metric = metric_value
+        non_improving_evals = 0
+    else:
+        non_improving_evals += 1
+
+    _wandb_summary_update_if_available(
+        wandb,
+        {
+            "early_stopping/metric": metric_name,
+            "early_stopping/best": best_metric,
+            "early_stopping/non_improving_evals": non_improving_evals,
+            "early_stopping/patience": patience,
+        },
+    )
+
+    should_stop = non_improving_evals >= patience
+    if should_stop:
+        print(
+            json.dumps(
+                {
+                    "status": "early_stopping_triggered",
+                    "step": global_step,
+                    "metric": metric_name,
+                    "best": best_metric,
+                    "current": metric_value,
+                    "non_improving_evals": non_improving_evals,
+                    "patience": patience,
+                },
+                ensure_ascii=False,
+            )
+        )
+    return best_metric, non_improving_evals, should_stop
+
+
 def _finalize_optimizer_step(
     *,
     global_step: int,
@@ -1301,7 +1354,10 @@ def train(
     optimizer.zero_grad(set_to_none=True)
     start_time = time.time()
     interrupted = False
+    early_stopped = False
     failed_exception: Exception | None = None
+    best_early_stopping_metric: float | None = None
+    non_improving_evals = 0
 
     try:
         if training_config.detect_anomaly:
@@ -1316,7 +1372,7 @@ def train(
             epoch_indices = range(training_config.train_epochs)
 
         for epoch in epoch_indices:
-            if global_step >= target_train_steps or _stop_requested(training_config):
+            if global_step >= target_train_steps or early_stopped or _stop_requested(training_config):
                 interrupted = interrupted or _stop_requested(training_config)
                 break
             train_loader = DataLoader(
@@ -1333,7 +1389,7 @@ def train(
                 pin_memory=training_config.pin_memory and device.type == "cuda",
             )
             for batch in train_loader:
-                if global_step >= target_train_steps or _stop_requested(training_config):
+                if global_step >= target_train_steps or early_stopped or _stop_requested(training_config):
                     interrupted = interrupted or _stop_requested(training_config)
                     break
                 (
@@ -1388,6 +1444,14 @@ def train(
                         torch=torch,
                         wandb=wandb,
                     )
+                    best_early_stopping_metric, non_improving_evals, early_stopped = _update_early_stopping(
+                        training_config=training_config,
+                        latest_metrics=latest_metrics,
+                        best_metric=best_early_stopping_metric,
+                        non_improving_evals=non_improving_evals,
+                        global_step=step_transition.global_step,
+                        wandb=wandb,
+                    )
                 if step_transition.should_save_checkpoint and not saved_checkpoint_this_step:
                     _save_checkpoint(
                         output_dir=output_dir,
@@ -1398,6 +1462,8 @@ def train(
                         config=training_config,
                         model_config=model_config,
                     )
+                if early_stopped:
+                    break
             if accumulation_step % training_config.gradient_accumulation_steps != 0 and global_step < target_train_steps and not interrupted:
                 step_transition = _flush_partial_optimizer_step(
                     model=model,
@@ -1443,6 +1509,14 @@ def train(
                         torch=torch,
                         wandb=wandb,
                     )
+                    best_early_stopping_metric, non_improving_evals, early_stopped = _update_early_stopping(
+                        training_config=training_config,
+                        latest_metrics=latest_metrics,
+                        best_metric=best_early_stopping_metric,
+                        non_improving_evals=non_improving_evals,
+                        global_step=step_transition.global_step,
+                        wandb=wandb,
+                    )
                 if step_transition.should_save_checkpoint and not saved_checkpoint_this_step:
                     _save_checkpoint(
                         output_dir=output_dir,
@@ -1453,6 +1527,8 @@ def train(
                         config=training_config,
                         model_config=model_config,
                     )
+                if early_stopped:
+                    break
             accumulation_step = 0
             if training_config.train_steps == 0:
                 continue
@@ -1466,6 +1542,15 @@ def train(
     finally:
         if interrupted:
             _wandb_summary_update_if_available(wandb, {"status/stage": "stopped_by_request"})
+        elif early_stopped:
+            _wandb_summary_update_if_available(
+                wandb,
+                {
+                    "status/stage": "early_stopped",
+                    "early_stopping/best": best_early_stopping_metric,
+                    "early_stopping/non_improving_evals": non_improving_evals,
+                },
+            )
 
         if failed_exception is None and not interrupted:
             final_dir = output_dir / "final_model"
@@ -1588,6 +1673,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-steps", type=int, default=0, help="Use fixed optimizer steps. Set 0 to use exact epoch mode.")
     parser.add_argument("--train-epochs", type=int, default=1, help="Exact epoch count used when --train-steps is 0.")
     parser.add_argument("--eval-interval", type=int, default=200)
+    parser.add_argument("--early-stopping-metric", type=str, default=None)
+    parser.add_argument("--early-stopping-patience", type=int, default=0)
     parser.add_argument("--save-interval", type=int, default=200)
     parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--optimizer-name", choices=("adamw", "muon"), default="adamw")
@@ -1740,6 +1827,8 @@ def main() -> None:
         train_steps=args.train_steps,
         train_epochs=args.train_epochs,
         eval_interval=args.eval_interval,
+        early_stopping_metric=args.early_stopping_metric,
+        early_stopping_patience=args.early_stopping_patience,
         save_interval=args.save_interval,
         log_interval=args.log_interval,
         optimizer_name=args.optimizer_name,
