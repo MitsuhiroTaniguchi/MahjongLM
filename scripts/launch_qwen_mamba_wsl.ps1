@@ -39,12 +39,26 @@ function Test-ArgPresent {
 
 $effectiveExtraArgs = @($ExtraArgs)
 $isMimoRun = Test-ArgPresent -ArgsList $effectiveExtraArgs -Name "--mamba3-is-mimo"
+$isMambaRun = (Test-ArgPresent -ArgsList $effectiveExtraArgs -Name "--use-mamba3-hybrid") -or (Test-ArgPresent -ArgsList $effectiveExtraArgs -Name "--qwen-arch")
+
+if ($isMambaRun) {
+    if (-not (Test-ArgPresent -ArgsList $effectiveExtraArgs -Name "--pad-to-multiple-of")) {
+        $effectiveExtraArgs += @("--pad-to-multiple-of", "16")
+    }
+}
 
 if ($isMimoRun) {
     if (-not (Test-ArgPresent -ArgsList $effectiveExtraArgs -Name "--mamba3-chunk-size")) {
         $effectiveExtraArgs += @("--mamba3-chunk-size", "8")
     }
-    if (-not (Test-ArgPresent -ArgsList $effectiveExtraArgs -Name "--pad-to-multiple-of")) {
+    if (Test-ArgPresent -ArgsList $effectiveExtraArgs -Name "--pad-to-multiple-of") {
+        for ($i = 0; $i -lt $effectiveExtraArgs.Count; $i++) {
+            if ($effectiveExtraArgs[$i] -eq "--pad-to-multiple-of" -and $i + 1 -lt $effectiveExtraArgs.Count) {
+                $effectiveExtraArgs[$i + 1] = "256"
+                break
+            }
+        }
+    } else {
         $effectiveExtraArgs += @("--pad-to-multiple-of", "256")
     }
 }
