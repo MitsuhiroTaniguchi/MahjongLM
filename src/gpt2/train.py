@@ -392,6 +392,20 @@ def _build_cosine_scheduler_with_floor(optimizer, *, warmup_steps: int, total_st
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
+def _build_linear_scheduler(optimizer, *, warmup_steps: int, total_steps: int, torch):
+    if total_steps <= 0:
+        raise ValueError("total_steps must be positive")
+
+    def lr_lambda(current_step: int) -> float:
+        if warmup_steps > 0 and current_step < warmup_steps:
+            return max(1e-12, float(current_step + 1) / float(max(1, warmup_steps)))
+        progress_denominator = max(1, total_steps - warmup_steps)
+        progress = min(1.0, max(0.0, (current_step - warmup_steps) / progress_denominator))
+        return max(0.0, 1.0 - progress)
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
 def _collect_optimizer_lrs(*, optimizer, scheduler, training_config: TrainingConfig) -> dict[str, float]:
     lrs = [float(value) for value in scheduler.get_last_lr()]
     if training_config.optimizer_name != "muon":
@@ -1513,13 +1527,21 @@ def train(
         target_train_steps = sum(per_epoch_optimizer_steps)
     effective_tokens_per_step = _estimate_effective_tokens_per_step(training_config)
     resolved_warmup_steps = training_config.warmup_steps
-    scheduler = _build_cosine_scheduler_with_floor(
-        optimizer,
-        warmup_steps=resolved_warmup_steps,
-        total_steps=target_train_steps,
-        min_lr_ratio=training_config.min_learning_rate_ratio,
-        torch=torch,
-    )
+    if training_config.lr_scheduler_type == "linear":
+        scheduler = _build_linear_scheduler(
+            optimizer,
+            warmup_steps=resolved_warmup_steps,
+            total_steps=target_train_steps,
+            torch=torch,
+        )
+    else:
+        scheduler = _build_cosine_scheduler_with_floor(
+            optimizer,
+            warmup_steps=resolved_warmup_steps,
+            total_steps=target_train_steps,
+            min_lr_ratio=training_config.min_learning_rate_ratio,
+            torch=torch,
+        )
 
     latest_metrics: dict[str, float] = {}
 
@@ -2008,6 +2030,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-interval", type=int, default=200)
     parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--optimizer-name", choices=("adamw", "muon"), default="adamw")
+    parser.add_argument("--lr-scheduler-type", choices=("cosine", "linear"), default="cosine")
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--min-learning-rate-ratio", type=float, default=0.1)
     parser.add_argument("--warmup-steps", type=int, default=100)
@@ -2165,6 +2188,7 @@ def main() -> None:
         save_interval=args.save_interval,
         log_interval=args.log_interval,
         optimizer_name=args.optimizer_name,
+        lr_scheduler_type=args.lr_scheduler_type,
         learning_rate=args.learning_rate,
         min_learning_rate_ratio=args.min_learning_rate_ratio,
         warmup_steps=args.warmup_steps,

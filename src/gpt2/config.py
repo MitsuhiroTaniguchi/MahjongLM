@@ -132,6 +132,7 @@ class TrainingConfig:
     save_interval: int = 200
     log_interval: int = 10
     optimizer_name: str = "adamw"
+    lr_scheduler_type: str = "cosine"
     learning_rate: float = 3e-4
     min_learning_rate_ratio: float = 0.1
     warmup_steps: int = 100
@@ -219,6 +220,8 @@ class TrainingConfig:
             raise ValueError("log_interval must be positive")
         if self.optimizer_name not in {"adamw", "muon"}:
             raise ValueError("optimizer_name must be one of: adamw, muon")
+        if self.lr_scheduler_type not in {"cosine", "linear"}:
+            raise ValueError("lr_scheduler_type must be one of: cosine, linear")
         if self.learning_rate <= 0:
             raise ValueError("learning_rate must be positive")
         if not (0.0 < self.min_learning_rate_ratio <= 1.0):
