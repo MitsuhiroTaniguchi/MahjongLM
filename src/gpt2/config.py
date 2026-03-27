@@ -54,7 +54,10 @@ class TinyQwen3Config:
     sliding_window: int | None = None
     use_exclusive_self_attention: bool = False
     use_gated_attention: bool = False
+    use_zero_centered_rmsnorm: bool = False
+    use_rescaled_residual: bool = False
     use_mamba3_hybrid: bool = False
+    mamba3_with_mlp_block: bool = False
     mamba3_attention_period: int = 4
     mamba3_d_state: int = 128
     mamba3_expand: int = 2

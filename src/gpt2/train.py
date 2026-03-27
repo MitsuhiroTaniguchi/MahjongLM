@@ -206,6 +206,22 @@ QWEN3_ARCH_PRESETS: dict[str, TinyQwen3Config] = {
         mamba3_headdim=64,
         mamba3_ngroups=1,
     ),
+    "Q12E2S64M": TinyQwen3Config(
+        hidden_size=768,
+        intermediate_size=2304,
+        num_hidden_layers=12,
+        num_attention_heads=12,
+        num_key_value_heads=6,
+        head_dim=64,
+        max_position_embeddings=8192,
+        use_mamba3_hybrid=True,
+        mamba3_with_mlp_block=True,
+        mamba3_attention_period=4,
+        mamba3_d_state=64,
+        mamba3_expand=2,
+        mamba3_headdim=64,
+        mamba3_ngroups=1,
+    ),
     "Q20E2S64": TinyQwen3Config(
         hidden_size=768,
         intermediate_size=2304,
@@ -454,14 +470,18 @@ def _partition_params_for_muon(model, torch):
         for parameter_name, parameter in module.named_parameters(recurse=False):
             if not parameter.requires_grad or id(parameter) in assigned:
                 continue
-            if parameter.ndim < 2 or "norm" in module_name.lower() or "norm" in parameter_name.lower() or parameter_name.endswith("bias"):
+            if getattr(parameter, "_force_weight_decay", False):
+                adam_decay_params.append(parameter)
+            elif parameter.ndim < 2 or "norm" in module_name.lower() or "norm" in parameter_name.lower() or parameter_name.endswith("bias"):
                 adam_no_decay_params.append(parameter)
             else:
                 adam_decay_params.append(parameter)
             assigned.add(id(parameter))
     for parameter in model.parameters():
         if parameter.requires_grad and id(parameter) not in assigned:
-            if parameter.ndim < 2:
+            if getattr(parameter, "_force_weight_decay", False):
+                adam_decay_params.append(parameter)
+            elif parameter.ndim < 2:
                 adam_no_decay_params.append(parameter)
             else:
                 adam_decay_params.append(parameter)
@@ -1987,7 +2007,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qwen-max-position-embeddings", type=int, default=8192)
     parser.add_argument("--use-exclusive-self-attention", action="store_true")
     parser.add_argument("--use-gated-attention", action="store_true")
+    parser.add_argument("--use-zero-centered-rmsnorm", action="store_true")
+    parser.add_argument("--use-rescaled-residual", action="store_true")
     parser.add_argument("--use-mamba3-hybrid", action="store_true")
+    parser.add_argument("--mamba3-with-mlp-block", action="store_true")
     parser.add_argument("--mamba3-attention-period", type=int, default=4)
     parser.add_argument("--mamba3-d-state", type=int, default=128)
     parser.add_argument("--mamba3-expand", type=int, default=2)
@@ -2126,7 +2149,10 @@ def main() -> None:
             _apply_preset_value("--qwen-max-position-embeddings", "qwen_max_position_embeddings", preset.max_position_embeddings)
             _apply_preset_value("--use-exclusive-self-attention", "use_exclusive_self_attention", preset.use_exclusive_self_attention)
             _apply_preset_value("--use-gated-attention", "use_gated_attention", preset.use_gated_attention)
+            _apply_preset_value("--use-zero-centered-rmsnorm", "use_zero_centered_rmsnorm", preset.use_zero_centered_rmsnorm)
+            _apply_preset_value("--use-rescaled-residual", "use_rescaled_residual", preset.use_rescaled_residual)
             _apply_preset_value("--use-mamba3-hybrid", "use_mamba3_hybrid", preset.use_mamba3_hybrid)
+            _apply_preset_value("--mamba3-with-mlp-block", "mamba3_with_mlp_block", preset.mamba3_with_mlp_block)
             _apply_preset_value("--mamba3-attention-period", "mamba3_attention_period", preset.mamba3_attention_period)
             _apply_preset_value("--mamba3-d-state", "mamba3_d_state", preset.mamba3_d_state)
             _apply_preset_value("--mamba3-expand", "mamba3_expand", preset.mamba3_expand)
@@ -2151,7 +2177,10 @@ def main() -> None:
             max_position_embeddings=args.qwen_max_position_embeddings,
             use_exclusive_self_attention=args.use_exclusive_self_attention,
             use_gated_attention=args.use_gated_attention,
+            use_zero_centered_rmsnorm=args.use_zero_centered_rmsnorm,
+            use_rescaled_residual=args.use_rescaled_residual,
             use_mamba3_hybrid=args.use_mamba3_hybrid,
+            mamba3_with_mlp_block=args.mamba3_with_mlp_block,
             mamba3_attention_period=args.mamba3_attention_period,
             mamba3_d_state=args.mamba3_d_state,
             mamba3_expand=args.mamba3_expand,

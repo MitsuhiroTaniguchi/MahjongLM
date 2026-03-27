@@ -102,6 +102,7 @@ def _patch_qwen3_with_xsa(model) -> None:
 
 
 def _patch_qwen3_with_gated_attention(model) -> None:
+    import copy
     import torch
     from types import SimpleNamespace
     from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5Attention
@@ -132,9 +133,87 @@ def _patch_qwen3_with_gated_attention(model) -> None:
             new_attn.k_proj.load_state_dict(old_attn.k_proj.state_dict())
             new_attn.v_proj.load_state_dict(old_attn.v_proj.state_dict())
             new_attn.o_proj.load_state_dict(old_attn.o_proj.state_dict())
-            new_attn.q_norm.load_state_dict(old_attn.q_norm.state_dict())
-            new_attn.k_norm.load_state_dict(old_attn.k_norm.state_dict())
+        # Keep the Qwen3.5 gated attention path, but retain Qwen3's standard RMSNorm
+        # for q/k normalization so gated attention can be tested independently of
+        # zero-centered norm changes.
+        new_attn.q_norm = copy.deepcopy(old_attn.q_norm)
+        new_attn.k_norm = copy.deepcopy(old_attn.k_norm)
         layer.self_attn = new_attn
+
+
+def _patch_qwen3_with_zero_centered_rmsnorm(model) -> None:
+    import torch
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5RMSNorm
+
+    def _convert_norm(old_norm):
+        new_norm = Qwen3_5RMSNorm(old_norm.weight.shape[0], eps=old_norm.variance_epsilon)
+        new_norm.to(device=old_norm.weight.device, dtype=old_norm.weight.dtype)
+        with torch.no_grad():
+            new_norm.weight.copy_(old_norm.weight - 1.0)
+        new_norm.weight._force_weight_decay = True
+        return new_norm
+
+    model.model.norm = _convert_norm(model.model.norm)
+    for layer in model.model.layers:
+        if hasattr(layer, "input_layernorm"):
+            layer.input_layernorm = _convert_norm(layer.input_layernorm)
+        if hasattr(layer, "post_attention_layernorm"):
+            layer.post_attention_layernorm = _convert_norm(layer.post_attention_layernorm)
+
+
+def _rescaled_residual(hidden_states, residual, *, layer_idx: int):
+    depth = layer_idx + 1
+    residual_scale = depth / (depth + 1)
+    branch_scale = 1.0 / (depth + 1)
+    return residual * residual_scale + hidden_states * branch_scale
+
+
+def _patch_qwen3_with_rescaled_residual(model) -> None:
+    from transformers.modeling_layers import GradientCheckpointingLayer
+
+    class Qwen3RescaledDecoderLayer(GradientCheckpointingLayer):
+        def __init__(self, reference_layer, layer_idx: int):
+            super().__init__()
+            self.layer_idx = layer_idx
+            self.self_attn = reference_layer.self_attn
+            self.mlp = reference_layer.mlp
+            self.input_layernorm = reference_layer.input_layernorm
+            self.post_attention_layernorm = reference_layer.post_attention_layernorm
+            self.attention_type = reference_layer.attention_type
+
+        def forward(
+            self,
+            hidden_states,
+            attention_mask=None,
+            position_ids=None,
+            past_key_values=None,
+            use_cache=False,
+            cache_position=None,
+            position_embeddings=None,
+            **kwargs,
+        ):
+            residual = hidden_states
+            hidden_states = self.input_layernorm(hidden_states)
+            hidden_states, _ = self.self_attn(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+                **kwargs,
+            )
+            hidden_states = _rescaled_residual(hidden_states, residual, layer_idx=self.layer_idx)
+
+            residual = hidden_states
+            hidden_states = self.post_attention_layernorm(hidden_states)
+            hidden_states = self.mlp(hidden_states)
+            hidden_states = _rescaled_residual(hidden_states, residual, layer_idx=self.layer_idx)
+            return hidden_states
+
+    for layer_idx, layer in enumerate(model.model.layers):
+        model.model.layers[layer_idx] = Qwen3RescaledDecoderLayer(layer, layer_idx)
 
 
 def _patch_qwen3_with_mamba3_hybrid(model, model_config: TinyQwen3Config) -> None:
@@ -162,6 +241,10 @@ def _patch_qwen3_with_mamba3_hybrid(model, model_config: TinyQwen3Config) -> Non
                 device=reference_layer.self_attn.q_proj.weight.device,
                 dtype=reference_layer.self_attn.q_proj.weight.dtype,
             )
+            self.with_mlp_block = model_config.mamba3_with_mlp_block
+            if self.with_mlp_block:
+                self.post_attention_layernorm = reference_layer.post_attention_layernorm
+                self.mlp = reference_layer.mlp
 
         def forward(
             self,
@@ -178,7 +261,18 @@ def _patch_qwen3_with_mamba3_hybrid(model, model_config: TinyQwen3Config) -> Non
             residual = hidden_states
             hidden_states = self.input_layernorm(hidden_states)
             hidden_states = self.mamba3(hidden_states)
-            hidden_states = residual + hidden_states
+            if model_config.use_rescaled_residual:
+                hidden_states = _rescaled_residual(hidden_states, residual, layer_idx=self.layer_idx)
+            else:
+                hidden_states = residual + hidden_states
+            if self.with_mlp_block:
+                residual = hidden_states
+                hidden_states = self.post_attention_layernorm(hidden_states)
+                hidden_states = self.mlp(hidden_states)
+                if model_config.use_rescaled_residual:
+                    hidden_states = _rescaled_residual(hidden_states, residual, layer_idx=self.layer_idx)
+                else:
+                    hidden_states = residual + hidden_states
             return hidden_states
 
     attention_layer_idx = [
@@ -286,7 +380,10 @@ def build_tiny_qwen3_model(
         hf_config._attn_implementation = attn_implementation
     hf_config.use_exclusive_self_attention = model_config.use_exclusive_self_attention
     hf_config.use_gated_attention = model_config.use_gated_attention
+    hf_config.use_zero_centered_rmsnorm = model_config.use_zero_centered_rmsnorm
+    hf_config.use_rescaled_residual = model_config.use_rescaled_residual
     hf_config.use_mamba3_hybrid = model_config.use_mamba3_hybrid
+    hf_config.mamba3_with_mlp_block = model_config.mamba3_with_mlp_block
     hf_config.mamba3_attention_period = model_config.mamba3_attention_period
     hf_config.mamba3_d_state = model_config.mamba3_d_state
     hf_config.mamba3_expand = model_config.mamba3_expand
@@ -302,6 +399,10 @@ def build_tiny_qwen3_model(
         _patch_qwen3_with_xsa(model)
     if model_config.use_gated_attention:
         _patch_qwen3_with_gated_attention(model)
+    if model_config.use_zero_centered_rmsnorm:
+        _patch_qwen3_with_zero_centered_rmsnorm(model)
+    if model_config.use_rescaled_residual:
+        _patch_qwen3_with_rescaled_residual(model)
     if model_config.use_mamba3_hybrid:
         _patch_qwen3_with_mamba3_hybrid(model, model_config)
     if dtype is not None:
@@ -354,6 +455,10 @@ def load_saved_causal_lm(
             _patch_qwen3_with_xsa(model)
         if getattr(hf_config, "use_gated_attention", False):
             _patch_qwen3_with_gated_attention(model)
+        if getattr(hf_config, "use_zero_centered_rmsnorm", False):
+            _patch_qwen3_with_zero_centered_rmsnorm(model)
+        if getattr(hf_config, "use_rescaled_residual", False):
+            _patch_qwen3_with_rescaled_residual(model)
         if getattr(hf_config, "use_mamba3_hybrid", False):
             model_config = TinyQwen3Config(
                 hidden_size=hf_config.hidden_size,
@@ -365,7 +470,10 @@ def load_saved_causal_lm(
                 max_position_embeddings=hf_config.max_position_embeddings,
                 use_exclusive_self_attention=getattr(hf_config, "use_exclusive_self_attention", False),
                 use_gated_attention=getattr(hf_config, "use_gated_attention", False),
+                use_zero_centered_rmsnorm=getattr(hf_config, "use_zero_centered_rmsnorm", False),
+                use_rescaled_residual=getattr(hf_config, "use_rescaled_residual", False),
                 use_mamba3_hybrid=getattr(hf_config, "use_mamba3_hybrid", False),
+                mamba3_with_mlp_block=getattr(hf_config, "mamba3_with_mlp_block", False),
                 mamba3_attention_period=getattr(hf_config, "mamba3_attention_period", 4),
                 mamba3_d_state=getattr(hf_config, "mamba3_d_state", 128),
                 mamba3_expand=getattr(hf_config, "mamba3_expand", 2),
