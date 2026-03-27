@@ -161,8 +161,8 @@ def _patch_qwen3_with_zero_centered_rmsnorm(model) -> None:
             layer.post_attention_layernorm = _convert_norm(layer.post_attention_layernorm)
 
 
-def _rescaled_residual(hidden_states, residual, *, layer_idx: int):
-    depth = layer_idx + 1
+def _rescaled_residual(hidden_states, residual, *, layer_idx: int, block_size: int = 1):
+    depth = (layer_idx // max(block_size, 1)) + 1
     residual_scale = depth / (depth + 1)
     branch_scale = 1.0 / (depth + 1)
     return residual * residual_scale + hidden_states * branch_scale
@@ -170,6 +170,9 @@ def _rescaled_residual(hidden_states, residual, *, layer_idx: int):
 
 def _patch_qwen3_with_rescaled_residual(model) -> None:
     from transformers.modeling_layers import GradientCheckpointingLayer
+    block_size = 1
+    if getattr(model.config, "use_mamba3_hybrid", False):
+        block_size = max(int(getattr(model.config, "mamba3_attention_period", 1)), 1)
 
     class Qwen3RescaledDecoderLayer(GradientCheckpointingLayer):
         def __init__(self, reference_layer, layer_idx: int):
@@ -204,12 +207,12 @@ def _patch_qwen3_with_rescaled_residual(model) -> None:
                 position_embeddings=position_embeddings,
                 **kwargs,
             )
-            hidden_states = _rescaled_residual(hidden_states, residual, layer_idx=self.layer_idx)
+            hidden_states = _rescaled_residual(hidden_states, residual, layer_idx=self.layer_idx, block_size=block_size)
 
             residual = hidden_states
             hidden_states = self.post_attention_layernorm(hidden_states)
             hidden_states = self.mlp(hidden_states)
-            hidden_states = _rescaled_residual(hidden_states, residual, layer_idx=self.layer_idx)
+            hidden_states = _rescaled_residual(hidden_states, residual, layer_idx=self.layer_idx, block_size=block_size)
             return hidden_states
 
     for layer_idx, layer in enumerate(model.model.layers):
@@ -262,7 +265,12 @@ def _patch_qwen3_with_mamba3_hybrid(model, model_config: TinyQwen3Config) -> Non
             hidden_states = self.input_layernorm(hidden_states)
             hidden_states = self.mamba3(hidden_states)
             if model_config.use_rescaled_residual:
-                hidden_states = _rescaled_residual(hidden_states, residual, layer_idx=self.layer_idx)
+                hidden_states = _rescaled_residual(
+                    hidden_states,
+                    residual,
+                    layer_idx=self.layer_idx,
+                    block_size=model_config.mamba3_attention_period,
+                )
             else:
                 hidden_states = residual + hidden_states
             if self.with_mlp_block:
@@ -270,7 +278,12 @@ def _patch_qwen3_with_mamba3_hybrid(model, model_config: TinyQwen3Config) -> Non
                 hidden_states = self.post_attention_layernorm(hidden_states)
                 hidden_states = self.mlp(hidden_states)
                 if model_config.use_rescaled_residual:
-                    hidden_states = _rescaled_residual(hidden_states, residual, layer_idx=self.layer_idx)
+                    hidden_states = _rescaled_residual(
+                        hidden_states,
+                        residual,
+                        layer_idx=self.layer_idx,
+                        block_size=model_config.mamba3_attention_period,
+                    )
                 else:
                     hidden_states = residual + hidden_states
             return hidden_states
