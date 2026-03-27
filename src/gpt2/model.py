@@ -468,7 +468,14 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
                         device=partial_block.device,
                         dtype=torch.int64,
                     )
-                    checkpoint_token = partial_block.reshape(-1)[:1]
+                    # Reentrant checkpointing needs at least one grad-tracking input,
+                    # even though this branch only differentiates through module params.
+                    checkpoint_token = torch.zeros(
+                        1,
+                        device=partial_block.device,
+                        dtype=partial_block.dtype,
+                        requires_grad=True,
+                    )
                     outputs = self._gradient_checkpointing_func(
                         _run_attnres_layer,
                         *blocks,
