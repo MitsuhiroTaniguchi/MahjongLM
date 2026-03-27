@@ -161,18 +161,28 @@ def _patch_qwen3_with_zero_centered_rmsnorm(model) -> None:
             layer.post_attention_layernorm = _convert_norm(layer.post_attention_layernorm)
 
 
-def _rescaled_residual(hidden_states, residual, *, layer_idx: int, block_size: int = 1):
-    depth = (layer_idx // max(block_size, 1)) + 1
+def _rescaled_residual(hidden_states, residual, *, residual_idx: int):
+    depth = max(int(residual_idx), 1)
     residual_scale = depth / (depth + 1)
     branch_scale = 1.0 / (depth + 1)
     return residual * residual_scale + hidden_states * branch_scale
 
 
+def _residual_op_index(model_config: TinyQwen3Config, *, layer_idx: int, branch_idx: int, is_attention_layer: bool) -> int:
+    if not model_config.use_mamba3_hybrid:
+        return layer_idx * 2 + branch_idx + 1
+
+    residuals_per_mamba_layer = 2 if model_config.mamba3_with_mlp_block else 1
+    attention_period = max(int(model_config.mamba3_attention_period), 1)
+    total = 0
+    for prev_layer_idx in range(layer_idx):
+        prev_is_attention = prev_layer_idx % attention_period == attention_period - 1
+        total += 2 if prev_is_attention else residuals_per_mamba_layer
+    return total + branch_idx + 1
+
+
 def _patch_qwen3_with_rescaled_residual(model) -> None:
     from transformers.modeling_layers import GradientCheckpointingLayer
-    block_size = 1
-    if getattr(model.config, "use_mamba3_hybrid", False):
-        block_size = max(int(getattr(model.config, "mamba3_attention_period", 1)), 1)
 
     class Qwen3RescaledDecoderLayer(GradientCheckpointingLayer):
         def __init__(self, reference_layer, layer_idx: int):
@@ -207,12 +217,30 @@ def _patch_qwen3_with_rescaled_residual(model) -> None:
                 position_embeddings=position_embeddings,
                 **kwargs,
             )
-            hidden_states = _rescaled_residual(hidden_states, residual, layer_idx=self.layer_idx, block_size=block_size)
+            hidden_states = _rescaled_residual(
+                hidden_states,
+                residual,
+                residual_idx=_residual_op_index(
+                    model.config,
+                    layer_idx=self.layer_idx,
+                    branch_idx=0,
+                    is_attention_layer=True,
+                ),
+            )
 
             residual = hidden_states
             hidden_states = self.post_attention_layernorm(hidden_states)
             hidden_states = self.mlp(hidden_states)
-            hidden_states = _rescaled_residual(hidden_states, residual, layer_idx=self.layer_idx, block_size=block_size)
+            hidden_states = _rescaled_residual(
+                hidden_states,
+                residual,
+                residual_idx=_residual_op_index(
+                    model.config,
+                    layer_idx=self.layer_idx,
+                    branch_idx=1,
+                    is_attention_layer=True,
+                ),
+            )
             return hidden_states
 
     for layer_idx, layer in enumerate(model.model.layers):
@@ -268,8 +296,12 @@ def _patch_qwen3_with_mamba3_hybrid(model, model_config: TinyQwen3Config) -> Non
                 hidden_states = _rescaled_residual(
                     hidden_states,
                     residual,
-                    layer_idx=self.layer_idx,
-                    block_size=model_config.mamba3_attention_period,
+                    residual_idx=_residual_op_index(
+                        model_config,
+                        layer_idx=self.layer_idx,
+                        branch_idx=0,
+                        is_attention_layer=False,
+                    ),
                 )
             else:
                 hidden_states = residual + hidden_states
@@ -281,8 +313,12 @@ def _patch_qwen3_with_mamba3_hybrid(model, model_config: TinyQwen3Config) -> Non
                     hidden_states = _rescaled_residual(
                         hidden_states,
                         residual,
-                        layer_idx=self.layer_idx,
-                        block_size=model_config.mamba3_attention_period,
+                        residual_idx=_residual_op_index(
+                            model_config,
+                            layer_idx=self.layer_idx,
+                            branch_idx=1,
+                            is_attention_layer=False,
+                        ),
                     )
                 else:
                     hidden_states = residual + hidden_states
