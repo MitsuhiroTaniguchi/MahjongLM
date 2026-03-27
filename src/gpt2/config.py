@@ -56,6 +56,11 @@ class TinyQwen3Config:
     use_gated_attention: bool = False
     use_zero_centered_rmsnorm: bool = False
     use_rescaled_residual: bool = False
+    use_attention_residuals: bool = False
+    attention_residual_num_blocks: int = 8
+    attention_residual_recency_bias_init: float = 0.0
+    attention_residual_mode: str = "block"
+    attention_residual_gate_type: str = "bias"
     use_mamba3_hybrid: bool = False
     mamba3_with_mlp_block: bool = False
     mamba3_attention_period: int = 4
@@ -90,6 +95,14 @@ class TinyQwen3Config:
             raise ValueError("TinyQwen3Config currently supports hidden_act='silu' only")
         if self.use_exclusive_self_attention and self.use_gated_attention:
             raise ValueError("use_exclusive_self_attention and use_gated_attention are mutually exclusive")
+        if self.use_rescaled_residual and self.use_attention_residuals:
+            raise ValueError("use_rescaled_residual and use_attention_residuals are mutually exclusive")
+        if self.attention_residual_num_blocks <= 0:
+            raise ValueError("attention_residual_num_blocks must be positive")
+        if self.attention_residual_mode not in {"block", "full"}:
+            raise ValueError("attention_residual_mode must be 'block' or 'full'")
+        if self.attention_residual_gate_type not in {"bias", "sigmoid_scalar", "sigmoid_vector"}:
+            raise ValueError("attention_residual_gate_type must be 'bias', 'sigmoid_scalar', or 'sigmoid_vector'")
         if self.mamba3_attention_period <= 0:
             raise ValueError("mamba3_attention_period must be positive")
         if self.mamba3_d_state <= 0:

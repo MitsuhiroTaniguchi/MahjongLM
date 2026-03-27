@@ -2040,6 +2040,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-gated-attention", action="store_true")
     parser.add_argument("--use-zero-centered-rmsnorm", action="store_true")
     parser.add_argument("--use-rescaled-residual", action="store_true")
+    parser.add_argument("--use-attention-residuals", action="store_true")
+    parser.add_argument("--attention-residual-num-blocks", type=int, default=8)
+    parser.add_argument("--attention-residual-recency-bias-init", type=float, default=0.0)
+    parser.add_argument("--attention-residual-mode", choices=("block", "full"), default="block")
+    parser.add_argument(
+        "--attention-residual-gate-type",
+        choices=("bias", "sigmoid_scalar", "sigmoid_vector"),
+        default="bias",
+    )
     parser.add_argument("--use-mamba3-hybrid", action="store_true")
     parser.add_argument("--mamba3-with-mlp-block", action="store_true")
     parser.add_argument("--mamba3-attention-period", type=int, default=4)
@@ -2182,6 +2191,27 @@ def main() -> None:
             _apply_preset_value("--use-gated-attention", "use_gated_attention", preset.use_gated_attention)
             _apply_preset_value("--use-zero-centered-rmsnorm", "use_zero_centered_rmsnorm", preset.use_zero_centered_rmsnorm)
             _apply_preset_value("--use-rescaled-residual", "use_rescaled_residual", preset.use_rescaled_residual)
+            _apply_preset_value("--use-attention-residuals", "use_attention_residuals", preset.use_attention_residuals)
+            _apply_preset_value(
+                "--attention-residual-num-blocks",
+                "attention_residual_num_blocks",
+                preset.attention_residual_num_blocks,
+            )
+            _apply_preset_value(
+                "--attention-residual-recency-bias-init",
+                "attention_residual_recency_bias_init",
+                preset.attention_residual_recency_bias_init,
+            )
+            _apply_preset_value(
+                "--attention-residual-mode",
+                "attention_residual_mode",
+                preset.attention_residual_mode,
+            )
+            _apply_preset_value(
+                "--attention-residual-gate-type",
+                "attention_residual_gate_type",
+                preset.attention_residual_gate_type,
+            )
             _apply_preset_value("--use-mamba3-hybrid", "use_mamba3_hybrid", preset.use_mamba3_hybrid)
             _apply_preset_value("--mamba3-with-mlp-block", "mamba3_with_mlp_block", preset.mamba3_with_mlp_block)
             _apply_preset_value("--mamba3-attention-period", "mamba3_attention_period", preset.mamba3_attention_period)
@@ -2210,6 +2240,11 @@ def main() -> None:
             use_gated_attention=args.use_gated_attention,
             use_zero_centered_rmsnorm=args.use_zero_centered_rmsnorm,
             use_rescaled_residual=args.use_rescaled_residual,
+            use_attention_residuals=args.use_attention_residuals,
+            attention_residual_num_blocks=args.attention_residual_num_blocks,
+            attention_residual_recency_bias_init=args.attention_residual_recency_bias_init,
+            attention_residual_mode=args.attention_residual_mode,
+            attention_residual_gate_type=args.attention_residual_gate_type,
             use_mamba3_hybrid=args.use_mamba3_hybrid,
             mamba3_with_mlp_block=args.mamba3_with_mlp_block,
             mamba3_attention_period=args.mamba3_attention_period,
