@@ -199,21 +199,20 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
         inv_rms = torch.rsqrt(source_fp32.square().mean(dim=-1, keepdim=True) + rms_eps)
         return (source_fp32 * inv_rms).to(dtype=source.dtype)
 
+    def _empty_block_cache_like(source: torch.Tensor) -> torch.Tensor:
+        return source.new_empty((0, *source.shape))
+
     def _append_block_cache(
-        completed_blocks: torch.Tensor | None,
-        completed_blocks_norm: torch.Tensor | None,
+        completed_blocks: torch.Tensor,
+        completed_blocks_norm: torch.Tensor,
         block: torch.Tensor,
         *,
-        rms_eps: float | None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        rms_eps: float,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         block = block.unsqueeze(0)
-        next_blocks = block if completed_blocks is None else torch.cat((completed_blocks, block), dim=0)
-        if rms_eps is None:
-            return next_blocks, completed_blocks_norm
+        next_blocks = torch.cat((completed_blocks, block), dim=0)
         normalized_block = _normalize_attnres_source(block.squeeze(0), rms_eps).unsqueeze(0)
-        next_blocks_norm = (
-            normalized_block if completed_blocks_norm is None else torch.cat((completed_blocks_norm, normalized_block), dim=0)
-        )
+        next_blocks_norm = torch.cat((completed_blocks_norm, normalized_block), dim=0)
         return next_blocks, next_blocks_norm
 
     def _single_source_attn_stats(
@@ -238,13 +237,13 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
         return output, max_logits, lse
 
     def _merge_attn_stats(
-        inter_stats: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None,
+        inter_stats: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
         intra_stats: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
         *,
         target_dtype: torch.dtype,
     ) -> torch.Tensor:
         intra_output, intra_max, intra_lse = intra_stats
-        if inter_stats is None:
+        if inter_stats[0].numel() == 0:
             return intra_output.to(dtype=target_dtype)
 
         inter_output, inter_max, inter_lse = inter_stats
@@ -256,28 +255,36 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
         return (numerator / denominator.unsqueeze(-1)).to(dtype=target_dtype)
 
     def _precompute_interblock_attn(
-        completed_blocks: torch.Tensor | None,
-        completed_blocks_norm: torch.Tensor | None,
+        completed_blocks: torch.Tensor,
+        completed_blocks_norm: torch.Tensor,
         layers: list["Qwen3AttentionResidualLayer"],
     ) -> list[tuple[tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None, tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None]]:
-        if completed_blocks is None or completed_blocks_norm is None:
-            return [(None, None) for _ in layers]
+        if completed_blocks.shape[0] == 0:
+            return [((completed_blocks.new_empty(0), completed_blocks.new_empty(0), completed_blocks.new_empty(0)),
+                     (completed_blocks.new_empty(0), completed_blocks.new_empty(0), completed_blocks.new_empty(0)))
+                    for _ in layers]
 
         query_specs: list[tuple[int, int, torch.Tensor, float]] = []
         for layer_idx, layer in enumerate(layers):
             first_query, first_eps = _direct_rmsnorm_query(layer.first_res_proj, layer.first_res_norm)
             if first_query is None:
-                return [(None, None) for _ in layers]
+                return [((completed_blocks.new_empty(0), completed_blocks.new_empty(0), completed_blocks.new_empty(0)),
+                         (completed_blocks.new_empty(0), completed_blocks.new_empty(0), completed_blocks.new_empty(0)))
+                        for _ in layers]
             query_specs.append((layer_idx, 0, first_query, first_eps))
             if layer.with_mlp_block:
                 second_query, second_eps = _direct_rmsnorm_query(layer.second_res_proj, layer.second_res_norm)
                 if second_query is None:
-                    return [(None, None) for _ in layers]
+                    return [((completed_blocks.new_empty(0), completed_blocks.new_empty(0), completed_blocks.new_empty(0)),
+                             (completed_blocks.new_empty(0), completed_blocks.new_empty(0), completed_blocks.new_empty(0)))
+                            for _ in layers]
                 query_specs.append((layer_idx, 1, second_query, second_eps))
 
         eps_values = {eps for _, _, _, eps in query_specs}
         if len(eps_values) != 1:
-            return [(None, None) for _ in layers]
+            return [((completed_blocks.new_empty(0), completed_blocks.new_empty(0), completed_blocks.new_empty(0)),
+                     (completed_blocks.new_empty(0), completed_blocks.new_empty(0), completed_blocks.new_empty(0)))
+                    for _ in layers]
 
         blocks_fp32 = completed_blocks.to(torch.float32)
         queries = torch.stack([query.to(dtype=completed_blocks.dtype) for _, _, query, _ in query_specs], dim=0)
@@ -294,8 +301,8 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
         return [(branch_stats[0], branch_stats[1]) for branch_stats in per_layer]
 
     def block_attn_res(
-        completed_blocks: torch.Tensor | None,
-        completed_blocks_norm: torch.Tensor | None,
+        completed_blocks: torch.Tensor,
+        completed_blocks_norm: torch.Tensor,
         partial_block: torch.Tensor,
         proj: nn.Linear,
         norm: nn.Module,
@@ -303,29 +310,27 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
         return_entropy: bool = False,
     ):
         direct_query, rms_eps = _direct_rmsnorm_query(proj, norm)
-        sources: list[torch.Tensor] = []
-        if completed_blocks is not None:
-            sources.extend(completed_blocks.unbind(0))
-        sources.append(partial_block)
         if direct_query is not None:
             direct_query = direct_query.to(dtype=partial_block.dtype)
-        logits = []
-        for source_idx, source in enumerate(sources):
-            if source_idx < len(sources) - 1 and completed_blocks_norm is not None and direct_query is not None:
-                normalized_source = completed_blocks_norm[source_idx]
-                source_logits = nn.functional.linear(normalized_source, direct_query.unsqueeze(0)).squeeze(-1)
-            elif direct_query is None:
-                source_logits = nn.functional.linear(norm(source), proj.weight).squeeze(-1)
-            else:
-                source_logits = nn.functional.linear(_normalize_attnres_source(source, rms_eps), direct_query.unsqueeze(0)).squeeze(-1)
-            if source_idx == len(sources) - 1:
-                source_logits = source_logits + recency_bias
-            logits.append(source_logits)
-        logits = torch.stack(logits, dim=0)
+        if direct_query is None:
+            completed_logits = (
+                nn.functional.linear(norm(completed_blocks), proj.weight).squeeze(-1)
+                if completed_blocks.shape[0] > 0
+                else partial_block.new_empty((0, partial_block.shape[0], partial_block.shape[1]))
+            )
+            partial_logits = nn.functional.linear(norm(partial_block), proj.weight).squeeze(-1)
+        else:
+            completed_logits = (
+                nn.functional.linear(completed_blocks_norm, direct_query.unsqueeze(0)).squeeze(-1)
+                if completed_blocks.shape[0] > 0
+                else partial_block.new_empty((0, partial_block.shape[0], partial_block.shape[1]))
+            )
+            partial_logits = nn.functional.linear(_normalize_attnres_source(partial_block, rms_eps), direct_query.unsqueeze(0)).squeeze(-1)
+        logits = torch.cat((completed_logits, (partial_logits + recency_bias).unsqueeze(0)), dim=0)
         weights = logits.softmax(dim=0)
-        hidden = torch.zeros_like(partial_block)
-        for source_idx, source in enumerate(sources):
-            hidden = hidden + weights[source_idx].to(dtype=partial_block.dtype).unsqueeze(-1) * source
+        hidden = weights[-1].to(dtype=partial_block.dtype).unsqueeze(-1) * partial_block
+        if completed_blocks.shape[0] > 0:
+            hidden = hidden + (weights[:-1].to(dtype=partial_block.dtype).unsqueeze(-1) * completed_blocks).sum(dim=0)
         if return_entropy:
             entropy = -(weights * (weights + 1e-8).log()).sum(dim=0).mean()
             return hidden, entropy
@@ -434,8 +439,8 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
 
         def forward(
             self,
-            completed_blocks: torch.Tensor | None,
-            completed_blocks_norm: torch.Tensor | None,
+            completed_blocks: torch.Tensor,
+            completed_blocks_norm: torch.Tensor,
             partial_block: torch.Tensor,
             attention_mask: torch.Tensor | None = None,
             position_ids: torch.LongTensor | None = None,
@@ -445,10 +450,14 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
             position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
             first_inter_stats=None,
             second_inter_stats=None,
+            entropy_accum=None,
+            block_rms_eps=None,
             **kwargs,
         ):
-            entropy_accum = kwargs.pop("entropy_accum", None)
-            block_rms_eps = kwargs.pop("block_rms_eps", None)
+            if "entropy_accum" in kwargs:
+                entropy_accum = kwargs.pop("entropy_accum")
+            if "block_rms_eps" in kwargs:
+                block_rms_eps = kwargs.pop("block_rms_eps")
 
             if entropy_accum is not None:
                 attnres_hidden, entropy = block_attn_res(
@@ -462,7 +471,7 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
                 )
                 entropy_accum.append(entropy)
             else:
-                if first_inter_stats is None:
+                if first_inter_stats[0].numel() == 0:
                     attnres_hidden = block_attn_res(
                         completed_blocks,
                         completed_blocks_norm,
@@ -529,7 +538,7 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
                 )
                 entropy_accum.append(entropy)
             else:
-                if second_inter_stats is None:
+                if second_inter_stats[0].numel() == 0:
                     attnres_hidden = block_attn_res(
                         completed_blocks,
                         completed_blocks_norm,
@@ -606,16 +615,18 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
             causal_mask_mapping = attention_mask
 
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
-        completed_blocks = None
-        completed_blocks_norm = None
+        completed_blocks = _empty_block_cache_like(inputs_embeds)
+        completed_blocks_norm = _empty_block_cache_like(inputs_embeds)
         partial_block = inputs_embeds
 
         entropy_lambda = kwargs.pop("entropy_lambda", 0.0)
         entropy_accum = [] if entropy_lambda > 0 else None
-        block_rms_eps = None
+        block_rms_eps = model_config.rms_norm_eps
         if self.layers:
             first_layer = self.layers[0]
-            _, block_rms_eps = _direct_rmsnorm_query(first_layer.first_res_proj, first_layer.first_res_norm)
+            _, detected_rms_eps = _direct_rmsnorm_query(first_layer.first_res_proj, first_layer.first_res_norm)
+            if detected_rms_eps is not None:
+                block_rms_eps = detected_rms_eps
 
         layer_idx = 0
         while layer_idx < len(self.layers):
@@ -627,12 +638,11 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
             for block_offset, layer in enumerate(block_layers):
                 first_inter_stats = None
                 second_inter_stats = None
-                if precomputed_inter is not None:
-                    first_inter_stats, second_inter_stats = precomputed_inter[block_offset]
+                first_inter_stats, second_inter_stats = precomputed_inter[block_offset]
 
-                if self.gradient_checkpointing and self.training and not getattr(self.config, "use_attention_residuals", False):
+                if self.gradient_checkpointing and self.training:
                     completed_blocks, completed_blocks_norm, partial_block = self._gradient_checkpointing_func(
-                        layer.__call__,
+                        layer.forward,
                         completed_blocks,
                         completed_blocks_norm,
                         partial_block,
