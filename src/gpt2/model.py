@@ -254,26 +254,6 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
         denominator = inter_scale * inter_lse + intra_scale * intra_lse
         return (numerator / denominator.unsqueeze(-1)).to(dtype=target_dtype)
 
-    def _merge_delta_stats(
-        inter_stats: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-        intra_stats: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-        *,
-        base_state: torch.Tensor,
-        target_dtype: torch.dtype,
-    ) -> torch.Tensor:
-        if inter_stats[0].numel() == 0:
-            selected = intra_stats[0]
-        else:
-            inter_output, inter_max, inter_lse = inter_stats
-            intra_output, intra_max, intra_lse = intra_stats
-            merged_max = torch.maximum(inter_max, intra_max)
-            inter_scale = torch.exp(inter_max - merged_max)
-            intra_scale = torch.exp(intra_max - merged_max)
-            numerator = inter_scale.unsqueeze(-1) * inter_output + intra_scale.unsqueeze(-1) * intra_output
-            denominator = inter_scale * inter_lse + intra_scale * intra_lse
-            selected = numerator / denominator.unsqueeze(-1)
-        return (base_state.to(torch.float32) + selected).to(dtype=target_dtype)
-
     def _precompute_interblock_attn(
         completed_blocks: torch.Tensor,
         completed_blocks_norm: torch.Tensor,
@@ -351,42 +331,6 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
         hidden = weights[-1].to(dtype=partial_block.dtype).unsqueeze(-1) * partial_block
         if completed_blocks.shape[0] > 0:
             hidden = hidden + (weights[:-1].to(dtype=partial_block.dtype).unsqueeze(-1) * completed_blocks).sum(dim=0)
-        if return_entropy:
-            entropy = -(weights * (weights + 1e-8).log()).sum(dim=0).mean()
-            return hidden, entropy
-        return hidden
-
-    def delta_attn_res(
-        completed_deltas: torch.Tensor,
-        completed_deltas_norm: torch.Tensor,
-        partial_block: torch.Tensor,
-        proj: nn.Linear,
-        norm: nn.Module,
-        return_entropy: bool = False,
-    ):
-        direct_query, rms_eps = _direct_rmsnorm_query(proj, norm)
-        if direct_query is not None:
-            direct_query = direct_query.to(dtype=partial_block.dtype)
-        if direct_query is None:
-            delta_logits = (
-                nn.functional.linear(norm(completed_deltas), proj.weight).squeeze(-1)
-                if completed_deltas.shape[0] > 0
-                else partial_block.new_empty((0, partial_block.shape[0], partial_block.shape[1]))
-            )
-            partial_logits = nn.functional.linear(norm(partial_block), proj.weight).squeeze(-1)
-        else:
-            delta_logits = (
-                nn.functional.linear(completed_deltas_norm, direct_query.unsqueeze(0)).squeeze(-1)
-                if completed_deltas.shape[0] > 0
-                else partial_block.new_empty((0, partial_block.shape[0], partial_block.shape[1]))
-            )
-            partial_logits = nn.functional.linear(_normalize_attnres_source(partial_block, rms_eps), direct_query.unsqueeze(0)).squeeze(-1)
-        logits = torch.cat((delta_logits, partial_logits.unsqueeze(0)), dim=0)
-        weights = logits.softmax(dim=0)
-        selected = weights[-1].to(dtype=partial_block.dtype).unsqueeze(-1) * partial_block
-        if completed_deltas.shape[0] > 0:
-            selected = selected + (weights[:-1].to(dtype=partial_block.dtype).unsqueeze(-1) * completed_deltas).sum(dim=0)
-        hidden = partial_block + selected
         if return_entropy:
             entropy = -(weights * (weights + 1e-8).log()).sum(dim=0).mean()
             return hidden, entropy
@@ -516,35 +460,18 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
                 block_rms_eps = kwargs.pop("block_rms_eps")
 
             if entropy_accum is not None:
-                if self.attnres_mode == "delta":
-                    attnres_hidden, entropy = delta_attn_res(
-                        completed_blocks,
-                        completed_blocks_norm,
-                        partial_block,
-                        self.first_res_proj,
-                        self.first_res_norm,
-                        return_entropy=True,
-                    )
-                else:
-                    attnres_hidden, entropy = block_attn_res(
-                        completed_blocks,
-                        completed_blocks_norm,
-                        partial_block,
-                        self.first_res_proj,
-                        self.first_res_norm,
-                        self.first_res_bias,
-                        return_entropy=True,
-                    )
+                attnres_hidden, entropy = block_attn_res(
+                    completed_blocks,
+                    completed_blocks_norm,
+                    partial_block,
+                    self.first_res_proj,
+                    self.first_res_norm,
+                    self.first_res_bias,
+                    return_entropy=True,
+                )
                 entropy_accum.append(entropy)
             else:
-                if self.attnres_mode == "delta":
-                    attnres_hidden = _merge_delta_stats(
-                        first_inter_stats,
-                        _single_source_attn_stats(partial_block, self.first_res_proj, self.first_res_norm, None),
-                        base_state=partial_block,
-                        target_dtype=partial_block.dtype,
-                    )
-                elif first_inter_stats[0].numel() == 0:
+                if first_inter_stats[0].numel() == 0:
                     attnres_hidden = block_attn_res(
                         completed_blocks,
                         completed_blocks_norm,
@@ -581,14 +508,7 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
             )
             partial_block = partial_block + first_branch_out
 
-            if self.attnres_mode == "delta":
-                completed_blocks, completed_blocks_norm = _append_block_cache(
-                    completed_blocks,
-                    completed_blocks_norm,
-                    first_branch_out,
-                    rms_eps=block_rms_eps,
-                )
-            elif self.attnres_mode == "full":
+            if self.attnres_mode == "full":
                 completed_blocks, completed_blocks_norm = _append_block_cache(
                     completed_blocks,
                     completed_blocks_norm,
@@ -607,35 +527,18 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
                 return completed_blocks, completed_blocks_norm, partial_block
 
             if entropy_accum is not None:
-                if self.attnres_mode == "delta":
-                    attnres_hidden, entropy = delta_attn_res(
-                        completed_blocks,
-                        completed_blocks_norm,
-                        partial_block,
-                        self.second_res_proj,
-                        self.second_res_norm,
-                        return_entropy=True,
-                    )
-                else:
-                    attnres_hidden, entropy = block_attn_res(
-                        completed_blocks,
-                        completed_blocks_norm,
-                        partial_block,
-                        self.second_res_proj,
-                        self.second_res_norm,
-                        self.second_res_bias,
-                        return_entropy=True,
-                    )
+                attnres_hidden, entropy = block_attn_res(
+                    completed_blocks,
+                    completed_blocks_norm,
+                    partial_block,
+                    self.second_res_proj,
+                    self.second_res_norm,
+                    self.second_res_bias,
+                    return_entropy=True,
+                )
                 entropy_accum.append(entropy)
             else:
-                if self.attnres_mode == "delta":
-                    attnres_hidden = _merge_delta_stats(
-                        second_inter_stats,
-                        _single_source_attn_stats(partial_block, self.second_res_proj, self.second_res_norm, None),
-                        base_state=partial_block,
-                        target_dtype=partial_block.dtype,
-                    )
-                elif second_inter_stats[0].numel() == 0:
+                if second_inter_stats[0].numel() == 0:
                     attnres_hidden = block_attn_res(
                         completed_blocks,
                         completed_blocks_norm,
@@ -651,17 +554,9 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
                         target_dtype=partial_block.dtype,
                     )
             hidden = self._apply_gate(partial_block, attnres_hidden, branch_idx=1)
-            second_branch_out = self._run_second_branch(hidden)
-            partial_block = partial_block + second_branch_out
+            partial_block = partial_block + self._run_second_branch(hidden)
 
-            if self.attnres_mode == "delta":
-                completed_blocks, completed_blocks_norm = _append_block_cache(
-                    completed_blocks,
-                    completed_blocks_norm,
-                    second_branch_out,
-                    rms_eps=block_rms_eps,
-                )
-            elif self.attnres_mode == "full":
+            if self.attnres_mode == "full":
                 completed_blocks, completed_blocks_norm = _append_block_cache(
                     completed_blocks,
                     completed_blocks_norm,

@@ -2043,7 +2043,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-attention-residuals", action="store_true")
     parser.add_argument("--attention-residual-num-blocks", type=int, default=8)
     parser.add_argument("--attention-residual-recency-bias-init", type=float, default=0.0)
-    parser.add_argument("--attention-residual-mode", choices=("block", "full", "delta"), default="block")
+    parser.add_argument("--attention-residual-mode", choices=("block", "full"), default="block")
     parser.add_argument(
         "--attention-residual-gate-type",
         choices=("bias", "sigmoid_scalar", "sigmoid_vector"),
