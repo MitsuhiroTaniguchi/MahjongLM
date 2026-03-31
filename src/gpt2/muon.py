@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+from functools import lru_cache
+
 import torch
 
 YOU_COEFFICIENTS = (
@@ -26,6 +29,41 @@ POLAR_EXPRESS_COEFFICIENTS = tuple(
     )
     for (a, b, c) in _POLAR_EXPRESS_RAW_COEFFICIENTS
 )
+_SYMMETRIC_KERNEL_TILE_SIZE = 256
+_DISABLE_QUACK_GNS_ENV = "MAHJONGLM_DISABLE_QUACK_GNS"
+
+
+@lru_cache(maxsize=1)
+def _load_quack_gemm_ops():
+    try:
+        from quack.gemm_interface import gemm, gemm_add, gemm_symmetric
+    except Exception:
+        return None
+    return gemm_symmetric, gemm, gemm_add
+
+
+def _quack_gns_is_enabled() -> bool:
+    return os.environ.get(_DISABLE_QUACK_GNS_ENV, "").lower() not in {"1", "true", "yes", "on"}
+
+
+def _supports_quack_gns(grad: torch.Tensor) -> bool:
+    if not grad.is_cuda or not _quack_gns_is_enabled():
+        return False
+    ops = _load_quack_gemm_ops()
+    if ops is None:
+        return False
+    major, _minor = torch.cuda.get_device_capability(grad.device)
+    return major >= 9
+
+
+def get_muon_orthogonalization_backend(grad: torch.Tensor, *, steps: int) -> str:
+    if steps <= 0:
+        raise ValueError("Muon orthogonalization steps must be positive")
+    if steps > len(POLAR_EXPRESS_COEFFICIENTS):
+        return "standard_newton_schulz"
+    if _supports_quack_gns(grad):
+        return "quack_gram_newton_schulz"
+    return "torch_gram_newton_schulz"
 
 
 def _normalize_rows(tensor: torch.Tensor, eps: float) -> torch.Tensor:
@@ -122,6 +160,99 @@ def _gram_newton_schulz_zeropower(
     return update.to(original_dtype)
 
 
+def _quack_gram_newton_schulz_zeropower(
+    grad: torch.Tensor,
+    *,
+    coefficients: tuple[tuple[float, float, float], ...],
+    reset_iterations: tuple[int, ...],
+    eps: float,
+) -> torch.Tensor:
+    if grad.ndim < 2:
+        raise ValueError("Muon orthogonalization requires tensors with ndim >= 2")
+    if not coefficients:
+        raise ValueError("Gram Newton-Schulz requires at least one coefficient triple")
+
+    ops = _load_quack_gemm_ops()
+    if ops is None:
+        return _gram_newton_schulz_zeropower(
+            grad,
+            coefficients=coefficients,
+            reset_iterations=reset_iterations,
+            eps=eps,
+        )
+    gemm_symmetric, gemm, gemm_add = ops
+
+    original_shape = grad.shape
+    update = grad
+    if update.ndim == 2:
+        update = update.unsqueeze(0)
+    elif update.ndim > 3:
+        update = update.reshape(-1, *update.shape[-2:])
+
+    original_dtype = update.dtype
+    update = update.to(torch.float32)
+    transposed = False
+    if update.size(-2) > update.size(-1):
+        update = update.mT
+        transposed = True
+
+    update = update / (update.norm(dim=(-2, -1), keepdim=True) + eps)
+    update = update.to(torch.float16)
+
+    use_kernel = update.size(-2) > _SYMMETRIC_KERNEL_TILE_SIZE
+    if update.size(-2) != update.size(-1):
+        gram = gemm_symmetric(update, update.mT) if use_kernel else update @ update.mT
+        identity = (
+            torch.eye(gram.size(-1), device=gram.device, dtype=update.dtype)
+            .unsqueeze(0)
+            .expand(gram.size(0), -1, -1)
+            .contiguous()
+        )
+        transport = None
+        reset_set = set(reset_iterations)
+
+        for idx, (a, b, c) in enumerate(coefficients):
+            if idx in reset_set and idx != 0:
+                update = gemm(transport, update) if use_kernel else transport @ update
+                gram = gemm_symmetric(update, update.mT) if use_kernel else update @ update.mT
+                transport = None
+
+            if use_kernel:
+                z_term = gemm_symmetric(gram, gram, C=gram, alpha=c, beta=b)
+            else:
+                z_term = torch.baddbmm(gram, gram, gram, beta=b, alpha=c)
+            if transport is None:
+                transport = z_term + a * identity
+            elif use_kernel:
+                transport = gemm_symmetric(transport, z_term, C=transport, beta=a)
+            else:
+                transport = torch.baddbmm(transport, transport, z_term, beta=a)
+
+            if idx < len(coefficients) - 1 and idx + 1 not in reset_set:
+                if use_kernel:
+                    gram_z = gemm_symmetric(gram, z_term, C=gram, beta=a)
+                    gram = gemm_symmetric(z_term, gram_z, C=gram_z, beta=a)
+                else:
+                    gram_z = torch.baddbmm(gram, gram, z_term, beta=a)
+                    gram = torch.baddbmm(gram_z, z_term, gram_z, beta=a)
+
+        update = gemm(transport, update) if use_kernel else transport @ update
+    else:
+        for a, b, c in coefficients:
+            gram = gemm_symmetric(update, update.mT) if use_kernel else update @ update.mT
+            if use_kernel:
+                poly = gemm_symmetric(gram, gram, C=gram, alpha=c, beta=b)
+                update = gemm_add(poly, update, C=update, beta=a)
+            else:
+                poly = torch.baddbmm(gram, gram, gram, beta=b, alpha=c)
+                update = torch.baddbmm(update, poly, update, beta=a)
+
+    if transposed:
+        update = update.mT
+    update = update.to(original_dtype).reshape(original_shape)
+    return update
+
+
 def zeropower_via_newtonschulz5(grad: torch.Tensor, steps: int) -> torch.Tensor:
     """Approximate orthogonalization used by Muon.
 
@@ -131,9 +262,15 @@ def zeropower_via_newtonschulz5(grad: torch.Tensor, steps: int) -> torch.Tensor:
     reducing work from the full rectangular matrix to its Gram matrix.
     For other step counts, fall back to the original Newton-Schulz-5 update.
     """
-    if steps <= 0:
-        raise ValueError("Muon orthogonalization steps must be positive")
-    if steps <= len(POLAR_EXPRESS_COEFFICIENTS):
+    backend = get_muon_orthogonalization_backend(grad, steps=steps)
+    if backend == "quack_gram_newton_schulz":
+        return _quack_gram_newton_schulz_zeropower(
+            grad,
+            coefficients=POLAR_EXPRESS_COEFFICIENTS[:steps],
+            reset_iterations=(2,) if steps > 2 else (),
+            eps=1e-7,
+        )
+    if backend == "torch_gram_newton_schulz":
         return _gram_newton_schulz_zeropower(
             grad,
             coefficients=POLAR_EXPRESS_COEFFICIENTS[:steps],
