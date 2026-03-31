@@ -231,7 +231,7 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
             ).squeeze(-1)
         if bias is not None:
             logits = logits + bias
-        output = source.to(torch.float32)
+        output = source
         max_logits = logits.to(torch.float32)
         lse = torch.ones_like(max_logits)
         return output, max_logits, lse
@@ -250,7 +250,7 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
         merged_max = torch.maximum(inter_max, intra_max)
         inter_scale = torch.exp(inter_max - merged_max)
         intra_scale = torch.exp(intra_max - merged_max)
-        numerator = inter_scale.unsqueeze(-1) * inter_output + intra_scale.unsqueeze(-1) * intra_output
+        numerator = inter_scale.unsqueeze(-1) * inter_output.to(torch.float32) + intra_scale.unsqueeze(-1) * intra_output.to(torch.float32)
         denominator = inter_scale * inter_lse + intra_scale * intra_lse
         return (numerator / denominator.unsqueeze(-1)).to(dtype=target_dtype)
 
@@ -291,13 +291,13 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
 
         queries = torch.stack([query.to(dtype=completed_blocks.dtype) for _, _, query, _ in query_specs], dim=0)
         flat_keys = completed_blocks_norm.permute(1, 2, 0, 3).contiguous().view(batch_size * seq_len, num_blocks, hidden_size)
-        flat_values = completed_blocks.permute(1, 2, 0, 3).contiguous().view(batch_size * seq_len, num_blocks, hidden_size).to(torch.float32)
+        flat_values = completed_blocks.permute(1, 2, 0, 3).contiguous().view(batch_size * seq_len, num_blocks, hidden_size)
 
         flat_logits = torch.matmul(flat_keys, queries.t())  # [B*T, N, Q]
         flat_max_logits = flat_logits.amax(dim=1)
         flat_exp_logits = torch.exp(flat_logits - flat_max_logits.unsqueeze(1))
         flat_lse = flat_exp_logits.sum(dim=1)
-        flat_outputs = torch.bmm(flat_exp_logits.permute(0, 2, 1).to(torch.float32), flat_values)  # [B*T, Q, D]
+        flat_outputs = torch.bmm(flat_exp_logits.permute(0, 2, 1).to(flat_values.dtype), flat_values)  # [B*T, Q, D]
 
         max_logits = flat_max_logits.view(batch_size, seq_len, num_queries).permute(2, 0, 1).contiguous()
         lse = flat_lse.view(batch_size, seq_len, num_queries).permute(2, 0, 1).contiguous()
