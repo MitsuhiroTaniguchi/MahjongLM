@@ -125,7 +125,7 @@ def evaluate_checkpoint(
     losses: list[float] = []
     packed_tokens = 0
     padded_tokens = 0
-    with torch.no_grad():
+    with torch.inference_mode():
         for batch in eval_loader:
             assert isinstance(batch, (PackedBatch, UnpackedBatch))
             with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=autocast_dtype is not None):

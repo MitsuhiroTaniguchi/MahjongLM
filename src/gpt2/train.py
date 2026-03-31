@@ -770,7 +770,7 @@ def _evaluate_over_dataloaders(model, dataloaders, device, autocast_dtype, torch
     losses: list[float] = []
     packed_tokens = 0
     padded_tokens = 0
-    with torch.no_grad():
+    with torch.inference_mode():
         for dataloader in dataloaders:
             for batch in dataloader:
                 assert isinstance(batch, (PackedBatch, UnpackedBatch))

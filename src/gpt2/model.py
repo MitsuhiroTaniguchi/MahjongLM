@@ -191,13 +191,20 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
         recency_bias: nn.Parameter,
         return_entropy: bool = False,
     ):
-        values = torch.stack(blocks + [partial_block], dim=0)
-        keys = norm(values)
+        sources = [*blocks, partial_block]
         query = proj.weight.view(-1)
-        logits = torch.einsum("d, n b t d -> n b t", query, keys)
-        logits[-1] = logits[-1] + recency_bias
+        logits = []
+        for source_idx, source in enumerate(sources):
+            key = norm(source)
+            source_logits = torch.einsum("d, b t d -> b t", query, key)
+            if source_idx == len(sources) - 1:
+                source_logits = source_logits + recency_bias
+            logits.append(source_logits)
+        logits = torch.stack(logits, dim=0)
         weights = logits.softmax(dim=0)
-        hidden = torch.einsum("n b t, n b t d -> b t d", weights, values)
+        hidden = torch.zeros_like(partial_block)
+        for source_idx, source in enumerate(sources):
+            hidden = hidden + weights[source_idx].unsqueeze(-1) * source
         if return_entropy:
             entropy = -(weights * (weights + 1e-8).log()).sum(dim=0).mean()
             return hidden, entropy
