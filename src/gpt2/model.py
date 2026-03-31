@@ -194,6 +194,84 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
         query = proj.weight.view(-1)
         return query * scaled_weight.to(dtype=query.dtype), float(eps)
 
+    def _single_source_attn_stats(
+        source: torch.Tensor,
+        proj: nn.Linear,
+        norm: nn.Module,
+        bias: torch.Tensor | nn.Parameter | float | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        direct_query, rms_eps = _direct_rmsnorm_query(proj, norm)
+        if direct_query is None:
+            logits = nn.functional.linear(norm(source), proj.weight).squeeze(-1)
+        else:
+            source_fp32 = source.to(torch.float32)
+            inv_rms = torch.rsqrt(source_fp32.square().mean(dim=-1, keepdim=True) + rms_eps)
+            logits = nn.functional.linear((source_fp32 * inv_rms).to(dtype=source.dtype), direct_query.to(dtype=source.dtype).unsqueeze(0)).squeeze(-1)
+        if bias is not None:
+            logits = logits + bias
+        output = source.to(torch.float32)
+        max_logits = logits.to(torch.float32)
+        lse = torch.ones_like(max_logits)
+        return output, max_logits, lse
+
+    def _merge_attn_stats(
+        inter_stats: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None,
+        intra_stats: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        *,
+        target_dtype: torch.dtype,
+    ) -> torch.Tensor:
+        intra_output, intra_max, intra_lse = intra_stats
+        if inter_stats is None:
+            return intra_output.to(dtype=target_dtype)
+
+        inter_output, inter_max, inter_lse = inter_stats
+        merged_max = torch.maximum(inter_max, intra_max)
+        inter_scale = torch.exp(inter_max - merged_max)
+        intra_scale = torch.exp(intra_max - merged_max)
+        numerator = inter_scale.unsqueeze(-1) * inter_output + intra_scale.unsqueeze(-1) * intra_output
+        denominator = inter_scale * inter_lse + intra_scale * intra_lse
+        return (numerator / denominator.unsqueeze(-1)).to(dtype=target_dtype)
+
+    def _precompute_interblock_attn(
+        blocks: list[torch.Tensor],
+        layers: list["Qwen3AttentionResidualLayer"],
+    ) -> list[tuple[tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None, tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None]]:
+        if not blocks:
+            return [(None, None) for _ in layers]
+
+        query_specs: list[tuple[int, int, torch.Tensor, float]] = []
+        for layer_idx, layer in enumerate(layers):
+            first_query, first_eps = _direct_rmsnorm_query(layer.first_res_proj, layer.first_res_norm)
+            if first_query is None:
+                return [(None, None) for _ in layers]
+            query_specs.append((layer_idx, 0, first_query, first_eps))
+            if layer.with_mlp_block:
+                second_query, second_eps = _direct_rmsnorm_query(layer.second_res_proj, layer.second_res_norm)
+                if second_query is None:
+                    return [(None, None) for _ in layers]
+                query_specs.append((layer_idx, 1, second_query, second_eps))
+
+        eps_values = {eps for _, _, _, eps in query_specs}
+        if len(eps_values) != 1:
+            return [(None, None) for _ in layers]
+
+        blocks_tensor = torch.stack(blocks, dim=0)
+        blocks_fp32 = blocks_tensor.to(torch.float32)
+        inv_rms = torch.rsqrt(blocks_fp32.square().mean(dim=-1, keepdim=True) + next(iter(eps_values)))
+        normalized_blocks = (blocks_fp32 * inv_rms).to(dtype=blocks_tensor.dtype)
+        queries = torch.stack([query.to(dtype=blocks_tensor.dtype) for _, _, query, _ in query_specs], dim=0)
+
+        logits = nn.functional.linear(normalized_blocks, queries).permute(3, 0, 1, 2).contiguous()
+        max_logits = logits.amax(dim=1)
+        exp_logits = torch.exp(logits - max_logits.unsqueeze(1))
+        lse = exp_logits.sum(dim=1)
+        outputs = torch.einsum("qnbt,nbtd->qbtd", exp_logits, blocks_fp32)
+
+        per_layer: list[list[tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None]] = [[None, None] for _ in layers]
+        for query_idx, (layer_idx, branch_idx, _, _) in enumerate(query_specs):
+            per_layer[layer_idx][branch_idx] = (outputs[query_idx], max_logits[query_idx], lse[query_idx])
+        return [(branch_stats[0], branch_stats[1]) for branch_stats in per_layer]
+
     def block_attn_res(
         blocks: list[torch.Tensor],
         partial_block: torch.Tensor,
@@ -338,6 +416,8 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
             use_cache: bool | None = False,
             cache_position: torch.LongTensor | None = None,
             position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+            first_inter_stats=None,
+            second_inter_stats=None,
             **kwargs,
         ):
             entropy_accum = kwargs.pop("entropy_accum", None)
@@ -348,9 +428,16 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
                 )
                 entropy_accum.append(entropy)
             else:
-                attnres_hidden = block_attn_res(
-                    blocks, partial_block, self.first_res_proj, self.first_res_norm, self.first_res_bias
-                )
+                if first_inter_stats is None:
+                    attnres_hidden = block_attn_res(
+                        blocks, partial_block, self.first_res_proj, self.first_res_norm, self.first_res_bias
+                    )
+                else:
+                    attnres_hidden = _merge_attn_stats(
+                        first_inter_stats,
+                        _single_source_attn_stats(partial_block, self.first_res_proj, self.first_res_norm, self.first_res_bias),
+                        target_dtype=partial_block.dtype,
+                    )
             hidden = self._apply_gate(partial_block, attnres_hidden, branch_idx=0)
 
             if self.attnres_mode == "block" and self.is_block_boundary:
@@ -382,9 +469,16 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
                 )
                 entropy_accum.append(entropy)
             else:
-                attnres_hidden = block_attn_res(
-                    blocks, partial_block, self.second_res_proj, self.second_res_norm, self.second_res_bias
-                )
+                if second_inter_stats is None:
+                    attnres_hidden = block_attn_res(
+                        blocks, partial_block, self.second_res_proj, self.second_res_norm, self.second_res_bias
+                    )
+                else:
+                    attnres_hidden = _merge_attn_stats(
+                        second_inter_stats,
+                        _single_source_attn_stats(partial_block, self.second_res_proj, self.second_res_norm, self.second_res_bias),
+                        target_dtype=partial_block.dtype,
+                    )
             hidden = self._apply_gate(partial_block, attnres_hidden, branch_idx=1)
             partial_block = partial_block + self._run_second_branch(hidden)
 
@@ -448,31 +542,46 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
         entropy_lambda = kwargs.pop("entropy_lambda", 0.0)
         entropy_accum = [] if entropy_lambda > 0 else None
 
-        for layer in self.layers:
-            if self.gradient_checkpointing and self.training and not getattr(self.config, "use_attention_residuals", False):
-                blocks, partial_block = self._gradient_checkpointing_func(
-                    layer.__call__,
-                    blocks,
-                    partial_block,
-                    causal_mask_mapping[layer.attention_type],
-                    position_ids,
-                    past_key_values,
-                    use_cache,
-                    cache_position,
-                    position_embeddings,
-                )
-            else:
-                blocks, partial_block = layer(
-                    blocks=blocks,
-                    partial_block=partial_block,
-                    attention_mask=causal_mask_mapping[layer.attention_type],
-                    position_ids=position_ids,
-                    past_key_values=past_key_values,
-                    use_cache=use_cache,
-                    cache_position=cache_position,
-                    position_embeddings=position_embeddings,
-                    entropy_accum=entropy_accum,
-                )
+        layer_idx = 0
+        while layer_idx < len(self.layers):
+            layer = self.layers[layer_idx]
+            block_span = getattr(layer, "layers_per_block", 1)
+            block_layers = list(self.layers[layer_idx : layer_idx + block_span])
+            precomputed_inter = None if entropy_accum is not None else _precompute_interblock_attn(blocks, block_layers)
+
+            for block_offset, layer in enumerate(block_layers):
+                first_inter_stats = None
+                second_inter_stats = None
+                if precomputed_inter is not None:
+                    first_inter_stats, second_inter_stats = precomputed_inter[block_offset]
+
+                if self.gradient_checkpointing and self.training and not getattr(self.config, "use_attention_residuals", False):
+                    blocks, partial_block = self._gradient_checkpointing_func(
+                        layer.__call__,
+                        blocks,
+                        partial_block,
+                        causal_mask_mapping[layer.attention_type],
+                        position_ids,
+                        past_key_values,
+                        use_cache,
+                        cache_position,
+                        position_embeddings,
+                    )
+                else:
+                    blocks, partial_block = layer(
+                        blocks=blocks,
+                        partial_block=partial_block,
+                        attention_mask=causal_mask_mapping[layer.attention_type],
+                        position_ids=position_ids,
+                        past_key_values=past_key_values,
+                        use_cache=use_cache,
+                        cache_position=cache_position,
+                        position_embeddings=position_embeddings,
+                        entropy_accum=entropy_accum,
+                        first_inter_stats=first_inter_stats,
+                        second_inter_stats=second_inter_stats,
+                    )
+            layer_idx += len(block_layers)
 
         hidden_states = self.norm(partial_block)
         outputs = BaseModelOutputWithPast(
