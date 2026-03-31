@@ -124,12 +124,15 @@ def _patch_qwen3_with_gated_attention(model) -> None:
         new_attn = Qwen3_5Attention(qwen35_attention_config, layer_idx)
         new_attn.to(device=old_attn.q_proj.weight.device, dtype=old_attn.q_proj.weight.dtype)
         with torch.no_grad():
-            q_out = old_attn.q_proj.weight.shape[0]
             new_attn.q_proj.weight.zero_()
-            new_attn.q_proj.weight[:q_out].copy_(old_attn.q_proj.weight)
+            old_q_weight = old_attn.q_proj.weight.view(model.config.num_attention_heads, model.config.head_dim, model.config.hidden_size)
+            new_q_weight = new_attn.q_proj.weight.view(model.config.num_attention_heads, model.config.head_dim * 2, model.config.hidden_size)
+            new_q_weight[:, : model.config.head_dim, :].copy_(old_q_weight)
             if old_attn.q_proj.bias is not None and new_attn.q_proj.bias is not None:
                 new_attn.q_proj.bias.zero_()
-                new_attn.q_proj.bias[:q_out].copy_(old_attn.q_proj.bias)
+                old_q_bias = old_attn.q_proj.bias.view(model.config.num_attention_heads, model.config.head_dim)
+                new_q_bias = new_attn.q_proj.bias.view(model.config.num_attention_heads, model.config.head_dim * 2)
+                new_q_bias[:, : model.config.head_dim].copy_(old_q_bias)
             new_attn.k_proj.load_state_dict(old_attn.k_proj.state_dict())
             new_attn.v_proj.load_state_dict(old_attn.v_proj.state_dict())
             new_attn.o_proj.load_state_dict(old_attn.o_proj.state_dict())
