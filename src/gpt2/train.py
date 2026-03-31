@@ -1475,25 +1475,6 @@ def train(
 
     device = _select_device(torch)
     autocast_dtype = _resolve_dtype(torch, training_config, device)
-    if (
-        device.type == "cuda"
-        and training_config.eval_device == "cuda"
-        and not training_config.use_separate_eval_process
-        and isinstance(model_config, TinyQwen3Config)
-        and (model_config.use_attention_residuals or model_config.use_mamba3_hybrid)
-    ):
-        training_config = replace(
-            training_config,
-            use_separate_eval_process=True,
-            eval_device="cpu",
-        )
-        _wandb_summary_update_if_available(
-            wandb,
-            {
-                "run/eval_strategy": "subprocess_cpu_auto",
-                "run/eval_device_effective": training_config.eval_device,
-            },
-        )
     if resume_checkpoint_dir is not None:
         model = load_saved_causal_lm(
             model_dir=resume_checkpoint_dir / "model",
