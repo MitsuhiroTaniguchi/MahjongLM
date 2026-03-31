@@ -293,7 +293,7 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
         max_logits = logits.amax(dim=1)
         exp_logits = torch.exp(logits - max_logits.unsqueeze(1))
         lse = exp_logits.sum(dim=1)
-        outputs = torch.einsum("qnbt,nbtd->qbtd", exp_logits, blocks_fp32)
+        outputs = torch.einsum("qnbt,nbtd->qbtd", exp_logits.to(torch.float32), blocks_fp32)
 
         per_layer: list[list[tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None]] = [[None, None] for _ in layers]
         for query_idx, (layer_idx, branch_idx, _, _) in enumerate(query_specs):
