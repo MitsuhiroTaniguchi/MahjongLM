@@ -183,6 +183,17 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
         std = float(getattr(model.config, "initializer_range", 0.02))
         nn.init.normal_(linear.weight, mean=0.0, std=std)
 
+    def _direct_rmsnorm_query(proj: nn.Linear, norm: nn.Module) -> tuple[torch.Tensor, float] | tuple[None, None]:
+        eps = getattr(norm, "variance_epsilon", getattr(norm, "eps", None))
+        weight = getattr(norm, "weight", None)
+        if eps is None or weight is None:
+            return None, None
+        scaled_weight = weight
+        if norm.__class__.__name__ == "Qwen3_5RMSNorm":
+            scaled_weight = 1.0 + scaled_weight
+        query = proj.weight.view(-1)
+        return query * scaled_weight.to(dtype=query.dtype), float(eps)
+
     def block_attn_res(
         blocks: list[torch.Tensor],
         partial_block: torch.Tensor,
@@ -191,12 +202,18 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
         recency_bias: nn.Parameter,
         return_entropy: bool = False,
     ):
+        direct_query, rms_eps = _direct_rmsnorm_query(proj, norm)
         sources = [*blocks, partial_block]
-        query = proj.weight.view(-1)
+        if direct_query is not None:
+            direct_query = direct_query.to(dtype=partial_block.dtype)
         logits = []
         for source_idx, source in enumerate(sources):
-            key = norm(source)
-            source_logits = torch.einsum("d, b t d -> b t", query, key)
+            if direct_query is None:
+                source_logits = nn.functional.linear(norm(source), proj.weight).squeeze(-1)
+            else:
+                source_fp32 = source.to(torch.float32)
+                inv_rms = torch.rsqrt(source_fp32.square().mean(dim=-1, keepdim=True) + rms_eps)
+                source_logits = nn.functional.linear((source_fp32 * inv_rms).to(dtype=source.dtype), direct_query.unsqueeze(0)).squeeze(-1)
             if source_idx == len(sources) - 1:
                 source_logits = source_logits + recency_bias
             logits.append(source_logits)
@@ -204,7 +221,7 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
         weights = logits.softmax(dim=0)
         hidden = torch.zeros_like(partial_block)
         for source_idx, source in enumerate(sources):
-            hidden = hidden + weights[source_idx].unsqueeze(-1) * source
+            hidden = hidden + weights[source_idx].to(dtype=partial_block.dtype).unsqueeze(-1) * source
         if return_entropy:
             entropy = -(weights * (weights + 1e-8).log()).sum(dim=0).mean()
             return hidden, entropy
