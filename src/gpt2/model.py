@@ -457,7 +457,10 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
                         cos_t = flat_args[num_blocks + 5]
                         sin_t = flat_args[num_blocks + 6]
                         _checkpoint_token = flat_args[num_blocks + 7]
-                        new_blocks, new_partial = layer(
+                        # Avoid nested reentrant checkpointing through
+                        # GradientCheckpointingLayer.__call__ here. The outer
+                        # per-layer checkpoint already covers this work.
+                        new_blocks, new_partial = layer.forward(
                             blocks=block_tensors,
                             partial_block=partial,
                             attention_mask=attn_mask,
