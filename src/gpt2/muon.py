@@ -53,7 +53,8 @@ def _supports_quack_gns(grad: torch.Tensor) -> bool:
     if ops is None:
         return False
     major, _minor = torch.cuda.get_device_capability(grad.device)
-    return major >= 9
+    # Current quack releases support SM90/SM100/SM110 kernels, but not SM120.
+    return major in {9, 10, 11}
 
 
 def get_muon_orthogonalization_backend(grad: torch.Tensor, *, steps: int) -> str:
