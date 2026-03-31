@@ -286,14 +286,22 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
                      (completed_blocks.new_empty(0), completed_blocks.new_empty(0), completed_blocks.new_empty(0)))
                     for _ in layers]
 
-        blocks_fp32 = completed_blocks.to(torch.float32)
-        queries = torch.stack([query.to(dtype=completed_blocks.dtype) for _, _, query, _ in query_specs], dim=0)
+        num_blocks, batch_size, seq_len, hidden_size = completed_blocks.shape
+        num_queries = len(query_specs)
 
-        logits = nn.functional.linear(completed_blocks_norm, queries).permute(3, 0, 1, 2).contiguous()
-        max_logits = logits.amax(dim=1)
-        exp_logits = torch.exp(logits - max_logits.unsqueeze(1))
-        lse = exp_logits.sum(dim=1)
-        outputs = torch.einsum("qnbt,nbtd->qbtd", exp_logits.to(torch.float32), blocks_fp32)
+        queries = torch.stack([query.to(dtype=completed_blocks.dtype) for _, _, query, _ in query_specs], dim=0)
+        flat_keys = completed_blocks_norm.permute(1, 2, 0, 3).contiguous().view(batch_size * seq_len, num_blocks, hidden_size)
+        flat_values = completed_blocks.permute(1, 2, 0, 3).contiguous().view(batch_size * seq_len, num_blocks, hidden_size).to(torch.float32)
+
+        flat_logits = torch.matmul(flat_keys, queries.t())  # [B*T, N, Q]
+        flat_max_logits = flat_logits.amax(dim=1)
+        flat_exp_logits = torch.exp(flat_logits - flat_max_logits.unsqueeze(1))
+        flat_lse = flat_exp_logits.sum(dim=1)
+        flat_outputs = torch.bmm(flat_exp_logits.permute(0, 2, 1).to(torch.float32), flat_values)  # [B*T, Q, D]
+
+        max_logits = flat_max_logits.view(batch_size, seq_len, num_queries).permute(2, 0, 1).contiguous()
+        lse = flat_lse.view(batch_size, seq_len, num_queries).permute(2, 0, 1).contiguous()
+        outputs = flat_outputs.view(batch_size, seq_len, num_queries, hidden_size).permute(2, 0, 1, 3).contiguous()
 
         per_layer: list[list[tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None]] = [[None, None] for _ in layers]
         for query_idx, (layer_idx, branch_idx, _, _) in enumerate(query_specs):
