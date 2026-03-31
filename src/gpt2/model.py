@@ -335,7 +335,12 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
                     blocks, partial_block, self.first_res_proj, self.first_res_norm, self.first_res_bias
                 )
             hidden = self._apply_gate(partial_block, attnres_hidden, branch_idx=0)
-            partial_block = partial_block + self._run_first_branch(
+
+            if self.attnres_mode == "block" and self.is_block_boundary:
+                blocks = blocks + [partial_block]
+                partial_block = torch.zeros_like(partial_block)
+
+            first_branch_out = self._run_first_branch(
                 hidden,
                 attention_mask,
                 position_ids,
@@ -344,12 +349,13 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
                 cache_position,
                 position_embeddings,
             )
+            partial_block = partial_block + first_branch_out
 
             if self.attnres_mode == "full":
                 blocks = blocks + [partial_block]
 
             if not self.with_mlp_block:
-                if self.attnres_mode == "full" or self.is_block_boundary:
+                if self.attnres_mode == "full":
                     blocks = blocks + [partial_block]
                 return blocks, partial_block
 
@@ -365,7 +371,7 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
             hidden = self._apply_gate(partial_block, attnres_hidden, branch_idx=1)
             partial_block = partial_block + self._run_second_branch(hidden)
 
-            if self.attnres_mode == "full" or self.is_block_boundary:
+            if self.attnres_mode == "full":
                 blocks = blocks + [partial_block]
             return blocks, partial_block
 
@@ -419,7 +425,7 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
             causal_mask_mapping = attention_mask
 
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
-        blocks = [inputs_embeds]
+        blocks = []
         partial_block = inputs_embeds
 
         entropy_lambda = kwargs.pop("entropy_lambda", 0.0)
@@ -439,80 +445,17 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
                     position_embeddings,
                 )
             else:
-                if self.gradient_checkpointing and self.training:
-                    if past_key_values is not None:
-                        raise NotImplementedError("AttnRes checkpointing currently does not support KV cache.")
-
-                    attention_mask_for_layer = causal_mask_mapping[layer.attention_type]
-                    cos, sin = position_embeddings
-
-                    def _run_attnres_layer(*flat_args):
-                        num_blocks = len(flat_args) - 8
-                        block_tensors = list(flat_args[:num_blocks])
-                        partial = flat_args[num_blocks]
-                        attn_mask = flat_args[num_blocks + 1]
-                        pos_ids = flat_args[num_blocks + 2]
-                        use_cache_flag = bool(flat_args[num_blocks + 3].item())
-                        cache_pos = flat_args[num_blocks + 4]
-                        cos_t = flat_args[num_blocks + 5]
-                        sin_t = flat_args[num_blocks + 6]
-                        _checkpoint_token = flat_args[num_blocks + 7]
-                        # Avoid nested reentrant checkpointing through
-                        # GradientCheckpointingLayer.__call__ here. The outer
-                        # per-layer checkpoint already covers this work.
-                        new_blocks, new_partial = layer.forward(
-                            blocks=block_tensors,
-                            partial_block=partial,
-                            attention_mask=attn_mask,
-                            position_ids=pos_ids,
-                            past_key_values=None,
-                            use_cache=use_cache_flag,
-                            cache_position=cache_pos,
-                            position_embeddings=(cos_t, sin_t),
-                            entropy_accum=None,
-                        )
-                        return tuple(new_blocks + [new_partial])
-
-                    use_cache_tensor = torch.tensor(
-                        1 if use_cache else 0,
-                        device=partial_block.device,
-                        dtype=torch.int64,
-                    )
-                    # Reentrant checkpointing needs at least one grad-tracking input,
-                    # even though this branch only differentiates through module params.
-                    checkpoint_token = torch.zeros(
-                        1,
-                        device=partial_block.device,
-                        dtype=partial_block.dtype,
-                        requires_grad=True,
-                    )
-                    outputs = self._gradient_checkpointing_func(
-                        _run_attnres_layer,
-                        *blocks,
-                        partial_block,
-                        attention_mask_for_layer,
-                        position_ids,
-                        use_cache_tensor,
-                        cache_position,
-                        cos,
-                        sin,
-                        checkpoint_token,
-                    )
-                    outputs = list(outputs)
-                    blocks = outputs[:-1]
-                    partial_block = outputs[-1]
-                else:
-                    blocks, partial_block = layer(
-                        blocks=blocks,
-                        partial_block=partial_block,
-                        attention_mask=causal_mask_mapping[layer.attention_type],
-                        position_ids=position_ids,
-                        past_key_values=past_key_values,
-                        use_cache=use_cache,
-                        cache_position=cache_position,
-                        position_embeddings=position_embeddings,
-                        entropy_accum=entropy_accum,
-                    )
+                blocks, partial_block = layer(
+                    blocks=blocks,
+                    partial_block=partial_block,
+                    attention_mask=causal_mask_mapping[layer.attention_type],
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    use_cache=use_cache,
+                    cache_position=cache_position,
+                    position_embeddings=position_embeddings,
+                    entropy_accum=entropy_accum,
+                )
 
         hidden_states = self.norm(partial_block)
         outputs = BaseModelOutputWithPast(
