@@ -64,7 +64,7 @@ def get_muon_orthogonalization_backend(grad: torch.Tensor, *, steps: int) -> str
         return "standard_newton_schulz"
     if _supports_quack_gns(grad):
         return "quack_gram_newton_schulz"
-    return "torch_gram_newton_schulz"
+    return "standard_newton_schulz"
 
 
 def _normalize_rows(tensor: torch.Tensor, eps: float) -> torch.Tensor:
@@ -266,13 +266,6 @@ def zeropower_via_newtonschulz5(grad: torch.Tensor, steps: int) -> torch.Tensor:
     backend = get_muon_orthogonalization_backend(grad, steps=steps)
     if backend == "quack_gram_newton_schulz":
         return _quack_gram_newton_schulz_zeropower(
-            grad,
-            coefficients=POLAR_EXPRESS_COEFFICIENTS[:steps],
-            reset_iterations=(2,) if steps > 2 else (),
-            eps=1e-7,
-        )
-    if backend == "torch_gram_newton_schulz":
-        return _gram_newton_schulz_zeropower(
             grad,
             coefficients=POLAR_EXPRESS_COEFFICIENTS[:steps],
             reset_iterations=(2,) if steps > 2 else (),
