@@ -2,6 +2,31 @@ from __future__ import annotations
 
 import torch
 
+YOU_COEFFICIENTS = (
+    (4.0848, -6.8946, 2.9270),
+    (3.9505, -6.3029, 2.6377),
+    (3.7418, -5.5913, 2.3037),
+    (2.8769, -3.1427, 1.2046),
+    (2.8366, -3.0525, 1.2012),
+)
+
+_POLAR_EXPRESS_RAW_COEFFICIENTS = (
+    (8.28721201814563, -23.595886519098837, 17.300387312530933),
+    (4.107059111542203, -2.9478499167379106, 0.5448431082926601),
+    (3.9486908534822946, -2.908902115962949, 0.5518191394370137),
+    (3.3184196573706015, -2.488488024314874, 0.51004894012372),
+    (2.300652019954817, -1.6689039845747493, 0.4188073119525673),
+)
+_POLAR_EXPRESS_SAFETY_FACTOR = 1.05
+POLAR_EXPRESS_COEFFICIENTS = tuple(
+    (
+        a / _POLAR_EXPRESS_SAFETY_FACTOR,
+        b / _POLAR_EXPRESS_SAFETY_FACTOR**3,
+        c / _POLAR_EXPRESS_SAFETY_FACTOR**5,
+    )
+    for (a, b, c) in _POLAR_EXPRESS_RAW_COEFFICIENTS
+)
+
 
 def _normalize_rows(tensor: torch.Tensor, eps: float) -> torch.Tensor:
     return tensor / (tensor.norm(dim=-1, keepdim=True) + eps)
@@ -17,8 +42,7 @@ def apply_muonplus_normalization(update: torch.Tensor, *, enabled: bool, eps: fl
     return _normalize_cols(_normalize_rows(update, eps), eps)
 
 
-def zeropower_via_newtonschulz5(grad: torch.Tensor, steps: int) -> torch.Tensor:
-    """Approximate orthogonalization used by Muon."""
+def _standard_newton_schulz_zeropower(grad: torch.Tensor, steps: int) -> torch.Tensor:
     if grad.ndim < 2:
         raise ValueError("Muon orthogonalization requires tensors with ndim >= 2")
     a, b, c = (3.4445, -4.7750, 2.0315)
@@ -35,6 +59,88 @@ def zeropower_via_newtonschulz5(grad: torch.Tensor, steps: int) -> torch.Tensor:
     if transposed:
         update = update.mT
     return update
+
+
+def _gram_newton_schulz_zeropower(
+    grad: torch.Tensor,
+    *,
+    coefficients: tuple[tuple[float, float, float], ...],
+    reset_iterations: tuple[int, ...],
+    eps: float,
+) -> torch.Tensor:
+    if grad.ndim < 2:
+        raise ValueError("Muon orthogonalization requires tensors with ndim >= 2")
+    if not coefficients:
+        raise ValueError("Gram Newton-Schulz requires at least one coefficient triple")
+
+    original_dtype = grad.dtype
+    update = grad.to(torch.float32)
+    transposed = False
+    if update.size(-2) > update.size(-1):
+        update = update.mT
+        transposed = True
+
+    update = update / (update.norm(dim=(-2, -1), keepdim=True) + eps)
+    iter_dtype = torch.float16 if update.is_cuda else update.dtype
+    update = update.to(iter_dtype)
+
+    if update.size(-2) != update.size(-1):
+        gram = update @ update.mT
+        identity = torch.eye(gram.size(-1), device=gram.device, dtype=update.dtype)
+        transport = None
+        reset_set = set(reset_iterations)
+
+        for idx, (a, b, c) in enumerate(coefficients):
+            if idx in reset_set and idx != 0:
+                update = transport @ update
+                gram = update @ update.mT
+                transport = None
+
+            z_term = (
+                torch.baddbmm(gram, gram, gram, beta=b, alpha=c)
+                if gram.ndim == 3
+                else torch.addmm(gram * b, gram, gram, beta=1.0, alpha=c)
+            )
+            if transport is None:
+                transport = z_term + a * identity
+            else:
+                transport = torch.addmm(a * transport, transport, z_term, beta=1.0, alpha=1.0)
+
+            if idx < len(coefficients) - 1 and idx + 1 not in reset_set:
+                gram_z = torch.addmm(a * gram, gram, z_term, beta=1.0, alpha=1.0)
+                gram = torch.addmm(a * gram_z, z_term, gram_z, beta=1.0, alpha=1.0)
+
+        update = transport @ update
+    else:
+        for a, b, c in coefficients:
+            gram = update @ update.mT
+            poly = torch.addmm(b * gram, gram, gram, beta=1.0, alpha=c)
+            update = torch.addmm(a * update, update, poly, beta=1.0, alpha=1.0)
+
+    if transposed:
+        update = update.mT
+    return update.to(original_dtype)
+
+
+def zeropower_via_newtonschulz5(grad: torch.Tensor, steps: int) -> torch.Tensor:
+    """Approximate orthogonalization used by Muon.
+
+    For the common 5-step Muon setting, use Gram Newton-Schulz with the
+    Polar Express coefficients and a single restart after iteration 2.
+    This is mathematically equivalent to iterating on the polar factor while
+    reducing work from the full rectangular matrix to its Gram matrix.
+    For other step counts, fall back to the original Newton-Schulz-5 update.
+    """
+    if steps <= 0:
+        raise ValueError("Muon orthogonalization steps must be positive")
+    if steps <= len(POLAR_EXPRESS_COEFFICIENTS):
+        return _gram_newton_schulz_zeropower(
+            grad,
+            coefficients=POLAR_EXPRESS_COEFFICIENTS[:steps],
+            reset_iterations=(2,) if steps > 2 else (),
+            eps=1e-7,
+        )
+    return _standard_newton_schulz_zeropower(grad, steps=steps)
 
 
 def muon_update(
