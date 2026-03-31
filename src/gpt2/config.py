@@ -99,8 +99,8 @@ class TinyQwen3Config:
             raise ValueError("use_rescaled_residual and use_attention_residuals are mutually exclusive")
         if self.attention_residual_num_blocks <= 0:
             raise ValueError("attention_residual_num_blocks must be positive")
-        if self.attention_residual_mode not in {"block", "full"}:
-            raise ValueError("attention_residual_mode must be 'block' or 'full'")
+        if self.attention_residual_mode not in {"block", "full", "delta"}:
+            raise ValueError("attention_residual_mode must be 'block', 'full', or 'delta'")
         if self.attention_residual_gate_type not in {"bias", "sigmoid_scalar", "sigmoid_vector"}:
             raise ValueError("attention_residual_gate_type must be 'bias', 'sigmoid_scalar', or 'sigmoid_vector'")
         if self.mamba3_attention_period <= 0:
