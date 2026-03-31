@@ -254,37 +254,33 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
         denominator = inter_scale * inter_lse + intra_scale * intra_lse
         return (numerator / denominator.unsqueeze(-1)).to(dtype=target_dtype)
 
+    def _empty_inter_stats(source: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        empty = source.new_empty(0)
+        return empty, empty, empty
+
     def _precompute_interblock_attn(
         completed_blocks: torch.Tensor,
         completed_blocks_norm: torch.Tensor,
         layers: list["Qwen3AttentionResidualLayer"],
     ) -> list[tuple[tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None, tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None]]:
         if completed_blocks.shape[0] == 0:
-            return [((completed_blocks.new_empty(0), completed_blocks.new_empty(0), completed_blocks.new_empty(0)),
-                     (completed_blocks.new_empty(0), completed_blocks.new_empty(0), completed_blocks.new_empty(0)))
-                    for _ in layers]
+            return [(_empty_inter_stats(completed_blocks), _empty_inter_stats(completed_blocks)) for _ in layers]
 
         query_specs: list[tuple[int, int, torch.Tensor, float]] = []
         for layer_idx, layer in enumerate(layers):
             first_query, first_eps = _direct_rmsnorm_query(layer.first_res_proj, layer.first_res_norm)
             if first_query is None:
-                return [((completed_blocks.new_empty(0), completed_blocks.new_empty(0), completed_blocks.new_empty(0)),
-                         (completed_blocks.new_empty(0), completed_blocks.new_empty(0), completed_blocks.new_empty(0)))
-                        for _ in layers]
+                return [(_empty_inter_stats(completed_blocks), _empty_inter_stats(completed_blocks)) for _ in layers]
             query_specs.append((layer_idx, 0, first_query, first_eps))
             if layer.with_mlp_block:
                 second_query, second_eps = _direct_rmsnorm_query(layer.second_res_proj, layer.second_res_norm)
                 if second_query is None:
-                    return [((completed_blocks.new_empty(0), completed_blocks.new_empty(0), completed_blocks.new_empty(0)),
-                             (completed_blocks.new_empty(0), completed_blocks.new_empty(0), completed_blocks.new_empty(0)))
-                            for _ in layers]
+                    return [(_empty_inter_stats(completed_blocks), _empty_inter_stats(completed_blocks)) for _ in layers]
                 query_specs.append((layer_idx, 1, second_query, second_eps))
 
         eps_values = {eps for _, _, _, eps in query_specs}
         if len(eps_values) != 1:
-            return [((completed_blocks.new_empty(0), completed_blocks.new_empty(0), completed_blocks.new_empty(0)),
-                     (completed_blocks.new_empty(0), completed_blocks.new_empty(0), completed_blocks.new_empty(0)))
-                    for _ in layers]
+            return [(_empty_inter_stats(completed_blocks), _empty_inter_stats(completed_blocks)) for _ in layers]
 
         num_blocks, batch_size, seq_len, hidden_size = completed_blocks.shape
         num_queries = len(query_specs)
@@ -295,9 +291,10 @@ def _patch_qwen3_with_attention_residuals(model, model_config: TinyQwen3Config) 
 
         flat_logits = torch.matmul(flat_keys, queries.t())  # [B*T, N, Q]
         flat_max_logits = flat_logits.amax(dim=1)
-        flat_exp_logits = torch.exp(flat_logits - flat_max_logits.unsqueeze(1))
-        flat_lse = flat_exp_logits.sum(dim=1)
-        flat_outputs = torch.bmm(flat_exp_logits.permute(0, 2, 1).to(flat_values.dtype), flat_values)  # [B*T, Q, D]
+        flat_logits = flat_logits - flat_max_logits.unsqueeze(1)
+        flat_logits.exp_()
+        flat_lse = flat_logits.sum(dim=1)
+        flat_outputs = torch.bmm(flat_logits.permute(0, 2, 1).to(flat_values.dtype), flat_values)  # [B*T, Q, D]
 
         max_logits = flat_max_logits.view(batch_size, seq_len, num_queries).permute(2, 0, 1).contiguous()
         lse = flat_lse.view(batch_size, seq_len, num_queries).permute(2, 0, 1).contiguous()
