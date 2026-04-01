@@ -101,6 +101,15 @@ QWEN3_ARCH_PRESETS: dict[str, TinyQwen3Config] = {
         head_dim=128,
         max_position_embeddings=8192,
     ),
+    "W500F": TinyQwen3Config(
+        hidden_size=1280,
+        intermediate_size=5120,
+        num_hidden_layers=20,
+        num_attention_heads=10,
+        num_key_value_heads=5,
+        head_dim=128,
+        max_position_embeddings=8192,
+    ),
     "QM100S64": TinyQwen3Config(
         hidden_size=768,
         intermediate_size=2304,
