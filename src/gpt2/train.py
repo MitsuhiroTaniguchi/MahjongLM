@@ -690,7 +690,7 @@ def _load_trainer_state(checkpoint_dir: Path, torch) -> dict:
     trainer_state_path = Path(checkpoint_dir) / "trainer_state.pt"
     if not trainer_state_path.is_file():
         raise FileNotFoundError(f"trainer_state.pt not found under {checkpoint_dir}")
-    return torch.load(trainer_state_path, map_location="cpu")
+    return torch.load(trainer_state_path, map_location="cpu", weights_only=False)
 
 
 def _restore_rng_state(*, trainer_state: dict, torch, device) -> None:
