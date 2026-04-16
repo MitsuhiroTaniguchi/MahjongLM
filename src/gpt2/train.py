@@ -412,6 +412,8 @@ def _init_wandb(
     wandb.define_metric("trainer/global_step", summary="max")
     for metric_name in (
         "train/loss",
+        "train/loss_ce",
+        "train/loss_kd",
         "train/lr",
         "train/lr_aux",
         "train/grad_norm",
@@ -449,6 +451,29 @@ def _wandb_summary_update_if_available(wandb_run, payload: dict) -> None:
 def _save_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _resolve_named_device(torch, *, requested: str, fallback_device):
+    if requested == "same":
+        return fallback_device
+    if requested == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("distillation_teacher_device=cuda requested but CUDA is not available")
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+def _compute_distillation_kl_loss(*, student_logits, teacher_logits, labels, temperature: float, torch):
+    valid_mask = labels.ne(-100)
+    if not bool(valid_mask.any()):
+        return student_logits.new_zeros(())
+    masked_student = student_logits[valid_mask].float()
+    masked_teacher = teacher_logits[valid_mask].float()
+    scaled_student = masked_student / temperature
+    scaled_teacher = masked_teacher / temperature
+    student_log_probs = torch.nn.functional.log_softmax(scaled_student, dim=-1)
+    teacher_probs = torch.nn.functional.softmax(scaled_teacher, dim=-1)
+    return torch.nn.functional.kl_div(student_log_probs, teacher_probs, reduction="batchmean") * (temperature ** 2)
 
 
 def _build_cosine_scheduler_with_floor(optimizer, *, warmup_steps: int, total_steps: int, min_lr_ratio: float, torch):
@@ -907,12 +932,13 @@ def _run_train_batch(
     start_time: float,
     global_step: int,
     target_train_steps: int,
+    teacher_model,
     accumulation_step: int,
     accum_segment_count: int,
     accum_packed_row_count: int,
     accum_packed_tokens: int,
     accum_padded_tokens: int,
-) -> tuple[_StepTransition | None, int, int, int, int, int, int, float]:
+) -> tuple[_StepTransition | None, int, int, int, int, int, int, float, dict[str, float]]:
     assert isinstance(batch, (PackedBatch, UnpackedBatch))
     input_ids = batch.input_ids.to(device)
     attention_mask = batch.attention_mask.to(device)
@@ -929,9 +955,38 @@ def _run_train_batch(
             label_smoothing=training_config.label_smoothing,
             torch=torch,
         )
-        raw_loss = outputs.loss if smoothed_loss is None else smoothed_loss
+        raw_ce_loss = outputs.loss if smoothed_loss is None else smoothed_loss
+        raw_kd_loss = None
+        raw_loss = raw_ce_loss
+        if teacher_model is not None and training_config.distillation_alpha > 0.0:
+            teacher_device = next(teacher_model.parameters()).device
+            teacher_input_ids = input_ids if teacher_device == input_ids.device else input_ids.to(teacher_device)
+            teacher_attention_mask = (
+                attention_mask if teacher_device == attention_mask.device else attention_mask.to(teacher_device)
+            )
+            with torch.no_grad():
+                teacher_outputs = teacher_model(
+                    input_ids=teacher_input_ids,
+                    attention_mask=teacher_attention_mask,
+                )
+            raw_kd_loss = _compute_distillation_kl_loss(
+                student_logits=outputs.logits,
+                teacher_logits=teacher_outputs.logits.to(outputs.logits.device),
+                labels=labels,
+                temperature=training_config.distillation_temperature,
+                torch=torch,
+            )
+            raw_loss = (
+                (1.0 - training_config.distillation_alpha) * raw_ce_loss
+                + training_config.distillation_alpha * raw_kd_loss
+            )
         loss = raw_loss / training_config.gradient_accumulation_steps
     raw_loss_value = float(raw_loss.detach().cpu())
+    extra_train_metrics = {
+        "train/loss_ce": float(raw_ce_loss.detach().cpu()),
+    }
+    if raw_kd_loss is not None:
+        extra_train_metrics["train/loss_kd"] = float(raw_kd_loss.detach().cpu())
     if not torch.isfinite(loss):
         raise RuntimeError(f"non-finite loss at step {global_step + 1}: {raw_loss_value}")
     loss.backward()
@@ -964,6 +1019,7 @@ def _run_train_batch(
             training_config=training_config,
             wandb=wandb,
             start_time=start_time,
+            extra_train_metrics=extra_train_metrics,
         )
         transition = _StepTransition(
             global_step=global_step,
@@ -976,7 +1032,9 @@ def _run_train_batch(
         accum_packed_row_count = 0
         accum_packed_tokens = 0
         accum_padded_tokens = 0
-    del input_ids, attention_mask, labels, outputs, smoothed_loss, raw_loss, loss, batch
+    if raw_kd_loss is not None:
+        del teacher_outputs, raw_kd_loss
+    del input_ids, attention_mask, labels, outputs, smoothed_loss, raw_ce_loss, raw_loss, loss, batch
     return (
         transition,
         global_step,
@@ -986,6 +1044,7 @@ def _run_train_batch(
         accum_packed_tokens,
         accum_padded_tokens,
         raw_loss_value,
+        extra_train_metrics,
     )
 
 
@@ -1001,6 +1060,7 @@ def _flush_partial_optimizer_step(
     global_step: int,
     target_train_steps: int,
     latest_train_loss_value: float,
+    latest_extra_train_metrics: dict[str, float],
     accum_segment_count: int,
     accum_packed_row_count: int,
     accum_packed_tokens: int,
@@ -1028,6 +1088,7 @@ def _flush_partial_optimizer_step(
         training_config=training_config,
         wandb=wandb,
         start_time=start_time,
+        extra_train_metrics=latest_extra_train_metrics,
     )
     return _StepTransition(
         global_step=global_step,
@@ -1183,6 +1244,7 @@ def _finalize_optimizer_step(
     scheduler,
     wandb,
     start_time: float,
+    extra_train_metrics: dict[str, float] | None = None,
 ) -> tuple[dict[str, float], bool, bool]:
     latest_metrics = {
         "train/loss": float(train_loss_value),
@@ -1193,6 +1255,8 @@ def _finalize_optimizer_step(
         "train/tokens_per_step": float(step_stats.packed_tokens),
         "train/elapsed_sec": time.time() - start_time,
     }
+    if extra_train_metrics:
+        latest_metrics.update(extra_train_metrics)
     latest_metrics.update(
         _collect_optimizer_lrs(
             optimizer=optimizer,
@@ -1656,6 +1720,34 @@ def train(
     _save_json(output_dir / "training_config.json", json.loads(training_config.to_json()))
     _save_json(output_dir / "model_config.json", asdict(model_config))
 
+    teacher_model = None
+    teacher_device = None
+    if training_config.teacher_model_dir is not None:
+        teacher_device = _resolve_named_device(
+            torch,
+            requested=training_config.distillation_teacher_device,
+            fallback_device=device,
+        )
+        teacher_model = load_saved_causal_lm(
+            model_dir=training_config.teacher_model_dir,
+            attn_implementation=training_config.attn_implementation,
+            dtype=autocast_dtype,
+        )
+        teacher_model.to(teacher_device)
+        teacher_model.eval()
+        teacher_model.requires_grad_(False)
+        _wandb_summary_update_if_available(
+            wandb,
+            {
+                "distillation/enabled": True,
+                "distillation/teacher_model_dir": str(training_config.teacher_model_dir),
+                "distillation/teacher_device": str(teacher_device),
+                "distillation/teacher_parameter_count": count_parameters(teacher_model),
+                "distillation/alpha": training_config.distillation_alpha,
+                "distillation/temperature": training_config.distillation_temperature,
+            },
+        )
+
     global_step = 0
     accumulation_step = 0
     accum_segment_count = 0
@@ -1663,6 +1755,7 @@ def train(
     accum_packed_tokens = 0
     accum_padded_tokens = 0
     latest_train_loss_value = 0.0
+    latest_extra_train_metrics: dict[str, float] = {}
     optimizer.zero_grad(set_to_none=True)
     start_time = time.time()
     interrupted = False
@@ -1683,6 +1776,7 @@ def train(
         "accum_packed_tokens": 0,
         "accum_padded_tokens": 0,
         "latest_train_loss_value": 0.0,
+        "latest_extra_train_metrics": {},
         "best_early_stopping_metric": None,
         "non_improving_evals": 0,
     }
@@ -1706,6 +1800,7 @@ def train(
         accum_packed_tokens = int(inferred_runtime_state.get("accum_packed_tokens", 0))
         accum_padded_tokens = int(inferred_runtime_state.get("accum_padded_tokens", 0))
         latest_train_loss_value = float(inferred_runtime_state.get("latest_train_loss_value", 0.0))
+        latest_extra_train_metrics = dict(inferred_runtime_state.get("latest_extra_train_metrics", {}))
         best_early_stopping_metric = inferred_runtime_state.get("best_early_stopping_metric")
         non_improving_evals = int(inferred_runtime_state.get("non_improving_evals", 0))
         _wandb_summary_update_if_available(
@@ -1764,6 +1859,7 @@ def train(
                     "accum_packed_tokens": accum_packed_tokens,
                     "accum_padded_tokens": accum_padded_tokens,
                     "latest_train_loss_value": latest_train_loss_value,
+                    "latest_extra_train_metrics": latest_extra_train_metrics,
                     "best_early_stopping_metric": best_early_stopping_metric,
                     "non_improving_evals": non_improving_evals,
                 }
@@ -1796,6 +1892,7 @@ def train(
                         accum_packed_tokens,
                         accum_padded_tokens,
                         latest_train_loss_value,
+                        latest_extra_train_metrics,
                     ) = _run_train_batch(
                         batch=batch,
                         model=model,
@@ -1809,6 +1906,7 @@ def train(
                         start_time=start_time,
                         global_step=global_step,
                         target_train_steps=target_train_steps,
+                        teacher_model=teacher_model,
                         accumulation_step=accumulation_step,
                         accum_segment_count=accum_segment_count,
                         accum_packed_row_count=accum_packed_row_count,
@@ -1824,6 +1922,7 @@ def train(
                             "accum_packed_tokens": accum_packed_tokens,
                             "accum_padded_tokens": accum_padded_tokens,
                             "latest_train_loss_value": latest_train_loss_value,
+                            "latest_extra_train_metrics": latest_extra_train_metrics,
                             "best_early_stopping_metric": best_early_stopping_metric,
                             "non_improving_evals": non_improving_evals,
                         }
@@ -1889,6 +1988,7 @@ def train(
                     "accum_packed_tokens": accum_packed_tokens,
                     "accum_padded_tokens": accum_padded_tokens,
                     "latest_train_loss_value": latest_train_loss_value,
+                    "latest_extra_train_metrics": latest_extra_train_metrics,
                     "best_early_stopping_metric": best_early_stopping_metric,
                     "non_improving_evals": non_improving_evals,
                 }
@@ -1903,6 +2003,7 @@ def train(
                     global_step=global_step,
                     target_train_steps=target_train_steps,
                     latest_train_loss_value=latest_train_loss_value,
+                    latest_extra_train_metrics=latest_extra_train_metrics,
                     accum_segment_count=accum_segment_count,
                     accum_packed_row_count=accum_packed_row_count,
                     accum_packed_tokens=accum_packed_tokens,
@@ -2155,6 +2256,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb-run-id", type=str, default=None)
     parser.add_argument("--wandb-mode", type=str, default="online", choices=["online", "offline", "disabled"])
     parser.add_argument("--wandb-tags", action="append", default=[])
+    parser.add_argument("--teacher-model-dir", type=Path, default=None)
+    parser.add_argument("--distillation-alpha", type=float, default=0.0)
+    parser.add_argument("--distillation-temperature", type=float, default=1.0)
+    parser.add_argument(
+        "--distillation-teacher-device",
+        type=str,
+        default="same",
+        choices=["same", "cpu", "cuda"],
+    )
     parser.add_argument("--stop-file", type=Path, default=None)
     parser.add_argument("--keep-last-checkpoints", type=int, default=3)
     parser.add_argument("--detect-anomaly", action="store_true")
@@ -2343,6 +2453,10 @@ def main() -> None:
         wandb_resume_run_id=args.wandb_run_id,
         wandb_mode=args.wandb_mode,
         wandb_tags=tuple(args.wandb_tags),
+        teacher_model_dir=args.teacher_model_dir,
+        distillation_alpha=args.distillation_alpha,
+        distillation_temperature=args.distillation_temperature,
+        distillation_teacher_device=args.distillation_teacher_device,
         stop_file=args.stop_file,
         keep_last_checkpoints=args.keep_last_checkpoints,
         detect_anomaly=args.detect_anomaly,

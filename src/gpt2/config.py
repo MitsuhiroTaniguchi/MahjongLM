@@ -190,6 +190,10 @@ class TrainingConfig:
     resume_from_checkpoint: Path | None = None
     resume_latest_checkpoint: bool = False
     wandb_resume_run_id: str | None = None
+    teacher_model_dir: Path | None = None
+    distillation_alpha: float = 0.0
+    distillation_temperature: float = 1.0
+    distillation_teacher_device: str = "same"
 
     def validate(self) -> None:
         if not self.dataset_dirs:
@@ -272,6 +276,14 @@ class TrainingConfig:
             raise ValueError("eval_device must be one of: cpu, cuda")
         if self.resume_from_checkpoint is not None and self.resume_latest_checkpoint:
             raise ValueError("resume_from_checkpoint and resume_latest_checkpoint are mutually exclusive")
+        if self.teacher_model_dir is None and self.distillation_alpha > 0.0:
+            raise ValueError("teacher_model_dir must be set when distillation_alpha is positive")
+        if not (0.0 <= self.distillation_alpha <= 1.0):
+            raise ValueError("distillation_alpha must be in [0, 1]")
+        if self.distillation_temperature <= 0.0:
+            raise ValueError("distillation_temperature must be positive")
+        if self.distillation_teacher_device not in {"same", "cpu", "cuda"}:
+            raise ValueError("distillation_teacher_device must be one of: same, cpu, cuda")
 
     def to_json(self) -> str:
         payload = asdict(self)
@@ -284,4 +296,5 @@ class TrainingConfig:
         payload["resume_from_checkpoint"] = (
             str(self.resume_from_checkpoint) if self.resume_from_checkpoint is not None else None
         )
+        payload["teacher_model_dir"] = str(self.teacher_model_dir) if self.teacher_model_dir is not None else None
         return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
