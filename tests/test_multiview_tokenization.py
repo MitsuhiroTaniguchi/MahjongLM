@@ -140,8 +140,33 @@ def test_imperfect_view_uses_qijia_relative_player_token() -> None:
     views = tokenize_game_views(game)
 
     assert [view.tokens[1] for view in views[1:]] == [
-        imperfect_view_token(2),
-        imperfect_view_token(3),
         imperfect_view_token(0),
         imperfect_view_token(1),
+        imperfect_view_token(2),
+        imperfect_view_token(3),
     ]
+
+
+def test_imperfect_view_tracks_same_player_across_round_seat_rotation() -> None:
+    game = {
+        "qijia": 2,
+        "log": [
+            [
+                qipai_event(jushu=0),
+                pingju_event(),
+            ],
+            [
+                qipai_event(jushu=1),
+                {"zimo": {"l": 3, "p": "p1"}},
+                {"dapai": {"l": 3, "p": "p1"}},
+                pingju_event(),
+            ],
+        ],
+    }
+
+    views = tokenize_game_views(game)
+    player0_view = views[1]
+
+    assert player0_view.tokens[1] == imperfect_view_token(0)
+    assert "draw_3_p1" in player0_view.tokens
+    assert "draw_3_hidden" not in player0_view.tokens

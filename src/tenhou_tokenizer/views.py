@@ -49,8 +49,36 @@ def _hidden_draw_token(seat: int) -> str:
     return f"draw_{seat}_hidden"
 
 
-def _game_player_index(seat: int, initial_qijia: int, seat_count: int) -> int:
-    return (seat - initial_qijia) % seat_count
+def _round_kyoku_by_index(game: dict, seat_count: int) -> dict[int, int]:
+    round_kyoku: dict[int, int] = {}
+    log = game.get("log")
+    if not isinstance(log, list):
+        return round_kyoku
+    for round_index, round_data in enumerate(log):
+        if not isinstance(round_data, list) or not round_data:
+            continue
+        first = round_data[0]
+        if not isinstance(first, dict):
+            continue
+        qipai = first.get("qipai")
+        if not isinstance(qipai, dict):
+            continue
+        kyoku = qipai.get("jushu")
+        if isinstance(kyoku, int) and not isinstance(kyoku, bool):
+            round_kyoku[round_index] = kyoku % seat_count
+    return round_kyoku
+
+
+def _viewer_round_seat(
+    viewer_player: int,
+    *,
+    initial_qijia: int,
+    seat_count: int,
+    round_kyoku: int,
+) -> int:
+    viewer_game_seat = (initial_qijia + viewer_player) % seat_count
+    dealer_game_seat = (initial_qijia + round_kyoku) % seat_count
+    return (viewer_game_seat - dealer_game_seat) % seat_count
 
 
 def _consume_tenbo_payload(tokens: list[str], start: int) -> int:
@@ -193,29 +221,41 @@ def tokenize_game_views(game: dict) -> list[TokenizedGameView]:
             tokens=[complete_tokens[0], TOKEN_VIEW_COMPLETE, *complete_tokens[1:]],
         )
     ]
-    for viewer_seat in range(tokenizer.seat_count):
+    round_kyoku = _round_kyoku_by_index(game, tokenizer.seat_count)
+    for viewer_player in range(tokenizer.seat_count):
         transformed: list[str] = [
             complete_tokens[0],
-            imperfect_view_token(
-                _game_player_index(viewer_seat, tokenizer.initial_qijia, tokenizer.seat_count)
-            ),
+            imperfect_view_token(viewer_player),
         ]
         cursor = 1
+        last_viewer_round_seat: int | None = None
         for trace in event_traces:
-            transformed.extend(_transform_event_tokens(complete_tokens[cursor : trace.start], viewer_seat, "gap"))
+            trace_round_kyoku = round_kyoku.get(trace.round_index)
+            if trace_round_kyoku is None:
+                raise ValueError(f"missing qipai.jushu for round_index={trace.round_index}")
+            viewer_round_seat = _viewer_round_seat(
+                viewer_player,
+                initial_qijia=tokenizer.initial_qijia,
+                seat_count=tokenizer.seat_count,
+                round_kyoku=trace_round_kyoku,
+            )
+            transformed.extend(
+                _transform_event_tokens(complete_tokens[cursor : trace.start], viewer_round_seat, "gap")
+            )
             transformed.extend(
                 _transform_event_tokens(
                     complete_tokens[trace.start : trace.end],
-                    viewer_seat,
+                    viewer_round_seat,
                     trace.event_key,
                 )
             )
             cursor = trace.end
-        transformed.extend(_transform_event_tokens(complete_tokens[cursor:], viewer_seat, "gap"))
+            last_viewer_round_seat = viewer_round_seat
+        transformed.extend(_transform_event_tokens(complete_tokens[cursor:], last_viewer_round_seat, "gap"))
         views.append(
             TokenizedGameView(
                 view_type=VIEW_IMPERFECT,
-                viewer_seat=viewer_seat,
+                viewer_seat=viewer_player,
                 tokens=transformed,
             )
         )
