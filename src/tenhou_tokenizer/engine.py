@@ -282,12 +282,14 @@ def _opened_hand_tokens(seat: int, hand_text: str) -> List[str]:
     return [f"opened_hand_{seat}", *tiles]
 
 
-def _opened_hule_hand_tokens(seat: int, hand_text: str) -> List[str]:
+def _opened_hule_hand_tokens(seat: int, hand_text: str, *, keep_winning_tile: bool) -> List[str]:
     tiles = _parse_tiles(hand_text, stop_at_comma=True, context="hule_opened_hand")
     if not tiles:
         return []
     # Tenhou hule.shoupai includes the winning tile as the last concealed tile.
     concealed_tiles = sorted(tiles[:-1], key=token_tile_sort_key)
+    if keep_winning_tile:
+        return [f"opened_hand_{seat}", *concealed_tiles, tiles[-1]]
     if not concealed_tiles:
         return []
     return [f"opened_hand_{seat}", *concealed_tiles]
@@ -2435,7 +2437,8 @@ class TenhouTokenizer:
         if shoupai is not None:
             if not isinstance(shoupai, str):
                 raise TokenizeError("hule.shoupai must be a string")
-            block.extend(_opened_hule_hand_tokens(winner, shoupai))
+            is_tsumo = h.get("baojia") is None
+            block.extend(_opened_hule_hand_tokens(winner, shoupai, keep_winning_tile=is_tsumo))
         hupai = h.get("hupai")
         has_riichi_yaku = False
         if isinstance(hupai, list):
