@@ -98,6 +98,13 @@ full run:
 PYTHONPATH=src .venv/bin/python scripts/paifu_scraping/scraping.py
 ```
 
+スクレイピングなしで、既存の年次 raw archive（`raw_data/YYYY.zip`）から
+Hugging Face dataset だけ再生成する場合:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/build_hf_from_raw_archives.py --workers 4
+```
+
 ## Hugging Face dataset
 
 保存単位は 1 game ではなく 1 view 1 row です。

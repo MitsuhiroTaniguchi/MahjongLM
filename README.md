@@ -97,6 +97,13 @@ The default full run is:
 PYTHONPATH=src .venv/bin/python scripts/paifu_scraping/scraping.py
 ```
 
+To rebuild only Hugging Face datasets from already-downloaded yearly raw archives
+(`raw_data/YYYY.zip`) without scraping:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/build_hf_from_raw_archives.py --workers 4
+```
+
 ## Hugging Face datasets
 
 Each saved row is one view, not one full game.
