@@ -34,7 +34,7 @@ TILE_TOKENS = {
     *(f"s{i}" for i in range(10)),
     *(f"z{i}" for i in range(1, 8)),
 }
-RED_CHOICE_TOKENS = {"red_chi_used", "red_chi_not_used", "red_pon_used", "red_pon_not_used"}
+RED_CHOICE_TOKENS = {"red_used", "red_not_used"}
 DISCARD_MARKER_TOKENS: set[str] = set()
 REACTION_PASS_SUFFIXES = ("_voluntary", "_forced_priority")
 

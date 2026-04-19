@@ -1231,7 +1231,7 @@ class TenhouTokenizer:
             return None
 
         used_red = any(t == f"{suit}0" for t in consumed_tokens)
-        return f"red_{action}_{'used' if used_red else 'not_used'}"
+        return f"red_{'used' if used_red else 'not_used'}"
 
     def _player_wind(self, seat: int) -> int:
         return (seat - self.dealer_seat) % self.seat_count

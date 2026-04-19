@@ -89,8 +89,8 @@ def test_red_choice_token_distinguishes_used_vs_not_used() -> None:
         pre_red_fives=pre_red,
     )
 
-    assert used == "red_pon_used"
-    assert not_used == "red_pon_not_used"
+    assert used == "red_used"
+    assert not_used == "red_not_used"
 
 
 def test_fulou_fallback_path_emits_unknown_detail_and_still_consumes() -> None:

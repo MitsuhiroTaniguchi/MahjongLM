@@ -1062,7 +1062,7 @@ def test_fulou_emits_chi_position_token(
     assert tokenizer.tokens.index("take_react_0_chi") < tokenizer.tokens.index(expected)
 
 
-def test_fulou_emits_red_chi_used_when_choice_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fulou_emits_red_used_when_choice_exists(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: set())
     monkeypatch.setattr(TenhouTokenizer, "_can_win", lambda *_args, **_kwargs: False)
     game = minimal_game(
@@ -1078,11 +1078,11 @@ def test_fulou_emits_red_chi_used_when_choice_exists(monkeypatch: pytest.MonkeyP
     tokens = TenhouTokenizer().tokenize_game(game)
     assert "take_react_0_chi" in tokens
     assert "chi_pos_high" in tokens
-    assert "red_chi_used" in tokens
-    assert tokens.index("take_react_0_chi") < tokens.index("chi_pos_high") < tokens.index("red_chi_used")
+    assert "red_used" in tokens
+    assert tokens.index("take_react_0_chi") < tokens.index("chi_pos_high") < tokens.index("red_used")
 
 
-def test_fulou_emits_red_chi_not_used_when_choice_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fulou_emits_red_not_used_when_choice_exists(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: set())
     monkeypatch.setattr(TenhouTokenizer, "_can_win", lambda *_args, **_kwargs: False)
     game = minimal_game(
@@ -1097,11 +1097,11 @@ def test_fulou_emits_red_chi_not_used_when_choice_exists(monkeypatch: pytest.Mon
 
     tokens = TenhouTokenizer().tokenize_game(game)
     assert "take_react_0_chi" in tokens
-    assert "red_chi_not_used" in tokens
-    assert tokens.index("take_react_0_chi") < tokens.index("red_chi_not_used")
+    assert "red_not_used" in tokens
+    assert tokens.index("take_react_0_chi") < tokens.index("red_not_used")
 
 
-def test_fulou_emits_red_pon_used_and_not_used() -> None:
+def test_fulou_emits_red_used_and_not_used_for_pon() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(
         qipai_payload(hands=["m055p123s123z1122", "m123456789p1234", "m123456789p1234", "m123456789p1234"])
@@ -1113,8 +1113,8 @@ def test_fulou_emits_red_pon_used_and_not_used() -> None:
     )
     tokenizer._on_fulou({"l": 0, "m": "m05+5"})
     assert "take_react_0_pon" in tokenizer.tokens
-    assert "red_pon_used" in tokenizer.tokens
-    assert tokenizer.tokens.index("take_react_0_pon") < tokenizer.tokens.index("red_pon_used")
+    assert "red_used" in tokenizer.tokens
+    assert tokenizer.tokens.index("take_react_0_pon") < tokenizer.tokens.index("red_used")
 
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(
@@ -1127,8 +1127,8 @@ def test_fulou_emits_red_pon_used_and_not_used() -> None:
     )
     tokenizer._on_fulou({"l": 0, "m": "m55+5"})
     assert "take_react_0_pon" in tokenizer.tokens
-    assert "red_pon_not_used" in tokenizer.tokens
-    assert tokenizer.tokens.index("take_react_0_pon") < tokenizer.tokens.index("red_pon_not_used")
+    assert "red_not_used" in tokenizer.tokens
+    assert tokenizer.tokens.index("take_react_0_pon") < tokenizer.tokens.index("red_not_used")
 
 
 def test_fulou_does_not_emit_red_token_when_no_choice() -> None:
@@ -1143,7 +1143,7 @@ def test_fulou_does_not_emit_red_token_when_no_choice() -> None:
     )
     tokenizer._on_fulou({"l": 0, "m": "m05+5"})
     assert "take_react_0_pon" in tokenizer.tokens
-    assert all(not token.startswith("red_pon_") for token in tokenizer.tokens)
+    assert all(token not in {"red_used", "red_not_used"} for token in tokenizer.tokens)
 
 
 def test_kakan_no_longer_emits_kan_token(monkeypatch: pytest.MonkeyPatch) -> None:
