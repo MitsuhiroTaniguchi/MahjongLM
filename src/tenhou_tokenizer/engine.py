@@ -1062,7 +1062,7 @@ class TenhouTokenizer:
             f"bakaze_{bakaze}",
             f"kyoku_{kyoku}",
             "honba",
-            *encode_tenbo_tokens(honba * 100),
+            *encode_tenbo_tokens(honba * 300),
             "riichi_sticks",
             *encode_tenbo_tokens(riichi_sticks * 1000),
             *self._build_dora_block(dora_tile),

@@ -128,10 +128,11 @@ def test_qipai_emits_nonzero_honba_and_riichi_sticks_as_tenbo_tokens() -> None:
     honba_idx = tokenizer.tokens.index("honba")
     riichi_idx = tokenizer.tokens.index("riichi_sticks")
 
-    assert tokenizer.tokens[honba_idx : honba_idx + 3] == [
+    assert tokenizer.tokens[honba_idx : honba_idx + 4] == [
         "honba",
         "TENBO_PLUS",
-        "TENBO_200",
+        "TENBO_500",
+        "TENBO_100",
     ]
     assert tokenizer.tokens[riichi_idx : riichi_idx + 3] == [
         "riichi_sticks",
