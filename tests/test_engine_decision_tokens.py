@@ -431,7 +431,7 @@ def test_self_resolution_emits_take_before_pass_in_sorted_order() -> None:
     ]
 
 
-def test_reaction_resolution_emits_take_before_pass_in_sorted_order() -> None:
+def test_reaction_resolution_emits_take_and_pass_in_priority_order() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
     tokenizer.pending_reaction = ReactionDecision(
@@ -445,9 +445,9 @@ def test_reaction_resolution_emits_take_before_pass_in_sorted_order() -> None:
 
     tail = tokenizer.tokens[-3:]
     assert tail == [
+        "pass_react_1_ron_voluntary",
         "take_react_1_pon",
         "pass_react_1_minkan_voluntary",
-        "pass_react_1_ron_voluntary",
     ]
 
 

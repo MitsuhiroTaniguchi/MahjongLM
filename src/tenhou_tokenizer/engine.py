@@ -1033,6 +1033,19 @@ class TenhouTokenizer:
                 block.extend(self._build_reaction_action_block(seat=seat, kind="opt", opt=opt))
         return block
 
+    def _reaction_priority_sort_key(self, seat: int, opt: str) -> Tuple[int, int, int, str]:
+        priority = {"ron": 0, "pon": 1, "minkan": 1, "chi": 2}.get(opt, 99)
+        # pon/minkan share priority by rule; keep deterministic tie-break order.
+        tiebreak = {"ron": 0, "pon": 1, "minkan": 2, "chi": 3}.get(opt, 99)
+        return (priority, seat, tiebreak, opt)
+
+    def _iter_reaction_priority_entries(self, options_by_player: Dict[int, Set[str]]) -> List[Tuple[int, str]]:
+        entries: List[Tuple[int, str]] = []
+        for seat, opts in options_by_player.items():
+            for opt in opts:
+                entries.append((seat, opt))
+        return sorted(entries, key=lambda item: self._reaction_priority_sort_key(item[0], item[1]))
+
     def _build_round_prelude_block(
         self,
         *,
@@ -2277,37 +2290,37 @@ class TenhouTokenizer:
         had_ron_winner = any(action == "ron" for action in self.pending_reaction.chosen.values())
         if not had_ron_winner:
             return
-        for seat, opts in sorted(self.pending_reaction.options_by_player.items()):
+        remaining_options_by_player: Dict[int, Set[str]] = {
+            seat: set() for seat in self.pending_reaction.options_by_player
+        }
+        for seat, opt in self._iter_reaction_priority_entries(self.pending_reaction.options_by_player):
             chosen = self.pending_reaction.chosen.get(seat)
-            remaining_opts: Set[str] = set()
             defer_until_ron_recorded = (
                 remaining_ron_winners is not None
                 and seat in remaining_ron_winners
                 and chosen != "ron"
             )
-            for opt in sorted(opts):
-                if defer_until_ron_recorded:
-                    remaining_opts.add(opt)
+            if defer_until_ron_recorded:
+                remaining_options_by_player[seat].add(opt)
+                continue
+            if opt == "ron":
+                if chosen == "ron":
+                    remaining_options_by_player[seat].add(opt)
                     continue
-                if opt == "ron":
-                    if chosen == "ron":
-                        remaining_opts.add(opt)
-                        continue
-                    if remaining_ron_winners is not None and seat not in remaining_ron_winners:
-                        reason = self._reaction_pass_reason(seat, opt, "voluntary")
-                        self._emit_reaction_pass(seat, opt, reason)
-                        continue
-                    remaining_opts.add(opt)
-                    continue
-                if chosen is not None:
-                    self._emit_reaction_pass(seat, opt, "voluntary")
-                    continue
-                if chosen == opt:
-                    self._emit_reaction_pass(seat, opt, "voluntary")
-                else:
+                if remaining_ron_winners is not None and seat not in remaining_ron_winners:
                     reason = self._reaction_pass_reason(seat, opt, "voluntary")
                     self._emit_reaction_pass(seat, opt, reason)
-            self.pending_reaction.options_by_player[seat] = remaining_opts
+                    continue
+                remaining_options_by_player[seat].add(opt)
+                continue
+            if chosen is not None:
+                self._emit_reaction_pass(seat, opt, "voluntary")
+                continue
+            reason = self._reaction_pass_reason(seat, opt, "voluntary")
+            self._emit_reaction_pass(seat, opt, reason)
+
+        for seat in self.pending_reaction.options_by_player:
+            self.pending_reaction.options_by_player[seat] = remaining_options_by_player[seat]
 
     def _on_hule(
         self,
@@ -2707,9 +2720,10 @@ class TenhouTokenizer:
                 self._apply_riichi_stick(self.pending_riichi_actor)
             self.pending_riichi_actor = None
 
-        for seat, opts in sorted(self.pending_reaction.options_by_player.items()):
+        for seat, opt in self._iter_reaction_priority_entries(self.pending_reaction.options_by_player):
+            opts = self.pending_reaction.options_by_player.get(seat, set())
             chosen = self.pending_reaction.chosen.get(seat)
-            if chosen and chosen in opts:
+            if chosen and chosen in opts and chosen == opt:
                 if seat not in self.pending_reaction.emitted_chosen:
                     self.tokens.extend(
                         self._build_reaction_action_block(
@@ -2719,12 +2733,17 @@ class TenhouTokenizer:
                         )
                     )
                     self.pending_reaction.emitted_chosen.add(seat)
-                for opt in sorted(opts - {chosen}):
-                    self._emit_reaction_pass(seat, opt, "voluntary")
-            else:
-                for opt in sorted(opts):
-                    reason = self._reaction_pass_reason(seat, opt, close_reason)
-                    self._emit_reaction_pass(seat, opt, reason)
+                continue
+
+            if chosen and chosen in opts:
+                self._emit_reaction_pass(seat, opt, "voluntary")
+                continue
+
+            reason = self._reaction_pass_reason(seat, opt, close_reason)
+            self._emit_reaction_pass(seat, opt, reason)
+
+        for seat, opts in sorted(self.pending_reaction.options_by_player.items()):
+            chosen = self.pending_reaction.chosen.get(seat)
             if "ron" in opts and chosen != "ron":
                 ron_reason = "voluntary"
                 if not (chosen and chosen in opts):
