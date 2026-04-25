@@ -3,6 +3,7 @@
 <bos>
 <eos>
 game_start
+game_end
 view_complete
 view_imperfect_0
 view_imperfect_1
@@ -12,8 +13,8 @@ rule_player_3
 rule_player_4
 rule_length_tonpu
 rule_length_hanchan
-game_end
 round_start
+round_end
 bakaze_0
 bakaze_1
 bakaze_2
@@ -667,10 +668,8 @@ pass_react_3_ron_voluntary
 chi_pos_low
 chi_pos_mid
 chi_pos_high
-red_chi_used
-red_chi_not_used
-red_pon_used
-red_pon_not_used
+red_used
+red_not_used
 opened_hand_0
 opened_hand_1
 opened_hand_2

@@ -1,148 +1,180 @@
 # MahjongLM
 
-This repository prepares the 2021 MahjongLM tokenized dataset for GPT-2 training.
+[English](README.md) | [日本語](README.ja.md)
 
-## Layout
+Tenhou JSON log tokenizer, multiview dataset builder, and small GPT-2 training stack for Mahjong sequence modeling.
 
-- `data/raw/2021/` - original split ZIP archives
-- `data/processed/2021/` - extracted Hugging Face dataset files
-- `scripts/prepare_dataset.ps1` - repeatable extraction helper
-- `scripts/train_gpt2.py` - convenience wrapper for the main GPT-2 training module
-- `src/gpt2/` - upstream-style GPT-2 training stack with sampler/collator logic
-- `src/tenhou_tokenizer/` - tokenizer loader used by the training stack
-- `docs/quantization_and_attention.md` - notes on flash attention and 4-bit fine-tuning
+## Repository layout
 
-## Data status
+- [src/tenhou_tokenizer/engine.py](src/tenhou_tokenizer/engine.py): core event-by-event tokenizer
+- [src/tenhou_tokenizer/views.py](src/tenhou_tokenizer/views.py): complete/imperfect multiview conversion
+- [scripts/tokenize_tenhou.py](scripts/tokenize_tenhou.py): JSON zip -> JSONL token stream CLI
+- [scripts/paifu_scraping/scraping.py](scripts/paifu_scraping/scraping.py): Tenhou fetch + raw/json/tokenized/HF dataset pipeline
+- [src/gpt2/train.py](src/gpt2/train.py): tiny GPT-2 training entrypoint
+- [tokenizer/vocab.txt](tokenizer/vocab.txt): vocabulary source of truth
 
-The 2021 dataset is already extracted locally and ready to load from:
+## Tokenizer summary
 
-`data/processed/2021`
+The tokenizer emits:
 
-The dataset is pre-tokenized and stored as a Hugging Face `Dataset` on disk.
+- chosen actions and latent legal alternatives at each decision point
+  - `opt_self_*` / `take_self_*` / `pass_self_*`
+  - `opt_react_*` / `take_react_*` / `pass_react_*`
+- winning-hand detail tokens
+  - `yaku_*`, `han_*`, `fu_*`, `yakuman_*`
+- multiview outputs
+  - one `view_complete`
+  - one `view_imperfect_{player}` per seat, where `player` is `qijia`-relative
 
-## Training
+Imperfect views hide non-viewer initial hands with a single `hidden_haipai_{seat}` token per hidden player. That token replaces the whole hidden `haipai_{seat}` block; it is not emitted after `haipai_{seat}`.
 
-Install dependencies:
+Winning-hand detail tokens appear after `take_self_*_tsumo` / `take_react_*_ron` and before `score_delta_*`.
 
-```powershell
-pip install -r requirements.txt
+Normalization rules:
+
+- `han_*` is capped at `han_13`
+- `fu_*` is emitted for `25` and `20..140` in steps of `10`
+- `yakuman_*` is emitted only for hands where `damanguan` is present
+- `yaku_dora`, `yaku_ura_dora`, `yaku_aka_dora` repeat by realized han count
+
+See [トークン設計.md](docs/references/トークン設計.md) for the token-level specification.
+
+## Setup
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+./scripts/setup_pymahjong.sh
 ```
 
-If you want GPU acceleration on NVIDIA hardware, use the CUDA wheel set:
+`setup_pymahjong.sh` installs `pymahjong` from GitHub `main` by default.
 
-```powershell
-pip install -r requirements-gpu.txt
+```bash
+PYMAHJONG_REF=<branch-or-commit> ./scripts/setup_pymahjong.sh
 ```
 
-Then verify with:
+## Tokenize one zip
 
-```powershell
-python -c "import torch; print(torch.cuda.is_available())"
+The tokenizer CLI now defaults to the tracked fixture zip:
+
+- [data2023_sample_v1.zip](tests/fixtures/tenhou/data2023_sample_v1.zip)
+
+Example:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/tokenize_tenhou.py --max-games 20 --progress-every 0
 ```
 
-For wandb monitoring:
+Useful options:
 
-```powershell
-wandb login
+- `--zip-path`: one input zip
+- `--all-years --zip-glob`: process multiple zips
+- `--strict`: fail if any game is skipped
+- `--workers`: process-level parallel tokenization for larger inputs
+
+Defaults:
+
+- input zip: tracked fixture sample zip under `tests/fixtures/tenhou/`
+- output: `data/processed/tenhou/tokens_2023.jsonl.gz`
+
+The output path is intentionally local and ignored by Git.
+
+## Scraping pipeline
+
+Full data generation is handled by [scraping.py](scripts/paifu_scraping/scraping.py).
+
+Behavior:
+
+- parent process performs Tenhou fetches with one `requests.Session`
+- downstream `raw -> json -> tokenized` conversion runs in worker processes
+- per-year Hugging Face datasets are rebuilt from tokenized views
+- `404` fetches are memoized with `.404` marker files to avoid repeated requests
+
+The default full run is:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/paifu_scraping/scraping.py
 ```
 
-Prepare the dataset again if needed:
+To rebuild only Hugging Face datasets from already-downloaded yearly raw archives
+(`raw_data/YYYY.zip`) without scraping:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/prepare_dataset.ps1
+```bash
+PYTHONPATH=src .venv/bin/python scripts/build_hf_from_raw_archives.py --workers 4
 ```
 
-Start GPT-2 training:
+## Hugging Face datasets
 
-```powershell
-python scripts/train_gpt2.py --output-dir outputs/gpt2-mahjong-2021
+Each saved row is one view, not one full game.
+
+Columns:
+
+- `game_id`
+- `group_id`
+- `year`
+- `seat_count`
+- `view_type`
+- `viewer_seat`
+- `length`
+- `input_ids`
+
+`group_id == game_id`. A valid group contains:
+
+- one complete view
+- one imperfect view per seat
+
+## GPT-2 training
+
+Training code lives under [src/gpt2/](src/gpt2).
+
+Current batching semantics:
+
+- sampler batches by `group_id`
+- public batch-size control is `max_tokens_per_batch`
+- collator appends `EOS`, packs multiple segments into one row, and keeps the same `group_id` out of the same packed row
+- packed attention masks are 4D block-diagonal causal masks, so segments do not attend across boundaries
+
+Current defaults:
+
+- context length: `8192`
+- train token budget: `65536`
+- eval token budget: `65536`
+
+Example:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m gpt2.train \
+  --dataset-dir data/huggingface_datasets/2023 \
+  --output-dir runs/example \
+  --train-steps 20 \
+  --wandb-mode disabled
 ```
 
-The canonical A/B/C/D comparison launcher is:
+## Tests
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/run_abcd_1400.ps1
+Fast tests:
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH=src .venv/bin/python -m pytest -m "not slow" -q
 ```
 
-To train the adopted Qwen3 `Q1` model:
+Notes:
 
-```powershell
-python scripts/train_qwen3.py --model-family qwen3 --qwen-arch Q1 --output-dir outputs/qwen3-q1
-```
+- tokenizer tests require `pymahjong`
+- training GPT-2 requires `torch`
 
-To compare matched 100M-class GPT-2 and Qwen3 bodies, use the built-in presets:
+## References
 
-```powershell
-python scripts/train_gpt2.py --model-family gpt2 --arch G100
-python scripts/train_qwen3.py --model-family qwen3 --qwen-arch Q100
-python scripts/measure_100m_model_pairs.py
-```
+- [トークン設計.md](docs/references/トークン設計.md)
+- [tenhou_paifu_notes_kobalab.md](docs/references/tenhou_paifu_notes_kobalab.md)
+- [tokenizer_speed_plan.md](docs/performance/tokenizer_speed_plan.md)
+- [pymahjong_upstream_pr_notes.md](docs/performance/pymahjong_upstream_pr_notes.md)
 
-To reproduce the Unsloth memory probe against the saved Q1 checkpoint:
+## License
 
-```powershell
-python scripts/experiment_unsloth_q1.py --checkpoint-dir outputs/qwen3-q1-init/model --seq-length 8192 --batch-size 1
-```
+This repository's source code is licensed under `MIT`.
 
-For a short smoke test, keep the dataset tiny and disable wandb:
-
-```powershell
-python scripts/train_gpt2.py --output-dir outputs/smoke --wandb-mode disabled --max-train-groups 16 --max-eval-groups 4 --train-steps 16 --eval-interval 8
-```
-
-To monitor a run in wandb with a custom name:
-
-```powershell
-python scripts/train_gpt2.py --wandb-entity a21-3jck- --wandb-project mahjongLM_gpt2 --wandb-run-name gpt2-A-y2021-20260320-120000
-```
-
-If an online wandb run gets stuck in `running` or `stopping` after the process is already dead, recover it like this:
-
-```powershell
-python scripts/recover_wandb_run.py --entity a21-3jck- --project mahjongLM_qwen3 --run-id 0e96pgua --run-id gmwn0sf2
-```
-
-This creates a backup under `wandb_recovery/`, deletes the stale server runs, and re-uploads the local data as new finished runs.
-
-For faster attention on GPU, use:
-
-```powershell
-python scripts/train_gpt2.py --attn-implementation sdpa
-```
-
-For the current packed MahjongLM training path, keep using `sdpa`. `flash_attention_2` is not compatible with the dense packed attention mask used by `PackedGroupCollator`.
-
-## Sweep
-
-The 100M-class candidate table and sweep setup are saved here:
-
-- [docs/gpt2_hparam_candidates.md](docs/gpt2_hparam_candidates.md)
-- [sweeps/gpt2_arch_sweep.yaml](sweeps/gpt2_arch_sweep.yaml)
-
-To launch the sweep:
-
-```powershell
-wandb sweep sweeps/gpt2_arch_sweep.yaml
-wandb agent a21-3jck-/mahjongLM_gpt2/<sweep_id>
-```
-
-Each sweep run is written under `outputs/gpt2-sweep/<wandb-run-name>/`.
-
-## Notes
-
-- The model is trained from scratch on the token IDs already present in the dataset.
-- The script defaults to `tokenizer/` and loads `tokenizer.json` directly with `PreTrainedTokenizerFast`; if that path is missing, it falls back to `vocab.txt`, then to the maximum `input_ids` value in the dataset.
-- The canonical training stack uses `max_seq_length=8192`, `max_tokens_per_batch=65536`, `PackedGroupCollator`, and `TokenBudgetGroupBatchSampler`.
-- The wrapper script `scripts/train_gpt2.py` forwards to `src/gpt2/train.py`, so the upstream-style training path is the default again.
-- `sdpa` is the default attention backend and the practical choice for the current packed pretraining path.
-- The current `src/gpt2/train.py` CLI does not expose a 4-bit/LoRA fine-tuning path.
-- Qwen3 work is currently standardized on the `Q1` body: `32` layers, `1024` hidden size, `3072` intermediate size, `16` attention heads, `8` KV heads, `128` head dim, and `8192` context.
-- Unsloth is currently a Q1 investigation and later fine-tuning tool, not the default engine for dense packed Q1 pretraining.
-- The dataset does not include a validation split, so the training script creates one deterministically.
-- The train/eval split is cached under `data/cache/splits/`, so repeated runs do not rebuild it.
-- Smoke runs that use `--max-train-groups` or `--max-eval-groups` are trimmed before splitting, so they avoid hidden full-dataset split/cache work.
-- Windows subprocess eval is intentionally disabled in the training stack because it has been unstable with CUDA in this workspace.
-- The dense packed attention mask in `PackedGroupCollator` is still the main remaining long-context throughput bottleneck.
-- Candidate GPT-2 settings are saved in [docs/gpt2_hparam_candidates.md](docs/gpt2_hparam_candidates.md).
-- The adopted Qwen3 configuration is saved in [docs/qwen3_0.5b_candidates.md](docs/qwen3_0.5b_candidates.md).
-- Unsloth investigation notes are saved in [docs/qwen3_unsloth_q1.md](docs/qwen3_unsloth_q1.md).
+Third-party code notices are collected in [THIRD_PARTY.md](THIRD_PARTY.md).
+Tenhou logs and derived datasets are not covered by the code license; see
+[TENHOU_DATA_NOTICE.md](TENHOU_DATA_NOTICE.md).
