@@ -1038,9 +1038,8 @@ class TenhouTokenizer:
 
     def _build_reaction_option_block(self, options_by_player: Dict[int, Set[str]]) -> List[str]:
         block: List[str] = []
-        for seat, opts in sorted(options_by_player.items()):
-            for opt in sorted(opts):
-                block.extend(self._build_reaction_action_block(seat=seat, kind="opt", opt=opt))
+        for seat, opt in self._iter_reaction_priority_entries(options_by_player):
+            block.extend(self._build_reaction_action_block(seat=seat, kind="opt", opt=opt))
         return block
 
     def _reaction_priority_sort_key(self, seat: int, opt: str) -> Tuple[int, int, int, str]:

@@ -451,6 +451,17 @@ def test_reaction_resolution_emits_take_and_pass_in_priority_order() -> None:
     ]
 
 
+def test_reaction_option_block_orders_pon_before_minkan_for_same_player() -> None:
+    tokenizer = TenhouTokenizer()
+
+    block = tokenizer._build_reaction_option_block({1: {"minkan", "pon"}})
+
+    assert block == [
+        "opt_react_1_pon",
+        "opt_react_1_minkan",
+    ]
+
+
 def test_houtei_ron_option_uses_haidi_context(monkeypatch: pytest.MonkeyPatch) -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
