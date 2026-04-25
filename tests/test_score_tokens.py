@@ -873,7 +873,7 @@ def test_pingju_emits_round_rank_tokens_after_score_deltas() -> None:
     assert rank_tokens == ["rank_0_1", "rank_1_4", "rank_2_2", "rank_3_3"]
 
 
-def test_tokenize_game_emits_final_scores_and_final_ranks_before_round_end_and_game_end() -> None:
+def test_tokenize_game_emits_game_end_before_final_scores_and_ranks() -> None:
     tokens = TenhouTokenizer().tokenize_game(
         {
             "qijia": 0,
@@ -891,14 +891,15 @@ def test_tokenize_game_emits_final_scores_and_final_ranks_before_round_end_and_g
         "TENBO_20000",
     ]
     round_end_idx = tokens.index("round_end")
-    assert final_score_idx < final_rank_idx < round_end_idx < len(tokens) - 1
+    game_end_idx = tokens.index("game_end")
+    assert round_end_idx < game_end_idx < final_score_idx < final_rank_idx
     assert tokens[final_rank_idx : final_rank_idx + 4] == [
         "final_rank_0_1",
         "final_rank_1_2",
         "final_rank_2_3",
         "final_rank_3_4",
     ]
-    assert tokens[-2:] == ["round_end", "game_end"]
+    assert tokens[round_end_idx : game_end_idx + 1] == ["round_end", "game_end"]
 
 
 def test_tokenize_game_uses_top_level_final_defen_for_final_score_block() -> None:

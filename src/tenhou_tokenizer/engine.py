@@ -729,6 +729,9 @@ class TenhouTokenizer:
         for round_index, round_data in enumerate(log):
             self._process_round(round_data)
             is_last_round = round_index == len(log) - 1
+            self.tokens.append("round_end")
+            if is_last_round:
+                self.tokens.append("game_end")
             if is_last_round and "defen" in game:
                 final_scores = [
                     self._require_score(score, field=f"game.defen[{seat}]")
@@ -744,9 +747,7 @@ class TenhouTokenizer:
                         raise TokenizeError("game.rank does not match reconstructed final ranks")
                 self.tokens.extend(self._build_final_score_block(final_scores))
                 self.tokens.extend(self._build_final_rank_block(final_ranks))
-            self.tokens.append("round_end")
         self._flush_pending()
-        self.tokens.append("game_end")
         return self.tokens
 
     def _require_round_initialized(self) -> None:

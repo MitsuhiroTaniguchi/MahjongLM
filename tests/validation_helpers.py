@@ -169,11 +169,11 @@ class TokenStreamFSM:
     saw_final_suffix: bool = False
     seat_count: int = 4
     saw_game_start: bool = False
+    saw_game_end: bool = False
 
     def validate(self) -> None:
         assert self.tokens.count("game_start") == 1
         assert self.tokens.count("game_end") == 1
-        assert self.tokens[-1] == "game_end"
         assert not any(token.startswith("event_unknown") for token in self.tokens)
         assert len(self.tokens) >= 3
 
@@ -201,6 +201,7 @@ class TokenStreamFSM:
                 continue
             if token == "round_start":
                 assert self.saw_game_start
+                assert not self.saw_game_end
                 if self.started_round:
                     self._assert_round_closed()
                 self._start_round()
@@ -216,7 +217,8 @@ class TokenStreamFSM:
                 if self.expected_final_score_seat is not None or self.expected_final_rank_seat is not None:
                     raise AssertionError("final suffix is incomplete before game_end")
                 assert self.idx > 0 and self.tokens[self.idx - 1] == "round_end"
-                assert self.idx == len(self.tokens) - 1
+                assert not self.saw_game_end
+                self.saw_game_end = True
                 self.idx += 1
                 continue
             if self._consume_final_token(token):
@@ -410,6 +412,7 @@ class TokenStreamFSM:
         if token.startswith("final_score_"):
             assert self.started_round
             self._assert_round_closed()
+            assert self.saw_game_end
             if self.expected_final_score_seat is None and self.expected_final_rank_seat is None:
                 self.expected_final_score_seat = 0
                 self.saw_final_suffix = True
