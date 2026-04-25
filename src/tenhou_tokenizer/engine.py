@@ -2563,20 +2563,6 @@ class TenhouTokenizer:
                         tile_token=chosen_tile if self._self_action_reveals_tile(opt, kind="take") else None,
                     )
                 )
-                if self._self_action_reveals_tile(opt, kind="pass"):
-                    for tile_token in self.pending_self.option_tiles[opt]:
-                        if tile_token != chosen_tile:
-                            self.tokens.extend(
-                                self._build_self_action_block(
-                                    seat=seat,
-                                    kind="pass",
-                                    opt=opt,
-                                    tile_token=tile_token,
-                                )
-                            )
-                    continue
-                if any(tile_token != chosen_tile for tile_token in self.pending_self.option_tiles[opt]):
-                    self.tokens.extend(self._build_self_action_block(seat=seat, kind="pass", opt=opt))
                 continue
             self.tokens.extend(self._build_self_action_block(seat=seat, kind="take", opt=opt))
         for opt in sorted(self.pending_self.options - chosen_effective):

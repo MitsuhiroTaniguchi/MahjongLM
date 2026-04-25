@@ -1243,10 +1243,33 @@ def test_multiple_ankan_candidates_only_reveal_tile_on_take() -> None:
 
     tokenizer._finalize_self({"ankan"}, actor=actor, chosen_tiles={"ankan": "z1"})
 
-    assert tokenizer.tokens[-3:] == [
+    assert tokenizer.tokens[-2:] == [
         "take_self_0_ankan",
         "z1",
-        "pass_self_0_ankan",
+    ]
+
+
+def test_multiple_kakan_candidates_only_reveal_tile_on_take() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    actor = 0
+    player = tokenizer.players[actor]
+    player.open_pons[tile_to_index("m1")] = 1
+    player.open_pons[tile_to_index("z1")] = 1
+    player.melds = [("pon", tile_to_index("m1")), ("pon", tile_to_index("z1"))]
+    player.concealed[tile_to_index("m1")] = max(player.concealed[tile_to_index("m1")], 1)
+    player.concealed[tile_to_index("z1")] = max(player.concealed[tile_to_index("z1")], 1)
+    tokenizer.pending_self = SelfDecision(
+        actor=actor,
+        options={"kakan"},
+        option_tiles={"kakan": ["m1", "z1"]},
+    )
+
+    tokenizer._finalize_self({"kakan"}, actor=actor, chosen_tiles={"kakan": "m1"})
+
+    assert tokenizer.tokens[-2:] == [
+        "take_self_0_kakan",
+        "m1",
     ]
 
 

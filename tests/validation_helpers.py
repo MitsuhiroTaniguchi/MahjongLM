@@ -591,11 +591,7 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
         assert idx < len(emitted) and emitted[idx] in TILE_TOKENS
         idx += 1
         while idx < len(emitted) and emitted[idx].startswith("pass_self_"):
-            token = emitted[idx]
             idx += 1
-            if token.endswith("_ankan") or token.endswith("_kakan"):
-                assert idx < len(emitted) and emitted[idx] in TILE_TOKENS
-                idx += 1
         assert all(token.startswith("opt_react_") for token in emitted[idx:])
         return
 
