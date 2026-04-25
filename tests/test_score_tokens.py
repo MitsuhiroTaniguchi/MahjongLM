@@ -14,15 +14,14 @@ from tests.validation_helpers import validate_token_stream
 def test_encode_tenbo_tokens_decomposes_by_stick_units() -> None:
     assert encode_tenbo_tokens(25000) == [
         "TENBO_PLUS",
-        "TENBO_20000",
+        "TENBO_10000",
+        "TENBO_10000",
         "TENBO_5000",
     ]
     assert encode_tenbo_tokens(-3900) == [
         "TENBO_MINUS",
         "TENBO_3000",
-        "TENBO_500",
-        "TENBO_300",
-        "TENBO_100",
+        "TENBO_900",
     ]
     assert encode_tenbo_tokens(0) == ["TENBO_ZERO"]
 
@@ -37,10 +36,11 @@ def test_qipai_emits_score_as_tenbo_tokens() -> None:
     tokenizer._on_qipai(qipai_payload())
 
     i = tokenizer.tokens.index("score_0")
-    assert tokenizer.tokens[i : i + 4] == [
+    assert tokenizer.tokens[i : i + 5] == [
         "score_0",
         "TENBO_PLUS",
-        "TENBO_20000",
+        "TENBO_10000",
+        "TENBO_10000",
         "TENBO_5000",
     ]
 
@@ -147,12 +147,10 @@ def test_result_emits_score_delta_as_tenbo_tokens() -> None:
     tokenizer._on_hule({"l": 0, "fenpei": [-3900, 3900, 0, 0]})
 
     i0 = tokenizer.tokens.index("score_delta_0")
-    assert tokenizer.tokens[i0 + 1 : i0 + 6] == [
+    assert tokenizer.tokens[i0 + 1 : i0 + 4] == [
         "TENBO_MINUS",
         "TENBO_3000",
-        "TENBO_500",
-        "TENBO_300",
-        "TENBO_100",
+        "TENBO_900",
     ]
 
     i2 = tokenizer.tokens.index("score_delta_2")
@@ -885,10 +883,11 @@ def test_tokenize_game_emits_game_end_before_final_scores_and_ranks() -> None:
 
     final_score_idx = tokens.index("final_score_0")
     final_rank_idx = tokens.index("final_rank_0_1")
-    assert tokens[final_score_idx : final_score_idx + 3] == [
+    assert tokens[final_score_idx : final_score_idx + 4] == [
         "final_score_0",
         "TENBO_PLUS",
-        "TENBO_20000",
+        "TENBO_10000",
+        "TENBO_10000",
     ]
     round_end_idx = tokens.index("round_end")
     game_end_idx = tokens.index("game_end")
@@ -912,13 +911,14 @@ def test_tokenize_game_uses_top_level_final_defen_for_final_score_block() -> Non
         }
     )
     final_score_idx = tokens.index("final_score_0")
-    assert tokens[final_score_idx : final_score_idx + 4] == [
+    assert tokens[final_score_idx : final_score_idx + 5] == [
         "final_score_0",
         "TENBO_PLUS",
-        "TENBO_20000",
-        "TENBO_5000",
+        "TENBO_10000",
+        "TENBO_10000",
+        "TENBO_6000",
     ]
-    assert "TENBO_1000" in tokens[final_score_idx : tokens.index("final_score_1")]
+    assert "TENBO_1000" not in tokens[final_score_idx : tokens.index("final_score_1")]
 
 
 def test_tokenize_game_omits_final_suffix_without_top_level_defen() -> None:
