@@ -386,5 +386,6 @@ def test_cli_writes_expected_record_shape_for_gzip_output(tmp_path: Path) -> Non
     assert record["source_zip"] == str(zip_path)
     assert record["game_id"] == "game_valid.json"
     assert isinstance(record["tokens"], list)
-    assert record["tokens"][0] == "game_start"
+    assert record["tokens"][0].startswith("rule_player_")
+    assert "game_start" in record["tokens"]
     assert record["tokens"][-1] == "game_end"

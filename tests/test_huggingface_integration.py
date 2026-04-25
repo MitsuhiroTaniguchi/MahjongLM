@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 from tenhou_tokenizer import (
     MahjongDataCollatorForCausalLM,
@@ -26,6 +30,8 @@ SANMA_RAW = ROOT / "tests" / "fixtures" / "tenhou" / "2014091101gm-00b9-0000-5ca
 
 
 def _convert_sanma_sample() -> dict:
+    if shutil.which("perl") is None:
+        pytest.skip("perl is required for sanma conversion sample tests")
     proc = subprocess.run(
         ["perl", "-T", str(CONVERT), str(SANMA_RAW)],
         cwd=ROOT,
@@ -40,7 +46,7 @@ def test_hf_tokenizer_roundtrip_from_saved_assets(tmp_path: Path) -> None:
 
     tokenizer = load_hf_tokenizer(tmp_path)
     vocab = Vocabulary.load()
-    tokens = ["game_start", "rule_player_3", "round_start", "game_end"]
+    tokens = ["rule_player_3", "game_start", "round_start", "round_end", "game_end"]
 
     assert tokenizer.pad_token == "<pad>"
     assert tokenizer.unk_token == "<unk>"
@@ -51,7 +57,7 @@ def test_hf_tokenizer_build_matches_vocab_ids() -> None:
     tokenizer = build_hf_tokenizer()
     vocab = Vocabulary.load()
 
-    tokens = ["game_start", "rule_player_4", "rule_length_hanchan", "game_end"]
+    tokens = ["rule_player_4", "rule_length_hanchan", "game_start", "round_end", "game_end"]
     assert tokenizer.convert_tokens_to_ids(tokens) == vocab.encode(tokens)
 
 
@@ -215,7 +221,7 @@ print(tok.convert_tokens_to_ids(["game_start", "game_end"]))
         capture_output=True,
         text=True,
         check=True,
-        env={"PYTHONPATH": str(ROOT / "src")},
+        env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
     )
 
     assert "MahjongTokenizerFast" in proc.stdout

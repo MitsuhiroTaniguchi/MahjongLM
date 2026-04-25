@@ -711,9 +711,8 @@ class TenhouTokenizer:
         if not log:
             raise TokenizeError("game log cannot be empty")
         self.seat_count = self._infer_game_seat_count(game)
-        self.tokens = ["game_start"]
+        self.tokens = [*self._build_game_rule_block(game), "game_start"]
         self.event_traces = []
-        self.tokens.extend(self._build_game_rule_block(game))
         self.pending_self = None
         self.pending_reaction = None
         self.pending_riichi_actor = None
@@ -727,24 +726,26 @@ class TenhouTokenizer:
         if "qijia" in game:
             self.initial_qijia = self._require_seat(game["qijia"], field="game.qijia")
             self.has_initial_qijia = True
-        for round_data in log:
+        for round_index, round_data in enumerate(log):
             self._process_round(round_data)
-        self._flush_pending()
-        if "defen" in game:
-            final_scores = [
-                self._require_score(score, field=f"game.defen[{seat}]")
-                for seat, score in enumerate(self._require_seat_list(game["defen"], field="game.defen"))
-            ]
-            final_ranks = self._compute_final_rank_places(final_scores)
-            if "rank" in game:
-                expected_final_ranks = [
-                    self._require_rank_place(rank, field=f"game.rank[{seat}]")
-                    for seat, rank in enumerate(self._require_seat_list(game["rank"], field="game.rank"))
+            is_last_round = round_index == len(log) - 1
+            if is_last_round and "defen" in game:
+                final_scores = [
+                    self._require_score(score, field=f"game.defen[{seat}]")
+                    for seat, score in enumerate(self._require_seat_list(game["defen"], field="game.defen"))
                 ]
-                if expected_final_ranks != final_ranks:
-                    raise TokenizeError("game.rank does not match reconstructed final ranks")
-            self.tokens.extend(self._build_final_score_block(final_scores))
-            self.tokens.extend(self._build_final_rank_block(final_ranks))
+                final_ranks = self._compute_final_rank_places(final_scores)
+                if "rank" in game:
+                    expected_final_ranks = [
+                        self._require_rank_place(rank, field=f"game.rank[{seat}]")
+                        for seat, rank in enumerate(self._require_seat_list(game["rank"], field="game.rank"))
+                    ]
+                    if expected_final_ranks != final_ranks:
+                        raise TokenizeError("game.rank does not match reconstructed final ranks")
+                self.tokens.extend(self._build_final_score_block(final_scores))
+                self.tokens.extend(self._build_final_rank_block(final_ranks))
+            self.tokens.append("round_end")
+        self._flush_pending()
         self.tokens.append("game_end")
         return self.tokens
 

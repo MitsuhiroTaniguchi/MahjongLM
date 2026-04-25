@@ -75,6 +75,12 @@ def _is_rule_token(token: str) -> bool:
     }
 
 
+def _is_view_token(token: str) -> bool:
+    return token == "view_complete" or (
+        token.startswith("view_imperfect_") and token.split("_")[-1].isdigit()
+    )
+
+
 def _is_hule_detail_token(token: str) -> bool:
     if token.startswith("opened_hand_"):
         parts = token.split("_")
@@ -162,22 +168,19 @@ class TokenStreamFSM:
     expected_final_rank_seat: int | None = None
     saw_final_suffix: bool = False
     seat_count: int = 4
+    saw_game_start: bool = False
 
     def validate(self) -> None:
         assert self.tokens.count("game_start") == 1
         assert self.tokens.count("game_end") == 1
-        assert self.tokens[0] == "game_start"
         assert self.tokens[-1] == "game_end"
         assert not any(token.startswith("event_unknown") for token in self.tokens)
         assert len(self.tokens) >= 3
 
         while self.idx < len(self.tokens):
             token = self.tokens[self.idx]
-            if token == "game_start":
-                assert self.idx == 0
-                self.idx += 1
-                continue
             if _is_rule_token(token):
+                assert not self.saw_game_start
                 assert not self.started_round
                 if token == "rule_player_3":
                     self.seat_count = 3
@@ -185,15 +188,34 @@ class TokenStreamFSM:
                     self.seat_count = 4
                 self.idx += 1
                 continue
+            if _is_view_token(token):
+                assert not self.saw_game_start
+                assert not self.started_round
+                self.idx += 1
+                continue
+            if token == "game_start":
+                assert not self.saw_game_start
+                assert not self.started_round
+                self.saw_game_start = True
+                self.idx += 1
+                continue
             if token == "round_start":
+                assert self.saw_game_start
                 if self.started_round:
                     self._assert_round_closed()
                 self._start_round()
                 continue
+            if token == "round_end":
+                self._assert_round_closed()
+                assert self.started_round
+                self.idx += 1
+                continue
             if token == "game_end":
+                assert self.saw_game_start
                 self._assert_round_closed()
                 if self.expected_final_score_seat is not None or self.expected_final_rank_seat is not None:
                     raise AssertionError("final suffix is incomplete before game_end")
+                assert self.idx > 0 and self.tokens[self.idx - 1] == "round_end"
                 assert self.idx == len(self.tokens) - 1
                 self.idx += 1
                 continue

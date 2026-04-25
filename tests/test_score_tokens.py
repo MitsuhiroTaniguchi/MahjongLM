@@ -45,14 +45,14 @@ def test_qipai_emits_score_as_tenbo_tokens() -> None:
     ]
 
 
-def test_tokenize_game_emits_rule_tokens_after_game_start() -> None:
+def test_tokenize_game_emits_rule_tokens_before_game_start() -> None:
     tokens = TenhouTokenizer().tokenize_game(
         {
             "title": "四鳳東喰赤速",
             "log": [[qipai_event(), pingju_event()]],
         }
     )
-    assert tokens[:4] == ["game_start", "rule_player_4", "rule_length_tonpu", "round_start"]
+    assert tokens[:4] == ["rule_player_4", "rule_length_tonpu", "game_start", "round_start"]
 
 
 def test_tokenize_game_emits_three_player_rule_token_from_title() -> None:
@@ -62,7 +62,7 @@ def test_tokenize_game_emits_three_player_rule_token_from_title() -> None:
             "log": [[qipai_event(seat_count=3), pingju_event(seat_count=3)]],
         }
     )
-    assert tokens[:4] == ["game_start", "rule_player_3", "rule_length_hanchan", "round_start"]
+    assert tokens[:4] == ["rule_player_3", "rule_length_hanchan", "game_start", "round_start"]
 
 
 def test_tokenize_game_emits_inferred_three_player_rule_token_without_title() -> None:
@@ -71,7 +71,7 @@ def test_tokenize_game_emits_inferred_three_player_rule_token_without_title() ->
             "log": [[qipai_event(seat_count=3), pingju_event(seat_count=3)]],
         }
     )
-    assert tokens[:3] == ["game_start", "rule_player_3", "round_start"]
+    assert tokens[:3] == ["rule_player_3", "game_start", "round_start"]
 
 
 def test_sanma_multi_player_simulation_is_enabled_when_three_player_api_exists() -> None:
@@ -873,7 +873,7 @@ def test_pingju_emits_round_rank_tokens_after_score_deltas() -> None:
     assert rank_tokens == ["rank_0_1", "rank_1_4", "rank_2_2", "rank_3_3"]
 
 
-def test_tokenize_game_emits_final_scores_and_final_ranks_before_game_end() -> None:
+def test_tokenize_game_emits_final_scores_and_final_ranks_before_round_end_and_game_end() -> None:
     tokens = TenhouTokenizer().tokenize_game(
         {
             "qijia": 0,
@@ -890,14 +890,15 @@ def test_tokenize_game_emits_final_scores_and_final_ranks_before_game_end() -> N
         "TENBO_PLUS",
         "TENBO_20000",
     ]
-    assert final_score_idx < final_rank_idx < len(tokens) - 1
+    round_end_idx = tokens.index("round_end")
+    assert final_score_idx < final_rank_idx < round_end_idx < len(tokens) - 1
     assert tokens[final_rank_idx : final_rank_idx + 4] == [
         "final_rank_0_1",
         "final_rank_1_2",
         "final_rank_2_3",
         "final_rank_3_4",
     ]
-    assert tokens[-1] == "game_end"
+    assert tokens[-2:] == ["round_end", "game_end"]
 
 
 def test_tokenize_game_uses_top_level_final_defen_for_final_score_block() -> None:
@@ -923,7 +924,7 @@ def test_tokenize_game_omits_final_suffix_without_top_level_defen() -> None:
     tokens = TenhouTokenizer().tokenize_game({"log": [[qipai_event(), pingju_event()]]})
     assert "final_score_0" not in tokens
     assert "final_rank_0_1" not in tokens
-    assert tokens[-1] == "game_end"
+    assert tokens[-2:] == ["round_end", "game_end"]
 
 
 def test_tokenize_game_requires_qijia_for_tied_final_rank_reconstruction() -> None:
@@ -1609,6 +1610,17 @@ def test_validate_token_stream_rejects_next_round_before_result_completes() -> N
                 "pingju_ryukyoku",
                 "score_delta_0",
                 "TENBO_ZERO",
+                "score_delta_1",
+                "TENBO_ZERO",
+                "score_delta_2",
+                "TENBO_ZERO",
+                "score_delta_3",
+                "TENBO_ZERO",
+                "rank_0_1",
+                "rank_1_2",
+                "rank_2_3",
+                "rank_3_4",
+                "round_end",
                 "round_start",
                 "game_end",
             ]

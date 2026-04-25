@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from tenhou_tokenizer import TenhouTokenizer, Vocabulary, load_token_ids, save_token_ids, tokenize_game_views
 from tests.fixtures.synthetic_logs import minimal_game, pingju_event, qipai_event
@@ -14,6 +17,8 @@ SANMA_RAW = ROOT / "tests" / "fixtures" / "tenhou" / "2014091101gm-00b9-0000-5ca
 
 
 def _convert_sanma_sample() -> dict:
+    if shutil.which("perl") is None:
+        pytest.skip("perl is required for sanma conversion sample tests")
     proc = subprocess.run(
         ["perl", "-T", str(CONVERT), str(SANMA_RAW)],
         cwd=ROOT,
@@ -25,7 +30,7 @@ def _convert_sanma_sample() -> dict:
 
 def test_vocabulary_encode_decode_roundtrip() -> None:
     vocab = Vocabulary.load()
-    tokens = ["game_start", "view_imperfect_0", "rule_player_4", "round_start", "game_end"]
+    tokens = ["rule_player_4", "view_imperfect_0", "game_start", "round_start", "round_end", "game_end"]
 
     ids = vocab.encode(tokens)
 

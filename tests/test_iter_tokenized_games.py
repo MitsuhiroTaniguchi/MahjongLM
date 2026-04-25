@@ -35,7 +35,8 @@ def test_iter_tokenized_games_respects_start_index_and_max_games(tmp_path: Path)
     rows = list(iter_tokenized_games(str(zip_path), start_index=1, max_games=1))
 
     assert [name for name, _tokens in rows] == ["g1.json"]
-    assert rows[0][1][0] == "game_start"
+    assert rows[0][1][0] == "rule_player_4"
+    assert "game_start" in rows[0][1]
     assert rows[0][1][-1] == "game_end"
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import zipfile
 from pathlib import Path
@@ -27,6 +28,8 @@ KAN_MULTI_URA_GAME_ID = "2023/2023112600gm-00a9-0000-1bc26cca.txt"
 
 
 def _convert_sanma_sample() -> dict:
+    if shutil.which("perl") is None:
+        pytest.skip("perl is required for sanma conversion sample tests")
     proc = subprocess.run(
         ["perl", "-T", str(CONVERT), str(SANMA_RAW)],
         cwd=ROOT,
@@ -229,7 +232,7 @@ def test_trace_round_token_slices_matches_multi_ron_declined_pass_order(
     first_hule_tokens = traces[3]["tokens"]
     assert "pass_react_3_ron_voluntary" in first_hule_tokens
     assert first_hule_tokens.index("take_react_1_ron") < first_hule_tokens.index("pass_react_3_ron_voluntary")
-    validate_token_stream(["game_start", *tokenizer.tokens, "game_end"])
+    validate_token_stream(["game_start", *tokenizer.tokens, "round_end", "game_end"])
 
 
 def test_trace_round_token_slices_rejects_event_after_round_end(

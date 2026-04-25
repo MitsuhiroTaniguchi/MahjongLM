@@ -41,6 +41,13 @@ class TokenizedGameView:
     tokens: list[str]
 
 
+def _split_rule_prefix(tokens: list[str]) -> tuple[list[str], list[str]]:
+    prefix_end = 0
+    while prefix_end < len(tokens) and tokens[prefix_end].startswith("rule_"):
+        prefix_end += 1
+    return tokens[:prefix_end], tokens[prefix_end:]
+
+
 def _hidden_haipai_token(seat: int) -> str:
     return f"hidden_haipai_{seat}"
 
@@ -205,12 +212,13 @@ def tokenize_game_views(game: dict) -> list[TokenizedGameView]:
     tokenizer = TenhouTokenizer()
     complete_tokens = tokenizer.tokenize_game(game)
     event_traces = list(tokenizer.event_traces)
+    rule_prefix, body_tokens = _split_rule_prefix(complete_tokens)
     if not event_traces:
         return [
             TokenizedGameView(
                 view_type=VIEW_COMPLETE,
                 viewer_seat=None,
-                tokens=[complete_tokens[0], TOKEN_VIEW_COMPLETE, *complete_tokens[1:]],
+                tokens=[*rule_prefix, TOKEN_VIEW_COMPLETE, *body_tokens],
             )
         ]
 
@@ -218,16 +226,16 @@ def tokenize_game_views(game: dict) -> list[TokenizedGameView]:
         TokenizedGameView(
             view_type=VIEW_COMPLETE,
             viewer_seat=None,
-            tokens=[complete_tokens[0], TOKEN_VIEW_COMPLETE, *complete_tokens[1:]],
+            tokens=[*rule_prefix, TOKEN_VIEW_COMPLETE, *body_tokens],
         )
     ]
     round_kyoku = _round_kyoku_by_index(game, tokenizer.seat_count)
     for viewer_player in range(tokenizer.seat_count):
         transformed: list[str] = [
-            complete_tokens[0],
+            *rule_prefix,
             imperfect_view_token(viewer_player),
         ]
-        cursor = 1
+        cursor = len(rule_prefix)
         last_viewer_round_seat: int | None = None
         for trace in event_traces:
             trace_round_kyoku = round_kyoku.get(trace.round_index)

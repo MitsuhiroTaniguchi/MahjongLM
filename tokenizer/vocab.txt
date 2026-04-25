@@ -3,6 +3,7 @@
 <bos>
 <eos>
 game_start
+game_end
 view_complete
 view_imperfect_0
 view_imperfect_1
@@ -12,8 +13,8 @@ rule_player_3
 rule_player_4
 rule_length_tonpu
 rule_length_hanchan
-game_end
 round_start
+round_end
 bakaze_0
 bakaze_1
 bakaze_2

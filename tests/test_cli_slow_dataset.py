@@ -65,5 +65,6 @@ def test_real_dataset_regression_games_tokenize(game_id: str) -> None:
 
     tokens = TenhouTokenizer().tokenize_game(game)
 
-    assert tokens[0] == "game_start"
+    assert tokens[0].startswith("rule_player_")
+    assert "game_start" in tokens
     assert tokens[-1] == "game_end"

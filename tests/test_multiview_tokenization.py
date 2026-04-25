@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from tenhou_tokenizer import TOKEN_VIEW_COMPLETE, imperfect_view_token, tokenize_game_views
 from tests.fixtures.synthetic_logs import minimal_game, pingju_event, qipai_event
@@ -14,6 +17,8 @@ SANMA_RAW = ROOT / "tests" / "fixtures" / "tenhou" / "2014091101gm-00b9-0000-5ca
 
 
 def _convert_sanma_sample() -> dict:
+    if shutil.which("perl") is None:
+        pytest.skip("perl is required for sanma conversion sample tests")
     proc = subprocess.run(
         ["perl", "-T", str(CONVERT), str(SANMA_RAW)],
         cwd=ROOT,
@@ -31,7 +36,7 @@ def test_tokenize_game_views_emits_complete_plus_per_player_views() -> None:
     assert len(views) == 5
     assert views[0].view_type == "complete"
     assert views[0].viewer_seat is None
-    assert views[0].tokens[:3] == ["game_start", TOKEN_VIEW_COMPLETE, "rule_player_4"]
+    assert views[0].tokens[:4] == ["rule_player_4", TOKEN_VIEW_COMPLETE, "game_start", "round_start"]
     assert [view.viewer_seat for view in views[1:]] == [0, 1, 2, 3]
     assert [view.tokens[1] for view in views[1:]] == [
         imperfect_view_token(0),
