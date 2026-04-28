@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import os
 import shutil
 import subprocess
@@ -144,7 +145,7 @@ def ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def run_training_via_powershell(cmd: list[str], *, run_root: Path, log_file: Path) -> None:
+def run_training_via_powershell(cmd: list[str], *, run_root: Path, output_dir: Path, log_file: Path) -> None:
     log_file.parent.mkdir(parents=True, exist_ok=True)
     with log_file.open("a", encoding="utf-8") as log:
         log.write("+ " + " ".join(cmd) + "\n")
@@ -163,6 +164,10 @@ def run_training_via_powershell(cmd: list[str], *, run_root: Path, log_file: Pat
                 f"$arguments = @({args_block})",
                 "$process = Start-Process -FilePath $exe -ArgumentList $arguments -WorkingDirectory "
                 + ps_quote(str(ROOT))
+                + " -RedirectStandardOutput "
+                + ps_quote(str(output_dir / "stdout.log"))
+                + " -RedirectStandardError "
+                + ps_quote(str(output_dir / "stderr.log"))
                 + " -WindowStyle Hidden -PassThru -Wait",
                 "exit $process.ExitCode",
                 "",
@@ -251,6 +256,8 @@ def build_train_command(spec: ModelSpec, output_dir: Path, run_name: str, stop_f
         "--require-wandb",
         "--wandb-project",
         WANDB_PROJECT,
+        "--wandb-mode",
+        "disabled",
         "--wandb-run-name",
         run_name,
         "--wandb-tags",
@@ -410,6 +417,65 @@ def upload_folder(folder: Path, repo_id: str, *, commit_message: str) -> None:
     api.add_collection_item(HF_COLLECTION, item_id=repo_id, item_type="model", exists_ok=True, token=token)
 
 
+def publish_stdout_to_wandb(spec: ModelSpec, run_name: str, output_dir: Path, run_root: Path, log_file: Path) -> None:
+    stdout_path = output_dir / "stdout.log"
+    if not stdout_path.exists():
+        raise FileNotFoundError(stdout_path)
+    config_payload: dict[str, object] = {}
+    for name in ("training_config.json", "model_config.json"):
+        path = output_dir / name
+        if path.exists():
+            config_payload[name.removesuffix(".json")] = json.loads(path.read_text(encoding="utf-8"))
+
+    publisher = run_root / f"publish_wandb_{spec.key}.py"
+    publisher.write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "import json",
+                "from pathlib import Path",
+                "import wandb",
+                f"stdout_path = Path({str(stdout_path)!r})",
+                f"run = wandb.init(project={WANDB_PROJECT!r}, entity='a21-3jck-', name={run_name!r}, tags={['plain-qwen3', 'bos-eos', spec.key]!r}, config={config_payload!r})",
+                "for line in stdout_path.read_text(encoding='utf-8', errors='replace').splitlines():",
+                "    try:",
+                "        record = json.loads(line)",
+                "    except json.JSONDecodeError:",
+                "        continue",
+                "    step = record.pop('step', None)",
+                "    if step is None:",
+                "        continue",
+                "    record['trainer/global_step'] = step",
+                "    wandb.log(record, step=step)",
+                "run.finish()",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with log_file.open("a", encoding="utf-8") as log:
+        log.write(f"+ publish W&B from {stdout_path}\n")
+    ps_path = run_root / f"publish_wandb_{spec.key}.ps1"
+    ps_path.write_text(
+        "\n".join(
+            [
+                "$ErrorActionPreference = 'Stop'",
+                f"Set-Location -LiteralPath {ps_quote(str(ROOT))}",
+                "$env:WANDB__SERVICE_WAIT = '300'",
+                f"$process = Start-Process -FilePath {ps_quote(str(PYTHON))} -ArgumentList @({ps_quote(str(publisher))}) -WorkingDirectory {ps_quote(str(ROOT))} -WindowStyle Hidden -PassThru -Wait",
+                "exit $process.ExitCode",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps_path)],
+        cwd=ROOT,
+        check=True,
+    )
+
+
 def run_model(spec: ModelSpec, run_root: Path) -> None:
     run_name = f"q{spec.key}-baseline-bos-allyears-0p1ep-{now_slug()}"
     output_dir = ROOT / "outputs" / run_name
@@ -420,7 +486,13 @@ def run_model(spec: ModelSpec, run_root: Path) -> None:
     stage_root.mkdir(parents=True, exist_ok=True)
 
     print(f"=== training {spec.key}: {run_name} ===", flush=True)
-    run_training_via_powershell(build_train_command(spec, output_dir, run_name, stop_file), run_root=run_root, log_file=log_file)
+    run_training_via_powershell(
+        build_train_command(spec, output_dir, run_name, stop_file),
+        run_root=run_root,
+        output_dir=output_dir,
+        log_file=log_file,
+    )
+    publish_stdout_to_wandb(spec, run_name, output_dir, run_root, log_file)
 
     print(f"=== staging raw {spec.key} ===", flush=True)
     raw_stage = stage_raw_model(spec, output_dir, stage_root)
