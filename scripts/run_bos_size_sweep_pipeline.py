@@ -140,6 +140,50 @@ def to_wsl_path(path: Path) -> str:
     return completed.stdout.strip()
 
 
+def ps_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def run_training_via_powershell(cmd: list[str], *, run_root: Path, log_file: Path) -> None:
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    with log_file.open("a", encoding="utf-8") as log:
+        log.write("+ " + " ".join(cmd) + "\n")
+
+    ps_path = run_root / "launch_train.ps1"
+    exe = cmd[0]
+    args = cmd[1:]
+    args_block = ", ".join(ps_quote(arg) for arg in args)
+    ps_path.write_text(
+        "\n".join(
+            [
+                "$ErrorActionPreference = 'Stop'",
+                f"Set-Location -LiteralPath {ps_quote(str(ROOT))}",
+                "$env:WANDB__SERVICE_WAIT = '300'",
+                f"$exe = {ps_quote(exe)}",
+                f"$arguments = @({args_block})",
+                "$process = Start-Process -FilePath $exe -ArgumentList $arguments -WorkingDirectory "
+                + ps_quote(str(ROOT))
+                + " -WindowStyle Hidden -PassThru -Wait",
+                "exit $process.ExitCode",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(ps_path),
+        ],
+        cwd=ROOT,
+        check=True,
+    )
+
+
 def build_train_command(spec: ModelSpec, output_dir: Path, run_name: str, stop_file: Path) -> list[str]:
     return [
         str(PYTHON),
@@ -376,14 +420,7 @@ def run_model(spec: ModelSpec, run_root: Path) -> None:
     stage_root.mkdir(parents=True, exist_ok=True)
 
     print(f"=== training {spec.key}: {run_name} ===", flush=True)
-    train_env = os.environ.copy()
-    train_env.setdefault("WANDB__SERVICE_WAIT", "300")
-    run_checked(
-        build_train_command(spec, output_dir, run_name, stop_file),
-        log_file=log_file,
-        env=train_env,
-        capture_to_log=False,
-    )
+    run_training_via_powershell(build_train_command(spec, output_dir, run_name, stop_file), run_root=run_root, log_file=log_file)
 
     print(f"=== staging raw {spec.key} ===", flush=True)
     raw_stage = stage_raw_model(spec, output_dir, stage_root)
