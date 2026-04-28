@@ -6,7 +6,6 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -109,7 +108,14 @@ def dataset_args() -> list[str]:
     return args
 
 
-def run_checked(cmd: list[str], *, cwd: Path = ROOT, log_file: Path | None = None, env: dict[str, str] | None = None) -> None:
+def run_checked(
+    cmd: list[str],
+    *,
+    cwd: Path = ROOT,
+    log_file: Path | None = None,
+    env: dict[str, str] | None = None,
+    capture_to_log: bool = True,
+) -> None:
     print("+ " + " ".join(cmd), flush=True)
     if log_file is None:
         subprocess.run(cmd, cwd=cwd, env=env, check=True)
@@ -118,6 +124,9 @@ def run_checked(cmd: list[str], *, cwd: Path = ROOT, log_file: Path | None = Non
     with log_file.open("a", encoding="utf-8") as log:
         log.write("+ " + " ".join(cmd) + "\n")
         log.flush()
+        if not capture_to_log:
+            subprocess.run(cmd, cwd=cwd, env=env, check=True)
+            return
         subprocess.run(cmd, cwd=cwd, env=env, check=True, stdout=log, stderr=subprocess.STDOUT)
 
 
@@ -198,8 +207,6 @@ def build_train_command(spec: ModelSpec, output_dir: Path, run_name: str, stop_f
         "--require-wandb",
         "--wandb-project",
         WANDB_PROJECT,
-        "--wandb-mode",
-        "offline",
         "--wandb-run-name",
         run_name,
         "--wandb-tags",
@@ -359,34 +366,6 @@ def upload_folder(folder: Path, repo_id: str, *, commit_message: str) -> None:
     api.add_collection_item(HF_COLLECTION, item_id=repo_id, item_type="model", exists_ok=True, token=token)
 
 
-def sync_recent_wandb_runs(start_time: float, log_file: Path) -> None:
-    wandb_dir = ROOT / "wandb"
-    if not wandb_dir.exists():
-        return
-    candidates = [
-        path
-        for path in wandb_dir.glob("offline-run-*")
-        if path.is_dir() and path.stat().st_mtime >= start_time - 5
-    ]
-    for path in sorted(candidates, key=lambda item: item.stat().st_mtime):
-        run_checked(
-            [
-                str(PYTHON),
-                "-m",
-                "wandb",
-                "sync",
-                "--include-offline",
-                "--no-include-synced",
-                "--project",
-                WANDB_PROJECT,
-                "--entity",
-                "a21-3jck-",
-                str(path),
-            ],
-            log_file=log_file,
-        )
-
-
 def run_model(spec: ModelSpec, run_root: Path) -> None:
     run_name = f"q{spec.key}-baseline-bos-allyears-0p1ep-{now_slug()}"
     output_dir = ROOT / "outputs" / run_name
@@ -399,9 +378,12 @@ def run_model(spec: ModelSpec, run_root: Path) -> None:
     print(f"=== training {spec.key}: {run_name} ===", flush=True)
     train_env = os.environ.copy()
     train_env.setdefault("WANDB__SERVICE_WAIT", "300")
-    start_time = time.time()
-    run_checked(build_train_command(spec, output_dir, run_name, stop_file), log_file=log_file, env=train_env)
-    sync_recent_wandb_runs(start_time, log_file)
+    run_checked(
+        build_train_command(spec, output_dir, run_name, stop_file),
+        log_file=log_file,
+        env=train_env,
+        capture_to_log=False,
+    )
 
     print(f"=== staging raw {spec.key} ===", flush=True)
     raw_stage = stage_raw_model(spec, output_dir, stage_root)
