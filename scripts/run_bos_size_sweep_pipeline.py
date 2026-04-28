@@ -222,7 +222,7 @@ def build_train_command(spec: ModelSpec, output_dir: Path, run_name: str, stop_f
         "--train-steps",
         "0",
         "--train-epochs",
-        "0.1",
+        "0.2",
         "--eval-interval",
         "100",
         "--save-interval",
@@ -239,7 +239,7 @@ def build_train_command(spec: ModelSpec, output_dir: Path, run_name: str, stop_f
         "--muon-aux-learning-rate",
         "0.03",
         "--warmup-steps",
-        "100",
+        "200",
         "--label-smoothing",
         "0",
         "--train-split-eval-ratio",
@@ -313,12 +313,12 @@ Plain Qwen3 MahjongLM checkpoint trained with explicit `<bos>` prepended and `<e
 Training sweep:
 - W&B project: `{WANDB_PROJECT}`
 - data: all-year MahjongLM dataset, 2011-2024
-- train epochs: 0.1
+- train epochs: 0.2
 - train/eval batch size: 8
 - gradient accumulation: 64
 - optimizer: Muon+
 - learning rate: 0.03
-- warmup steps: 100
+- warmup steps: 200
 - label smoothing: 0
 
 Prompt example:
@@ -477,7 +477,7 @@ def publish_stdout_to_wandb(spec: ModelSpec, run_name: str, output_dir: Path, ru
 
 
 def run_model(spec: ModelSpec, run_root: Path) -> None:
-    run_name = f"q{spec.key}-baseline-bos-allyears-0p1ep-{now_slug()}"
+    run_name = f"q{spec.key}-baseline-bos-allyears-0p2ep-{now_slug()}"
     output_dir = ROOT / "outputs" / run_name
     stop_file = output_dir / "STOP"
     log_file = run_root / f"{spec.key}.log"
