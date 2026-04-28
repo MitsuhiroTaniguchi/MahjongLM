@@ -366,7 +366,9 @@ def run_model(spec: ModelSpec, run_root: Path) -> None:
     stage_root.mkdir(parents=True, exist_ok=True)
 
     print(f"=== training {spec.key}: {run_name} ===", flush=True)
-    run_checked(build_train_command(spec, output_dir, run_name, stop_file), log_file=log_file)
+    train_env = os.environ.copy()
+    train_env.setdefault("WANDB__SERVICE_WAIT", "300")
+    run_checked(build_train_command(spec, output_dir, run_name, stop_file), log_file=log_file, env=train_env)
 
     print(f"=== staging raw {spec.key} ===", flush=True)
     raw_stage = stage_raw_model(spec, output_dir, stage_root)
