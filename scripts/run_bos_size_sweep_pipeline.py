@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import shutil
@@ -143,6 +144,10 @@ def to_wsl_path(path: Path) -> str:
 
 def ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
+
+
+def wandb_run_id(run_name: str) -> str:
+    return hashlib.sha1(run_name.encode("utf-8")).hexdigest()[:16]
 
 
 def run_training_via_powershell(cmd: list[str], *, run_root: Path, output_dir: Path, log_file: Path) -> None:
@@ -417,15 +422,56 @@ def upload_folder(folder: Path, repo_id: str, *, commit_message: str) -> None:
     api.add_collection_item(HF_COLLECTION, item_id=repo_id, item_type="model", exists_ok=True, token=token)
 
 
-def publish_stdout_to_wandb(spec: ModelSpec, run_name: str, output_dir: Path, run_root: Path, log_file: Path) -> None:
-    stdout_path = output_dir / "stdout.log"
-    if not stdout_path.exists():
-        raise FileNotFoundError(stdout_path)
+def wandb_config_payload(output_dir: Path) -> dict[str, object]:
     config_payload: dict[str, object] = {}
     for name in ("training_config.json", "model_config.json"):
         path = output_dir / name
         if path.exists():
             config_payload[name.removesuffix(".json")] = json.loads(path.read_text(encoding="utf-8"))
+    return config_payload
+
+
+def create_wandb_marker(spec: ModelSpec, run_name: str, output_dir: Path, run_root: Path) -> None:
+    marker = run_root / f"create_wandb_{spec.key}.py"
+    marker.write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "import wandb",
+                f"run = wandb.init(project={WANDB_PROJECT!r}, entity='a21-3jck-', name={run_name!r}, id={wandb_run_id(run_name)!r}, resume='allow', tags={['plain-qwen3', 'bos-eos', spec.key]!r}, config={wandb_config_payload(output_dir)!r})",
+                "wandb.log({'pipeline/status_code': 0, 'pipeline/started': 1}, step=0)",
+                "run.finish()",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    ps_path = run_root / f"create_wandb_{spec.key}.ps1"
+    ps_path.write_text(
+        "\n".join(
+            [
+                "$ErrorActionPreference = 'Stop'",
+                f"Set-Location -LiteralPath {ps_quote(str(ROOT))}",
+                "$env:WANDB__SERVICE_WAIT = '300'",
+                f"$process = Start-Process -FilePath {ps_quote(str(PYTHON))} -ArgumentList @({ps_quote(str(marker))}) -WorkingDirectory {ps_quote(str(ROOT))} -WindowStyle Hidden -PassThru -Wait",
+                "exit $process.ExitCode",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps_path)],
+        cwd=ROOT,
+        check=True,
+    )
+
+
+def publish_stdout_to_wandb(spec: ModelSpec, run_name: str, output_dir: Path, run_root: Path, log_file: Path) -> None:
+    stdout_path = output_dir / "stdout.log"
+    if not stdout_path.exists():
+        raise FileNotFoundError(stdout_path)
+    config_payload = wandb_config_payload(output_dir)
 
     publisher = run_root / f"publish_wandb_{spec.key}.py"
     publisher.write_text(
@@ -436,7 +482,7 @@ def publish_stdout_to_wandb(spec: ModelSpec, run_name: str, output_dir: Path, ru
                 "from pathlib import Path",
                 "import wandb",
                 f"stdout_path = Path({str(stdout_path)!r})",
-                f"run = wandb.init(project={WANDB_PROJECT!r}, entity='a21-3jck-', name={run_name!r}, tags={['plain-qwen3', 'bos-eos', spec.key]!r}, config={config_payload!r})",
+                f"run = wandb.init(project={WANDB_PROJECT!r}, entity='a21-3jck-', name={run_name!r}, id={wandb_run_id(run_name)!r}, resume='allow', tags={['plain-qwen3', 'bos-eos', spec.key]!r}, config={config_payload!r})",
                 "for line in stdout_path.read_text(encoding='utf-8', errors='replace').splitlines():",
                 "    try:",
                 "        record = json.loads(line)",
@@ -486,6 +532,7 @@ def run_model(spec: ModelSpec, run_root: Path) -> None:
     stage_root.mkdir(parents=True, exist_ok=True)
 
     print(f"=== training {spec.key}: {run_name} ===", flush=True)
+    create_wandb_marker(spec, run_name, output_dir, run_root)
     run_training_via_powershell(
         build_train_command(spec, output_dir, run_name, stop_file),
         run_root=run_root,
