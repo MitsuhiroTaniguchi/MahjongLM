@@ -141,7 +141,7 @@ class TrainingConfig:
     max_eval_groups: int = 0
     gradient_accumulation_steps: int = 1
     train_steps: int = 0
-    train_epochs: int = 1
+    train_epochs: float = 1.0
     eval_interval: int = 200
     early_stopping_metric: str | None = None
     early_stopping_patience: int = 0
@@ -167,6 +167,7 @@ class TrainingConfig:
     label_smoothing: float = 0.0
     train_split_eval_ratio: float = 0.01
     split_seed: int = 1337
+    data_seed: int | None = None
     dataloader_num_workers: int = 0
     pin_memory: bool = True
     seed: int = 1337
@@ -226,7 +227,7 @@ class TrainingConfig:
             raise ValueError("train_steps must be non-negative")
         if self.train_epochs < 0:
             raise ValueError("train_epochs must be non-negative")
-        if self.train_steps == 0 and self.train_epochs == 0:
+        if self.train_steps == 0 and self.train_epochs <= 0:
             raise ValueError("either train_steps or train_epochs must be positive")
         if self.eval_interval <= 0:
             raise ValueError("eval_interval must be positive")

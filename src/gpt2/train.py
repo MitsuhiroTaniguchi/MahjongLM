@@ -364,6 +364,10 @@ def _set_global_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _data_seed(training_config: TrainingConfig) -> int:
+    return training_config.seed if training_config.data_seed is None else training_config.data_seed
+
+
 def _select_device(torch):
     if torch.cuda.is_available():
         return torch.device("cuda")
@@ -645,7 +649,7 @@ def _count_optimizer_steps_for_epoch(*, train_dataset, training_config: Training
         training_config=training_config,
         max_tokens_per_batch=training_config.max_tokens_per_batch,
         shuffle=True,
-        seed=training_config.seed + epoch_index,
+        seed=_data_seed(training_config) + epoch_index,
     )
     return math.ceil(len(sampler) / training_config.gradient_accumulation_steps)
 
@@ -743,7 +747,7 @@ def _count_batches_for_dataset_epoch(*, train_dataset, training_config: Training
         training_config=training_config,
         max_tokens_per_batch=training_config.max_tokens_per_batch,
         shuffle=True,
-        seed=training_config.seed + epoch_index,
+        seed=_data_seed(training_config) + epoch_index,
     )
     return len(sampler)
 
@@ -797,9 +801,9 @@ def _infer_resume_runtime_state(
                 "non_improving_evals": 0,
             }
         epoch_index += 1
-        if training_config.train_steps == 0 and epoch_index >= training_config.train_epochs:
+        if training_config.train_steps == 0 and epoch_index >= math.ceil(training_config.train_epochs):
             return {
-                "epoch": max(0, training_config.train_epochs - 1),
+                "epoch": max(0, math.ceil(training_config.train_epochs) - 1),
                 "dataset_index": max(0, dataset_count - 1),
                 "batches_seen_in_dataset": 0,
                 "accumulation_step": 0,
@@ -1152,7 +1156,7 @@ def _run_eval_if_needed(
                     training_config=training_config,
                     collator=collator,
                     device=device,
-                    seed=training_config.seed + dataset_idx,
+                    seed=_data_seed(training_config) + dataset_idx,
                     DataLoader=DataLoader,
                 )
                 for dataset_idx, dataset in enumerate(eval_dataset)
@@ -1165,7 +1169,7 @@ def _run_eval_if_needed(
                 training_config=training_config,
                 collator=collator,
                 device=device,
-                seed=training_config.seed,
+                seed=_data_seed(training_config),
                 DataLoader=DataLoader,
             )
             eval_metrics = _evaluate(model, eval_loader, device, autocast_dtype, torch)
@@ -1617,6 +1621,7 @@ def train(
     if training_config.packing_mode == "packed":
         collator = PackedGroupCollator(
             pad_token_id=tokenizer.pad_token_id,
+            bos_token_id=tokenizer.bos_token_id,
             eos_token_id=tokenizer.eos_token_id,
             max_length=training_config.max_seq_length,
             pad_to_multiple_of=training_config.pad_to_multiple_of,
@@ -1625,6 +1630,7 @@ def train(
     else:
         collator = UnpackedCollator(
             pad_token_id=tokenizer.pad_token_id,
+            bos_token_id=tokenizer.bos_token_id,
             eos_token_id=tokenizer.eos_token_id,
             max_length=training_config.max_seq_length,
             pad_to_multiple_of=training_config.pad_to_multiple_of,
@@ -1638,7 +1644,7 @@ def train(
                 training_config=training_config,
                 max_tokens_per_batch=training_config.max_tokens_per_batch,
                 shuffle=True,
-                seed=training_config.seed + dataset_index,
+                seed=_data_seed(training_config) + dataset_index,
             )
         )
         for dataset_index, (_dataset_dir, dataset) in enumerate(train_dataset_plan)
@@ -1654,19 +1660,15 @@ def train(
         )
         target_train_steps = training_config.train_steps
     else:
-        per_epoch_optimizer_steps = [
-            sum(
-                _count_optimizer_steps_for_epoch(
-                    train_dataset=dataset,
-                    training_config=training_config,
-                    epoch_index=epoch_index * max(1, len(train_dataset_plan)) + dataset_index,
-                )
-                for dataset_index, (_dataset_dir, dataset) in enumerate(train_dataset_plan)
+        optimizer_steps_per_epoch = sum(
+            _count_optimizer_steps_for_epoch(
+                train_dataset=dataset,
+                training_config=training_config,
+                epoch_index=dataset_index,
             )
-            for epoch_index in range(training_config.train_epochs)
-        ]
-        optimizer_steps_per_epoch = per_epoch_optimizer_steps[0] if per_epoch_optimizer_steps else 0
-        target_train_steps = sum(per_epoch_optimizer_steps)
+            for dataset_index, (_dataset_dir, dataset) in enumerate(train_dataset_plan)
+        )
+        target_train_steps = math.ceil(optimizer_steps_per_epoch * training_config.train_epochs)
     effective_tokens_per_step = _estimate_effective_tokens_per_step(training_config)
     resolved_warmup_steps = training_config.warmup_steps
     if training_config.lr_scheduler_type == "linear":
@@ -1825,7 +1827,7 @@ def train(
         if training_config.train_steps > 0:
             epoch_indices = range(10**9)
         else:
-            epoch_indices = range(training_config.train_epochs)
+            epoch_indices = range(max(1, math.ceil(training_config.train_epochs)))
 
         for epoch in epoch_indices:
             if global_step >= target_train_steps or early_stopped or _stop_requested(training_config):
@@ -1870,7 +1872,7 @@ def train(
                         training_config=training_config,
                         max_tokens_per_batch=training_config.max_tokens_per_batch,
                         shuffle=True,
-                        seed=training_config.seed + dataset_seed_index,
+                        seed=_data_seed(training_config) + dataset_seed_index,
                     ),
                     collate_fn=collator,
                     num_workers=training_config.dataloader_num_workers,
@@ -2214,7 +2216,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-eval-groups", type=int, default=0)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--train-steps", type=int, default=0, help="Use fixed optimizer steps. Set 0 to use exact epoch mode.")
-    parser.add_argument("--train-epochs", type=int, default=1, help="Exact epoch count used when --train-steps is 0.")
+    parser.add_argument("--train-epochs", type=float, default=1.0, help="Epoch count used when --train-steps is 0. Fractional values are allowed.")
     parser.add_argument("--eval-interval", type=int, default=200)
     parser.add_argument("--early-stopping-metric", type=str, default=None)
     parser.add_argument("--early-stopping-patience", type=int, default=0)
@@ -2240,6 +2242,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--label-smoothing", type=float, default=0.0)
     parser.add_argument("--train-split-eval-ratio", type=float, default=0.01)
     parser.add_argument("--split-seed", type=int, default=1337)
+    parser.add_argument("--data-seed", type=int, default=None)
     parser.add_argument("--dataloader-num-workers", type=int, default=0)
     parser.add_argument("--pin-memory", action="store_true", default=True)
     parser.add_argument("--no-pin-memory", action="store_false", dest="pin_memory")
@@ -2439,6 +2442,7 @@ def main() -> None:
         label_smoothing=args.label_smoothing,
         train_split_eval_ratio=args.train_split_eval_ratio,
         split_seed=args.split_seed,
+        data_seed=args.data_seed,
         dataloader_num_workers=args.dataloader_num_workers,
         pin_memory=args.pin_memory,
         seed=args.seed,

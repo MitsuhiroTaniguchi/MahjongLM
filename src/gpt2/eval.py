@@ -91,6 +91,7 @@ def evaluate_checkpoint(
     if packing_mode == "packed":
         collator = PackedGroupCollator(
             pad_token_id=tokenizer.pad_token_id,
+            bos_token_id=tokenizer.bos_token_id,
             eos_token_id=tokenizer.eos_token_id,
             max_length=max_seq_length,
             pad_to_multiple_of=pad_to_multiple_of,
@@ -99,6 +100,7 @@ def evaluate_checkpoint(
     else:
         collator = UnpackedCollator(
             pad_token_id=tokenizer.pad_token_id,
+            bos_token_id=tokenizer.bos_token_id,
             eos_token_id=tokenizer.eos_token_id,
             max_length=max_seq_length,
             pad_to_multiple_of=pad_to_multiple_of,

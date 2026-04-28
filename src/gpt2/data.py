@@ -227,6 +227,7 @@ class PackedGroupCollator:
         self,
         *,
         pad_token_id: int,
+        bos_token_id: int,
         eos_token_id: int,
         max_length: int,
         pad_to_multiple_of: int = 1,
@@ -237,6 +238,7 @@ class PackedGroupCollator:
         if pad_to_multiple_of <= 0:
             raise ValueError("pad_to_multiple_of must be positive")
         self.pad_token_id = pad_token_id
+        self.bos_token_id = bos_token_id
         self.eos_token_id = eos_token_id
         self.max_length = max_length
         self.pad_to_multiple_of = pad_to_multiple_of
@@ -246,7 +248,7 @@ class PackedGroupCollator:
 
     def _segment_from_feature(self, feature: dict) -> dict:
         input_ids = list(feature["input_ids"])
-        segment = input_ids + [self.eos_token_id]
+        segment = [self.bos_token_id] + input_ids + [self.eos_token_id]
         if len(segment) > self.max_length:
             raise ValueError(
                 f"sequence for group {feature['group_id']} view {feature['view_type']} exceeds max_length: "
@@ -402,6 +404,7 @@ class UnpackedCollator:
         self,
         *,
         pad_token_id: int,
+        bos_token_id: int,
         eos_token_id: int,
         max_length: int,
         pad_to_multiple_of: int = 1,
@@ -412,6 +415,7 @@ class UnpackedCollator:
         if pad_to_multiple_of <= 0:
             raise ValueError("pad_to_multiple_of must be positive")
         self.pad_token_id = pad_token_id
+        self.bos_token_id = bos_token_id
         self.eos_token_id = eos_token_id
         self.max_length = max_length
         self.pad_to_multiple_of = pad_to_multiple_of
@@ -419,7 +423,7 @@ class UnpackedCollator:
 
     def _segment_from_feature(self, feature: dict) -> tuple[str, list[int]]:
         input_ids = list(feature["input_ids"])
-        segment = input_ids + [self.eos_token_id]
+        segment = [self.bos_token_id] + input_ids + [self.eos_token_id]
         if len(segment) > self.max_length:
             raise ValueError(
                 f"sequence for group {feature['group_id']} view {feature['view_type']} exceeds max_length: "
