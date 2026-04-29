@@ -1211,27 +1211,10 @@ class TenhouTokenizer:
         if action not in {"chi", "pon"}:
             return None
 
-        five_suits = [t[0] for t in consumed_tokens if t[0] in {"m", "p", "s"} and t[1] in {"0", "5"}]
-        if not five_suits:
+        five_tokens = [t for t in consumed_tokens if t[0] in {"m", "p", "s"} and t[1] in {"0", "5"}]
+        if not five_tokens:
             return None
-        suit = five_suits[0]
-        if any(s != suit for s in five_suits):
-            return None
-
-        consumed_fives = len(five_suits)
-        if consumed_fives == 0:
-            return None
-
-        idx = tile_to_index(f"{suit}5")
-        total_fives = pre_counts[idx]
-        red_fives = pre_red_fives.get(suit, 0)
-        normal_fives = total_fives - red_fives
-        min_red_used = max(0, consumed_fives - normal_fives)
-        max_red_used = min(consumed_fives, red_fives)
-        if min_red_used == max_red_used:
-            return None
-
-        used_red = any(t == f"{suit}0" for t in consumed_tokens)
+        used_red = any(t[1] == "0" for t in five_tokens)
         return f"red_{'used' if used_red else 'not_used'}"
 
     def _player_wind(self, seat: int) -> int:

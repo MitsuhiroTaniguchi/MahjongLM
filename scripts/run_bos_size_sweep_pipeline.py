@@ -42,9 +42,9 @@ class ModelSpec:
 MODEL_SPECS = (
     ModelSpec(
         key="1m",
-        label="MahjongLM 1M BOS",
-        raw_repo="mitsutani/mahjonglm-1m-bos",
-        gguf_repo="mitsutani/mahjonglm-1m-bos-q4-k-m-gguf",
+        label="MahjongLM 1M",
+        raw_repo="mitsutani/mahjonglm-1m",
+        gguf_repo="mitsutani/mahjonglm-1m-q4-k-m-gguf",
         model_args=(
             "--qwen-arch",
             "custom",
@@ -66,9 +66,9 @@ MODEL_SPECS = (
     ),
     ModelSpec(
         key="10m",
-        label="MahjongLM 10M BOS",
-        raw_repo="mitsutani/mahjonglm-10m-bos",
-        gguf_repo="mitsutani/mahjonglm-10m-bos-q4-k-m-gguf",
+        label="MahjongLM 10M",
+        raw_repo="mitsutani/mahjonglm-10m",
+        gguf_repo="mitsutani/mahjonglm-10m-q4-k-m-gguf",
         model_args=(
             "--qwen-arch",
             "custom",
@@ -90,9 +90,9 @@ MODEL_SPECS = (
     ),
     ModelSpec(
         key="100m",
-        label="MahjongLM 100M BOS",
-        raw_repo="mitsutani/mahjonglm-100m-bos",
-        gguf_repo="mitsutani/mahjonglm-100m-bos-q4-k-m-gguf",
+        label="MahjongLM 100M",
+        raw_repo="mitsutani/mahjonglm-100m",
+        gguf_repo="mitsutani/mahjonglm-100m-q4-k-m-gguf",
         model_args=("--qwen-arch", "Q100"),
     ),
 )
