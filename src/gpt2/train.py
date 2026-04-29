@@ -1308,8 +1308,9 @@ def _finalize_optimizer_step(
             training_config=training_config,
         )
     )
-    _wandb_log_if_available(wandb, latest_metrics, step=global_step)
-    if global_step % training_config.log_interval == 0 or global_step == target_train_steps:
+    should_log_train = global_step % training_config.log_interval == 0 or global_step == target_train_steps
+    if should_log_train:
+        _wandb_log_if_available(wandb, latest_metrics, step=global_step)
         print(json.dumps({"step": global_step, **latest_metrics}, ensure_ascii=False))
 
     should_run_eval = global_step % training_config.eval_interval == 0 or global_step == target_train_steps
