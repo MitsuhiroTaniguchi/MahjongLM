@@ -132,8 +132,13 @@ def run_checked(
 
 
 def to_wsl_path(path: Path) -> str:
+    resolved = path.resolve()
+    drive = resolved.drive.rstrip(":").lower()
+    if drive:
+        tail = resolved.relative_to(resolved.anchor).as_posix()
+        return f"/mnt/{drive}/{tail}"
     completed = subprocess.run(
-        ["wsl.exe", "wslpath", "-a", str(path)],
+        ["wsl.exe", "wslpath", "-a", str(resolved)],
         check=True,
         capture_output=True,
         text=True,
