@@ -56,7 +56,7 @@ def test_infer_consumed_meld_tokens_raises_when_hand_cannot_supply_tiles() -> No
         tokenizer._infer_consumed_meld_tokens(player, ["m1", "m2", "m3"], called_index=2)
 
 
-def test_red_choice_token_only_emits_when_choice_exists() -> None:
+def test_red_choice_token_emits_for_any_consumed_five() -> None:
     tokenizer = TenhouTokenizer()
     pre_counts = parse_hand_counts("m05p123s123z11223")
     pre_red = {"m": 1, "p": 0, "s": 0}
@@ -68,7 +68,22 @@ def test_red_choice_token_only_emits_when_choice_exists() -> None:
         pre_red_fives=pre_red,
     )
 
-    assert token is None
+    assert token == "red_used"
+
+
+def test_red_choice_token_emits_not_used_for_normal_five() -> None:
+    tokenizer = TenhouTokenizer()
+    pre_counts = parse_hand_counts("m55p123s123z11223")
+    pre_red = {"m": 0, "p": 0, "s": 0}
+
+    token = tokenizer._red_choice_token(
+        action="pon",
+        consumed_tokens=["m5", "m5"],
+        pre_counts=pre_counts,
+        pre_red_fives=pre_red,
+    )
+
+    assert token == "red_not_used"
 
 
 def test_red_choice_token_distinguishes_used_vs_not_used() -> None:
