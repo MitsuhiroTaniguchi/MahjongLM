@@ -817,6 +817,24 @@ def _infer_resume_runtime_state(
             }
 
 
+class _SkipBatchSampler:
+    def __init__(self, batch_sampler, skip_batches: int) -> None:
+        self.batch_sampler = batch_sampler
+        self.skip_batches = max(0, int(skip_batches))
+
+    def __iter__(self):
+        iterator = iter(self.batch_sampler)
+        for _ in range(self.skip_batches):
+            try:
+                next(iterator)
+            except StopIteration:
+                return
+        yield from iterator
+
+    def __len__(self) -> int:
+        return max(0, len(self.batch_sampler) - self.skip_batches)
+
+
 def _evaluate(model, dataloader, device, autocast_dtype, torch) -> dict[str, float]:
     return _evaluate_over_dataloaders(model, [dataloader], device, autocast_dtype, torch)
 
@@ -826,22 +844,26 @@ def _evaluate_over_dataloaders(model, dataloaders, device, autocast_dtype, torch
     losses: list[float] = []
     packed_tokens = 0
     padded_tokens = 0
+    non_blocking = device.type == "cuda"
     with torch.inference_mode():
         for dataloader in dataloaders:
             for batch in dataloader:
                 assert isinstance(batch, (PackedBatch, UnpackedBatch))
+                input_ids = batch.input_ids.to(device, non_blocking=non_blocking)
+                attention_mask = batch.attention_mask.to(device, non_blocking=non_blocking)
+                labels = batch.labels.to(device, non_blocking=non_blocking)
                 with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=autocast_dtype is not None):
                     outputs = model(
-                        input_ids=batch.input_ids.to(device),
-                        attention_mask=batch.attention_mask.to(device),
-                        labels=batch.labels.to(device),
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        labels=labels,
                     )
                 # Eval metrics should stay comparable across runs, so always use raw causal LM loss here.
                 loss = outputs.loss
                 losses.append(float(loss.detach().cpu()))
                 packed_tokens += batch.stats.packed_tokens
                 padded_tokens += batch.stats.padded_tokens
-                del outputs, loss, batch
+                del input_ids, attention_mask, labels, outputs, loss, batch
     model.train()
     mean_loss = sum(losses) / len(losses)
     return {
@@ -849,6 +871,21 @@ def _evaluate_over_dataloaders(model, dataloaders, device, autocast_dtype, torch
         "eval/perplexity": math.exp(mean_loss) if mean_loss < 20 else float("inf"),
         "eval/packing_efficiency": packed_tokens / padded_tokens if padded_tokens else 0.0,
     }
+
+
+def _dataloader_runtime_kwargs(*, training_config: TrainingConfig, pin_memory: bool) -> dict:
+    kwargs = {
+        "num_workers": training_config.dataloader_num_workers,
+        "pin_memory": pin_memory,
+    }
+    if training_config.dataloader_num_workers > 0:
+        kwargs.update(
+            {
+                "persistent_workers": True,
+                "prefetch_factor": 4,
+            }
+        )
+    return kwargs
 
 
 def _build_eval_loader(*, eval_dataset, training_config: TrainingConfig, collator, device, seed: int, DataLoader):
@@ -862,8 +899,10 @@ def _build_eval_loader(*, eval_dataset, training_config: TrainingConfig, collato
             seed=seed,
         ),
         collate_fn=collator,
-        num_workers=0,
-        pin_memory=False,
+        **_dataloader_runtime_kwargs(
+            training_config=training_config,
+            pin_memory=training_config.pin_memory and device.type == "cuda",
+        ),
     )
 
 
@@ -944,9 +983,10 @@ def _run_train_batch(
     accum_padded_tokens: int,
 ) -> tuple[_StepTransition | None, int, int, int, int, int, int, float, dict[str, float]]:
     assert isinstance(batch, (PackedBatch, UnpackedBatch))
-    input_ids = batch.input_ids.to(device)
-    attention_mask = batch.attention_mask.to(device)
-    labels = batch.labels.to(device)
+    non_blocking = device.type == "cuda"
+    input_ids = batch.input_ids.to(device, non_blocking=non_blocking)
+    attention_mask = batch.attention_mask.to(device, non_blocking=non_blocking)
+    labels = batch.labels.to(device, non_blocking=non_blocking)
     with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=autocast_dtype is not None):
         outputs = model(
             input_ids=input_ids,
@@ -1697,6 +1737,7 @@ def train(
         "attn_implementation": training_config.attn_implementation,
         "packing_mode": training_config.packing_mode,
         "model_family": training_config.model_family,
+        "dataloader_num_workers": training_config.dataloader_num_workers,
     }
     _wandb_summary_update_if_available(
         wandb,
@@ -1708,6 +1749,7 @@ def train(
             "run/device": run_metadata["device"],
             "run/model_family": run_metadata["model_family"],
             "run/packing_mode": run_metadata["packing_mode"],
+            "run/dataloader_num_workers": run_metadata["dataloader_num_workers"],
             "run/optimizer_name": training_config.optimizer_name,
             "run/batches_per_epoch": batches_per_epoch,
             "run/optimizer_steps_per_epoch": optimizer_steps_per_epoch,
@@ -1865,22 +1907,26 @@ def train(
                     "best_early_stopping_metric": best_early_stopping_metric,
                     "non_improving_evals": non_improving_evals,
                 }
+                batch_sampler = _build_batch_sampler(
+                    train_dataset,
+                    training_config=training_config,
+                    max_tokens_per_batch=training_config.max_tokens_per_batch,
+                    shuffle=True,
+                    seed=_data_seed(training_config) + dataset_seed_index,
+                )
+                if dataset_batch_skip:
+                    batch_sampler = _SkipBatchSampler(batch_sampler, dataset_batch_skip)
                 train_loader = DataLoader(
                     train_dataset,
-                    batch_sampler=_build_batch_sampler(
-                        train_dataset,
-                        training_config=training_config,
-                        max_tokens_per_batch=training_config.max_tokens_per_batch,
-                        shuffle=True,
-                        seed=_data_seed(training_config) + dataset_seed_index,
-                    ),
+                    batch_sampler=batch_sampler,
                     collate_fn=collator,
-                    num_workers=training_config.dataloader_num_workers,
-                    pin_memory=training_config.pin_memory and device.type == "cuda",
+                    **_dataloader_runtime_kwargs(
+                        training_config=training_config,
+                        pin_memory=training_config.pin_memory and device.type == "cuda",
+                    ),
                 )
-                for batch_index, batch in enumerate(train_loader):
-                    if batch_index < dataset_batch_skip:
-                        continue
+                for relative_batch_index, batch in enumerate(train_loader):
+                    batch_index = dataset_batch_skip + relative_batch_index
                     current_runtime_state["batches_seen_in_dataset"] = batch_index
                     if global_step >= target_train_steps or early_stopped or _stop_requested(training_config):
                         interrupted = interrupted or _stop_requested(training_config)
