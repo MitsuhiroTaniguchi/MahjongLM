@@ -26,7 +26,7 @@ WORDLEVEL_PATCH_SOURCE = (
 )
 WORDLEVEL_PATCH_COMMIT_SOURCE = ROOT / "outputs" / "hf_upload_q100_baseline_step11000_q4km" / "PATCHED_LLAMA_CPP_COMMIT.txt"
 
-WANDB_PROJECT = "mahjongLM_qwen3_plain_bos_sweep"
+WANDB_PROJECT = "mahjongLM_qwen3_plain_hule_sweep"
 HF_COLLECTION = "mitsutani/mahjonglm"
 
 
@@ -271,6 +271,8 @@ def build_train_command(spec: ModelSpec, output_dir: Path, run_name: str, stop_f
         "--wandb-tags",
         "bos-eos",
         "--wandb-tags",
+        "hule-result",
+        "--wandb-tags",
         spec.key,
         "--stop-file",
         str(stop_file),
@@ -315,6 +317,7 @@ license: mit
 # {spec.label}
 
 Plain Qwen3 MahjongLM checkpoint trained with explicit `<bos>` prepended and `<eos>` appended by the training collator.
+Result blocks use `hule_{{seat}}` markers and combined multi-ron score deltas.
 
 Training sweep:
 - W&B project: `{WANDB_PROJECT}`
@@ -450,7 +453,7 @@ def postprocess_and_upload_existing(spec: ModelSpec, output_dir: Path, run_root:
 
 
 def run_model(spec: ModelSpec, run_root: Path) -> None:
-    run_name = f"q{spec.key}-baseline-bos-allyears-0p2ep-{now_slug()}"
+    run_name = f"q{spec.key}-baseline-hule-allyears-0p2ep-{now_slug()}"
     output_dir = ROOT / "outputs" / run_name
     stop_file = output_dir / "STOP"
     log_file = run_root / f"{spec.key}.log"
