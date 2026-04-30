@@ -19,14 +19,22 @@ TENBO_TOKENS = {
     "TENBO_100",
     "TENBO_200",
     "TENBO_300",
+    "TENBO_400",
     "TENBO_500",
+    "TENBO_600",
+    "TENBO_700",
+    "TENBO_800",
+    "TENBO_900",
     "TENBO_1000",
     "TENBO_2000",
     "TENBO_3000",
+    "TENBO_4000",
     "TENBO_5000",
+    "TENBO_6000",
+    "TENBO_7000",
+    "TENBO_8000",
+    "TENBO_9000",
     "TENBO_10000",
-    "TENBO_20000",
-    "TENBO_30000",
 }
 TILE_TOKENS = {
     *(f"m{i}" for i in range(10)),
@@ -82,6 +90,9 @@ def _is_view_token(token: str) -> bool:
 
 
 def _is_hule_detail_token(token: str) -> bool:
+    if token.startswith("hule_"):
+        parts = token.split("_")
+        return len(parts) == 2 and parts[1].isdigit()
     if token.startswith("opened_hand_"):
         parts = token.split("_")
         return len(parts) == 3 and parts[2].isdigit()
@@ -169,11 +180,11 @@ class TokenStreamFSM:
     saw_final_suffix: bool = False
     seat_count: int = 4
     saw_game_start: bool = False
+    saw_game_end: bool = False
 
     def validate(self) -> None:
         assert self.tokens.count("game_start") == 1
         assert self.tokens.count("game_end") == 1
-        assert self.tokens[-1] == "game_end"
         assert not any(token.startswith("event_unknown") for token in self.tokens)
         assert len(self.tokens) >= 3
 
@@ -201,6 +212,7 @@ class TokenStreamFSM:
                 continue
             if token == "round_start":
                 assert self.saw_game_start
+                assert not self.saw_game_end
                 if self.started_round:
                     self._assert_round_closed()
                 self._start_round()
@@ -216,7 +228,8 @@ class TokenStreamFSM:
                 if self.expected_final_score_seat is not None or self.expected_final_rank_seat is not None:
                     raise AssertionError("final suffix is incomplete before game_end")
                 assert self.idx > 0 and self.tokens[self.idx - 1] == "round_end"
-                assert self.idx == len(self.tokens) - 1
+                assert not self.saw_game_end
+                self.saw_game_end = True
                 self.idx += 1
                 continue
             if self._consume_final_token(token):
@@ -332,6 +345,7 @@ class TokenStreamFSM:
                 or token.startswith("pass_react_")
                 or token.startswith("score_delta_")
                 or token == "pingju_sanchahou"
+                or _is_hule_detail_token(token)
             )
         if token.startswith("opt_self_"):
             key = token.replace("opt_self_", "", 1)
@@ -410,6 +424,7 @@ class TokenStreamFSM:
         if token.startswith("final_score_"):
             assert self.started_round
             self._assert_round_closed()
+            assert self.saw_game_end
             if self.expected_final_score_seat is None and self.expected_final_rank_seat is None:
                 self.expected_final_score_seat = 0
                 self.saw_final_suffix = True
@@ -580,11 +595,7 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
         assert idx < len(emitted) and emitted[idx] in TILE_TOKENS
         idx += 1
         while idx < len(emitted) and emitted[idx].startswith("pass_self_"):
-            token = emitted[idx]
             idx += 1
-            if token.endswith("_ankan") or token.endswith("_kakan"):
-                assert idx < len(emitted) and emitted[idx] in TILE_TOKENS
-                idx += 1
         assert all(token.startswith("opt_react_") for token in emitted[idx:])
         return
 

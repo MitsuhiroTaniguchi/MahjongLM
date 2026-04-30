@@ -412,7 +412,7 @@ def test_reaction_resolution_matrix(
         assert tokenizer.players[seat].riichi_furiten is (seat in riichi_furiten_seats)
 
 
-def test_self_resolution_emits_take_before_pass_in_sorted_order() -> None:
+def test_self_resolution_follows_option_order() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
     tokenizer.pending_self = SelfDecision(
@@ -425,8 +425,8 @@ def test_self_resolution_emits_take_before_pass_in_sorted_order() -> None:
 
     tail = tokenizer.tokens[-3:]
     assert tail == [
-        "take_self_0_riichi",
         "pass_self_0_ankan",
+        "take_self_0_riichi",
         "pass_self_0_tsumo",
     ]
 
@@ -448,6 +448,17 @@ def test_reaction_resolution_emits_take_and_pass_in_priority_order() -> None:
         "pass_react_1_ron_voluntary",
         "take_react_1_pon",
         "pass_react_1_minkan_voluntary",
+    ]
+
+
+def test_reaction_option_block_orders_pon_before_minkan_for_same_player() -> None:
+    tokenizer = TenhouTokenizer()
+
+    block = tokenizer._build_reaction_option_block({1: {"minkan", "pon"}})
+
+    assert block == [
+        "opt_react_1_pon",
+        "opt_react_1_minkan",
     ]
 
 
@@ -1131,7 +1142,7 @@ def test_fulou_emits_red_used_and_not_used_for_pon() -> None:
     assert tokenizer.tokens.index("take_react_0_pon") < tokenizer.tokens.index("red_not_used")
 
 
-def test_fulou_does_not_emit_red_token_when_no_choice() -> None:
+def test_fulou_emits_red_token_for_any_consumed_five() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(
         qipai_payload(hands=["m05p123s123z11223", "m123456789p1234", "m123456789p1234", "m123456789p1234"])
@@ -1143,7 +1154,7 @@ def test_fulou_does_not_emit_red_token_when_no_choice() -> None:
     )
     tokenizer._on_fulou({"l": 0, "m": "m05+5"})
     assert "take_react_0_pon" in tokenizer.tokens
-    assert all(token not in {"red_used", "red_not_used"} for token in tokenizer.tokens)
+    assert "red_used" in tokenizer.tokens
 
 
 def test_kakan_no_longer_emits_kan_token(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1232,10 +1243,33 @@ def test_multiple_ankan_candidates_only_reveal_tile_on_take() -> None:
 
     tokenizer._finalize_self({"ankan"}, actor=actor, chosen_tiles={"ankan": "z1"})
 
-    assert tokenizer.tokens[-3:] == [
+    assert tokenizer.tokens[-2:] == [
         "take_self_0_ankan",
         "z1",
-        "pass_self_0_ankan",
+    ]
+
+
+def test_multiple_kakan_candidates_only_reveal_tile_on_take() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    actor = 0
+    player = tokenizer.players[actor]
+    player.open_pons[tile_to_index("m1")] = 1
+    player.open_pons[tile_to_index("z1")] = 1
+    player.melds = [("pon", tile_to_index("m1")), ("pon", tile_to_index("z1"))]
+    player.concealed[tile_to_index("m1")] = max(player.concealed[tile_to_index("m1")], 1)
+    player.concealed[tile_to_index("z1")] = max(player.concealed[tile_to_index("z1")], 1)
+    tokenizer.pending_self = SelfDecision(
+        actor=actor,
+        options={"kakan"},
+        option_tiles={"kakan": ["m1", "z1"]},
+    )
+
+    tokenizer._finalize_self({"kakan"}, actor=actor, chosen_tiles={"kakan": "m1"})
+
+    assert tokenizer.tokens[-2:] == [
+        "take_self_0_kakan",
+        "m1",
     ]
 
 

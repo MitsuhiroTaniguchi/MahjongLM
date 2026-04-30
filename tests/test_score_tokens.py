@@ -14,15 +14,14 @@ from tests.validation_helpers import validate_token_stream
 def test_encode_tenbo_tokens_decomposes_by_stick_units() -> None:
     assert encode_tenbo_tokens(25000) == [
         "TENBO_PLUS",
-        "TENBO_20000",
+        "TENBO_10000",
+        "TENBO_10000",
         "TENBO_5000",
     ]
     assert encode_tenbo_tokens(-3900) == [
         "TENBO_MINUS",
         "TENBO_3000",
-        "TENBO_500",
-        "TENBO_300",
-        "TENBO_100",
+        "TENBO_900",
     ]
     assert encode_tenbo_tokens(0) == ["TENBO_ZERO"]
 
@@ -37,10 +36,11 @@ def test_qipai_emits_score_as_tenbo_tokens() -> None:
     tokenizer._on_qipai(qipai_payload())
 
     i = tokenizer.tokens.index("score_0")
-    assert tokenizer.tokens[i : i + 4] == [
+    assert tokenizer.tokens[i : i + 5] == [
         "score_0",
         "TENBO_PLUS",
-        "TENBO_20000",
+        "TENBO_10000",
+        "TENBO_10000",
         "TENBO_5000",
     ]
 
@@ -147,12 +147,10 @@ def test_result_emits_score_delta_as_tenbo_tokens() -> None:
     tokenizer._on_hule({"l": 0, "fenpei": [-3900, 3900, 0, 0]})
 
     i0 = tokenizer.tokens.index("score_delta_0")
-    assert tokenizer.tokens[i0 + 1 : i0 + 6] == [
+    assert tokenizer.tokens[i0 + 1 : i0 + 4] == [
         "TENBO_MINUS",
         "TENBO_3000",
-        "TENBO_500",
-        "TENBO_300",
-        "TENBO_100",
+        "TENBO_900",
     ]
 
     i2 = tokenizer.tokens.index("score_delta_2")
@@ -873,7 +871,7 @@ def test_pingju_emits_round_rank_tokens_after_score_deltas() -> None:
     assert rank_tokens == ["rank_0_1", "rank_1_4", "rank_2_2", "rank_3_3"]
 
 
-def test_tokenize_game_emits_final_scores_and_final_ranks_before_round_end_and_game_end() -> None:
+def test_tokenize_game_emits_game_end_before_final_scores_and_ranks() -> None:
     tokens = TenhouTokenizer().tokenize_game(
         {
             "qijia": 0,
@@ -885,20 +883,22 @@ def test_tokenize_game_emits_final_scores_and_final_ranks_before_round_end_and_g
 
     final_score_idx = tokens.index("final_score_0")
     final_rank_idx = tokens.index("final_rank_0_1")
-    assert tokens[final_score_idx : final_score_idx + 3] == [
+    assert tokens[final_score_idx : final_score_idx + 4] == [
         "final_score_0",
         "TENBO_PLUS",
-        "TENBO_20000",
+        "TENBO_10000",
+        "TENBO_10000",
     ]
     round_end_idx = tokens.index("round_end")
-    assert final_score_idx < final_rank_idx < round_end_idx < len(tokens) - 1
+    game_end_idx = tokens.index("game_end")
+    assert round_end_idx < game_end_idx < final_score_idx < final_rank_idx
     assert tokens[final_rank_idx : final_rank_idx + 4] == [
         "final_rank_0_1",
         "final_rank_1_2",
         "final_rank_2_3",
         "final_rank_3_4",
     ]
-    assert tokens[-2:] == ["round_end", "game_end"]
+    assert tokens[round_end_idx : game_end_idx + 1] == ["round_end", "game_end"]
 
 
 def test_tokenize_game_uses_top_level_final_defen_for_final_score_block() -> None:
@@ -911,13 +911,14 @@ def test_tokenize_game_uses_top_level_final_defen_for_final_score_block() -> Non
         }
     )
     final_score_idx = tokens.index("final_score_0")
-    assert tokens[final_score_idx : final_score_idx + 4] == [
+    assert tokens[final_score_idx : final_score_idx + 5] == [
         "final_score_0",
         "TENBO_PLUS",
-        "TENBO_20000",
-        "TENBO_5000",
+        "TENBO_10000",
+        "TENBO_10000",
+        "TENBO_6000",
     ]
-    assert "TENBO_1000" in tokens[final_score_idx : tokens.index("final_score_1")]
+    assert "TENBO_1000" not in tokens[final_score_idx : tokens.index("final_score_1")]
 
 
 def test_tokenize_game_omits_final_suffix_without_top_level_defen() -> None:
@@ -1112,7 +1113,7 @@ def test_pingju_deducts_riichi_stick_when_closing_ron_window_without_win() -> No
     assert tokenizer.players[0].score == 24000
 
 
-def test_multiple_hule_emits_take_before_each_ron(
+def test_multiple_hule_emits_all_reaction_resolutions_before_hule_details(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -1140,13 +1141,14 @@ def test_multiple_hule_emits_take_before_each_ron(
 
     take_ron_1 = tokens.index("take_react_1_ron")
     take_ron_2 = tokens.index("take_react_2_ron")
-    first_delta_0 = tokens.index("score_delta_0", take_ron_1)
-    second_delta_0 = tokens.index("score_delta_0", take_ron_2)
+    hule_1 = tokens.index("hule_1")
+    hule_2 = tokens.index("hule_2")
+    delta_0 = tokens.index("score_delta_0", hule_2)
 
-    assert take_ron_1 < first_delta_0 < take_ron_2 < second_delta_0
+    assert take_ron_1 < take_ron_2 < hule_1 < hule_2 < delta_0
 
 
-def test_multiple_hule_emits_score_deltas_immediately_after_each_ron(
+def test_multiple_hule_emits_one_combined_score_delta_block(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -1172,12 +1174,13 @@ def test_multiple_hule_emits_score_deltas_immediately_after_each_ron(
     tokens = TenhouTokenizer().tokenize_game(game)
 
     take_ron_1 = tokens.index("take_react_1_ron")
-    first_delta_0 = tokens.index("score_delta_0", take_ron_1)
     take_ron_2 = tokens.index("take_react_2_ron")
-    second_delta_0 = tokens.index("score_delta_0", take_ron_2)
-    take_ron_1 = tokens.index("take_react_1_ron")
+    hule_1 = tokens.index("hule_1")
+    hule_2 = tokens.index("hule_2")
+    delta_positions = [idx for idx, token in enumerate(tokens) if token == "score_delta_0"]
 
-    assert take_ron_1 < first_delta_0 < take_ron_2 < second_delta_0
+    assert take_ron_1 < take_ron_2 < hule_1 < hule_2 < delta_positions[-1]
+    assert len(delta_positions) == 1
 
 
 def test_multiple_hule_emits_declined_ron_pass_before_first_result(
@@ -1208,7 +1211,8 @@ def test_multiple_hule_emits_declined_ron_pass_before_first_result(
     pass_idx = tokens.index("pass_react_3_ron_voluntary")
     second_take = tokens.index("take_react_2_ron")
     first_take = tokens.index("take_react_1_ron")
-    assert first_take < pass_idx < second_take
+    hule_idx = tokens.index("hule_1")
+    assert first_take < second_take < pass_idx < hule_idx
     validate_token_stream(tokens)
 
 
@@ -1239,9 +1243,9 @@ def test_multiple_hule_delays_later_winner_non_ron_pass_until_their_ron(
 
     take_ron_2 = tokens.index("take_react_2_ron")
     pass_pon_2 = tokens.index("pass_react_2_pon_voluntary")
-    first_delta_0 = tokens.index("score_delta_0", tokens.index("take_react_1_ron"))
-    second_delta_0 = tokens.index("score_delta_0", take_ron_2)
-    assert first_delta_0 < take_ron_2 < pass_pon_2 < second_delta_0
+    hule_idx = tokens.index("hule_1")
+    delta_0 = tokens.index("score_delta_0", hule_idx)
+    assert take_ron_2 < pass_pon_2 < hule_idx < delta_0
     assert "pass_react_2_pon_forced_priority" not in tokens
 
 

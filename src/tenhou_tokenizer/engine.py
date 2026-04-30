@@ -44,14 +44,22 @@ MELD_TYPE_TO_PM_CODE = {
     "ankan": 3,
 }
 TENBO_UNITS: Tuple[Tuple[int, str], ...] = (
-    (30000, "TENBO_30000"),
-    (20000, "TENBO_20000"),
     (10000, "TENBO_10000"),
+    (9000, "TENBO_9000"),
+    (8000, "TENBO_8000"),
+    (7000, "TENBO_7000"),
+    (6000, "TENBO_6000"),
     (5000, "TENBO_5000"),
+    (4000, "TENBO_4000"),
     (3000, "TENBO_3000"),
     (2000, "TENBO_2000"),
     (1000, "TENBO_1000"),
+    (900, "TENBO_900"),
+    (800, "TENBO_800"),
+    (700, "TENBO_700"),
+    (600, "TENBO_600"),
     (500, "TENBO_500"),
+    (400, "TENBO_400"),
     (300, "TENBO_300"),
     (200, "TENBO_200"),
     (100, "TENBO_100"),
@@ -687,6 +695,9 @@ class TenhouTokenizer:
         self.seat_count = 4
         self.pending_self: Optional[SelfDecision] = None
         self.pending_reaction: Optional[ReactionDecision] = None
+        self.pending_multi_ron_baojia: Optional[int] = None
+        self.pending_multi_ron_remaining: Set[int] = set()
+        self.pending_multi_ron_deltas: Optional[List[int]] = None
         self.pending_riichi_actor: Optional[int] = None
         self.round_index = 0
         self.live_draws_left = 55 if self.seat_count == 3 else 70
@@ -715,6 +726,9 @@ class TenhouTokenizer:
         self.event_traces = []
         self.pending_self = None
         self.pending_reaction = None
+        self.pending_multi_ron_baojia = None
+        self.pending_multi_ron_remaining = set()
+        self.pending_multi_ron_deltas = None
         self.pending_riichi_actor = None
         self.round_index = 0
         self.expected_draw_actor = None
@@ -729,6 +743,9 @@ class TenhouTokenizer:
         for round_index, round_data in enumerate(log):
             self._process_round(round_data)
             is_last_round = round_index == len(log) - 1
+            self.tokens.append("round_end")
+            if is_last_round:
+                self.tokens.append("game_end")
             if is_last_round and "defen" in game:
                 final_scores = [
                     self._require_score(score, field=f"game.defen[{seat}]")
@@ -744,9 +761,7 @@ class TenhouTokenizer:
                         raise TokenizeError("game.rank does not match reconstructed final ranks")
                 self.tokens.extend(self._build_final_score_block(final_scores))
                 self.tokens.extend(self._build_final_rank_block(final_ranks))
-            self.tokens.append("round_end")
         self._flush_pending()
-        self.tokens.append("game_end")
         return self.tokens
 
     def _require_round_initialized(self) -> None:
@@ -833,6 +848,9 @@ class TenhouTokenizer:
             raise TokenizeError("round data cannot be empty")
         self.pending_self = None
         self.pending_reaction = None
+        self.pending_multi_ron_baojia = None
+        self.pending_multi_ron_remaining = set()
+        self.pending_multi_ron_deltas = None
         self.pending_riichi_actor = None
         self.expected_draw_actor = None
         self.expected_discard_actor = None
@@ -857,8 +875,16 @@ class TenhouTokenizer:
                 is_multi_ron_continuation = (
                     key == "hule"
                     and isinstance(value, dict)
-                    and self.pending_reaction is not None
-                    and value.get("baojia") == self.pending_reaction.discarder
+                    and (
+                        (
+                            self.pending_reaction is not None
+                            and value.get("baojia") == self.pending_reaction.discarder
+                        )
+                        or (
+                            self.pending_multi_ron_baojia is not None
+                            and value.get("baojia") == self.pending_multi_ron_baojia
+                        )
+                    )
                 )
                 if not is_multi_ron_continuation:
                     raise TokenizeError("round already ended")
@@ -1029,16 +1055,18 @@ class TenhouTokenizer:
 
     def _build_reaction_option_block(self, options_by_player: Dict[int, Set[str]]) -> List[str]:
         block: List[str] = []
-        for seat, opts in sorted(options_by_player.items()):
-            for opt in sorted(opts):
-                block.extend(self._build_reaction_action_block(seat=seat, kind="opt", opt=opt))
+        for seat, opt in self._iter_reaction_priority_entries(options_by_player):
+            block.extend(self._build_reaction_action_block(seat=seat, kind="opt", opt=opt))
         return block
+
+    def _self_option_order(self, options: Set[str]) -> List[str]:
+        return sorted(options)
 
     def _reaction_priority_sort_key(self, seat: int, opt: str) -> Tuple[int, int, int, str]:
         priority = {"ron": 0, "pon": 1, "minkan": 1, "chi": 2}.get(opt, 99)
         # pon/minkan share priority by rule; keep deterministic tie-break order.
         tiebreak = {"ron": 0, "pon": 1, "minkan": 2, "chi": 3}.get(opt, 99)
-        return (priority, seat, tiebreak, opt)
+        return (seat, priority, tiebreak, opt)
 
     def _iter_reaction_priority_entries(self, options_by_player: Dict[int, Set[str]]) -> List[Tuple[int, str]]:
         entries: List[Tuple[int, str]] = []
@@ -2306,6 +2334,10 @@ class TenhouTokenizer:
         for seat in self.pending_reaction.options_by_player:
             self.pending_reaction.options_by_player[seat] = remaining_options_by_player[seat]
 
+    def _finish_hule_result(self, deltas: List[int]) -> None:
+        self.tokens.extend(self._build_score_delta_block(deltas))
+        self.tokens.extend(self._build_rank_block(self._compute_round_rank_places()))
+
     def _on_hule(
         self,
         h: dict,
@@ -2322,18 +2354,28 @@ class TenhouTokenizer:
         fenpei = self._require_seat_list(h["fenpei"], field="hule.fenpei")
 
         if baojia is not None:
-            if not self.pending_reaction or baojia != self.pending_reaction.discarder:
-                raise TokenizeError("ron requires a pending matching reaction")
-            offered = self.pending_reaction.options_by_player.get(winner, set())
-            if "ron" not in offered:
-                raise TokenizeError("ron action was not offered")
-            self.pending_reaction.chosen[winner] = "ron"
-            if winner not in self.pending_reaction.emitted_chosen:
-                self.tokens.append(f"take_react_{winner}_ron")
-                self.pending_reaction.emitted_chosen.add(winner)
-            self._emit_non_winning_reaction_passes_before_result(remaining_ron_winners)
-            if not more_ron_expected:
+            if self.pending_reaction is not None:
+                if baojia != self.pending_reaction.discarder:
+                    raise TokenizeError("ron requires a pending matching reaction")
+                winners = remaining_ron_winners or {winner}
+                if len(winners) >= 3:
+                    raise TokenizeError("triple ron should be represented as pingju_sanchahou")
+                for ron_winner in sorted(winners):
+                    offered = self.pending_reaction.options_by_player.get(ron_winner, set())
+                    if "ron" not in offered:
+                        raise TokenizeError("ron action was not offered")
+                    self.pending_reaction.chosen[ron_winner] = "ron"
                 self._finalize_reaction()
+                if more_ron_expected:
+                    self.pending_multi_ron_baojia = baojia
+                    self.pending_multi_ron_remaining = set(winners)
+                    self.pending_multi_ron_deltas = [0] * self.seat_count
+            elif self.pending_multi_ron_baojia != baojia:
+                raise TokenizeError("ron requires a pending matching reaction")
+            if self.pending_multi_ron_baojia is not None:
+                if winner not in self.pending_multi_ron_remaining:
+                    raise TokenizeError("unexpected multi-ron winner")
+                self.pending_multi_ron_remaining.remove(winner)
         else:
             if not self.pending_self or self.pending_self.actor != winner:
                 raise TokenizeError("tsumo requires a pending self decision")
@@ -2341,14 +2383,24 @@ class TenhouTokenizer:
                 raise TokenizeError("tsumo action was not offered")
             self._finalize_self({"tsumo"}, actor=winner)
 
-        detail_tokens = self._build_hule_detail_block(h, winner=winner)
+        detail_tokens = [f"hule_{winner}", *self._build_hule_detail_block(h, winner=winner)]
         deltas = [self._require_score(delta, field=f"hule.fenpei[{seat}]") for seat, delta in enumerate(fenpei)]
         self.tokens.extend(detail_tokens)
         for seat in range(self.seat_count):
             self.players[seat].score += deltas[seat]
-        self.tokens.extend(self._build_score_delta_block(deltas))
-        if baojia is None or not more_ron_expected:
-            self.tokens.extend(self._build_rank_block(self._compute_round_rank_places()))
+        if self.pending_multi_ron_baojia is not None:
+            if self.pending_multi_ron_deltas is None:
+                raise TokenizeError("missing multi-ron delta accumulator")
+            for seat, delta in enumerate(deltas):
+                self.pending_multi_ron_deltas[seat] += delta
+            if not self.pending_multi_ron_remaining:
+                total_deltas = self.pending_multi_ron_deltas
+                self.pending_multi_ron_baojia = None
+                self.pending_multi_ron_remaining = set()
+                self.pending_multi_ron_deltas = None
+                self._finish_hule_result(total_deltas)
+        else:
+            self._finish_hule_result(deltas)
 
     def _on_pingju(self, p: dict) -> None:
         self._require_round_initialized()
@@ -2527,34 +2579,21 @@ class TenhouTokenizer:
             and not skipped_tsumo_for_penuki
         ):
             self.players[seat].riichi_furiten = True
-        for opt in sorted(chosen_effective):
-            if opt in self.pending_self.option_tiles:
-                chosen_tile = self._resolve_chosen_self_tile(opt, chosen_tiles or {})
-                self.tokens.extend(
-                    self._build_self_action_block(
-                        seat=seat,
-                        kind="take",
-                        opt=opt,
-                        tile_token=chosen_tile if self._self_action_reveals_tile(opt, kind="take") else None,
+        for opt in self._self_option_order(self.pending_self.options):
+            if opt in chosen_effective:
+                if opt in self.pending_self.option_tiles:
+                    chosen_tile = self._resolve_chosen_self_tile(opt, chosen_tiles or {})
+                    self.tokens.extend(
+                        self._build_self_action_block(
+                            seat=seat,
+                            kind="take",
+                            opt=opt,
+                            tile_token=chosen_tile if self._self_action_reveals_tile(opt, kind="take") else None,
+                        )
                     )
-                )
-                if self._self_action_reveals_tile(opt, kind="pass"):
-                    for tile_token in self.pending_self.option_tiles[opt]:
-                        if tile_token != chosen_tile:
-                            self.tokens.extend(
-                                self._build_self_action_block(
-                                    seat=seat,
-                                    kind="pass",
-                                    opt=opt,
-                                    tile_token=tile_token,
-                                )
-                            )
                     continue
-                if any(tile_token != chosen_tile for tile_token in self.pending_self.option_tiles[opt]):
-                    self.tokens.extend(self._build_self_action_block(seat=seat, kind="pass", opt=opt))
+                self.tokens.extend(self._build_self_action_block(seat=seat, kind="take", opt=opt))
                 continue
-            self.tokens.extend(self._build_self_action_block(seat=seat, kind="take", opt=opt))
-        for opt in sorted(self.pending_self.options - chosen_effective):
             if opt in self.pending_self.option_tiles:
                 if self._self_action_reveals_tile(opt, kind="pass"):
                     for tile_token in self.pending_self.option_tiles[opt]:
@@ -2585,7 +2624,7 @@ class TenhouTokenizer:
         return option_tiles
 
     def _emit_self_options(self, actor: int, options: Set[str], option_tiles: Dict[str, List[str]]) -> None:
-        for opt in sorted(options):
+        for opt in self._self_option_order(options):
             if opt in option_tiles and self._self_action_reveals_tile(opt, kind="opt"):
                 self.tokens.extend(self._build_self_action_block(seat=actor, kind="opt", opt=opt))
                 for tile_token in option_tiles[opt]:
