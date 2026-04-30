@@ -131,6 +131,14 @@ def run_checked(
         subprocess.run(cmd, cwd=cwd, env=env, check=True, stdout=log, stderr=subprocess.STDOUT)
 
 
+def append_log(log_file: Path, message: str) -> None:
+    print(message, flush=True)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    with log_file.open("a", encoding="utf-8") as log:
+        log.write(message + "\n")
+        log.flush()
+
+
 def to_wsl_path(path: Path) -> str:
     resolved = path.resolve()
     drive = resolved.drive.rstrip(":").lower()
@@ -399,12 +407,16 @@ This model uses a custom WordLevel Mahjong tokenizer. The GGUF includes tokenize
 """
 
 
-def upload_folder(folder: Path, repo_id: str, *, commit_message: str) -> None:
+def upload_folder(folder: Path, repo_id: str, *, commit_message: str, log_file: Path | None = None) -> None:
     from huggingface_hub import HfApi
 
     api = HfApi()
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+    if log_file is not None:
+        append_log(log_file, f"=== create repo {repo_id} ===")
     api.create_repo(repo_id=repo_id, repo_type="model", exist_ok=True, private=False, token=token)
+    if log_file is not None:
+        append_log(log_file, f"=== upload folder {folder} -> {repo_id} ===")
     api.upload_folder(
         repo_id=repo_id,
         repo_type="model",
@@ -412,7 +424,29 @@ def upload_folder(folder: Path, repo_id: str, *, commit_message: str) -> None:
         commit_message=commit_message,
         token=token,
     )
+    if log_file is not None:
+        append_log(log_file, f"=== add collection item {repo_id} ===")
     api.add_collection_item(HF_COLLECTION, item_id=repo_id, item_type="model", exists_ok=True, token=token)
+    if log_file is not None:
+        append_log(log_file, f"=== upload complete {repo_id} ===")
+
+
+def postprocess_and_upload_existing(spec: ModelSpec, output_dir: Path, run_root: Path) -> None:
+    log_file = run_root / f"{spec.key}.log"
+    stage_root = run_root / "hf_staging" / spec.key
+    stage_root.mkdir(parents=True, exist_ok=True)
+
+    append_log(log_file, f"=== staging raw {spec.key} from existing output {output_dir} ===")
+    raw_stage = stage_raw_model(spec, output_dir, stage_root)
+
+    append_log(log_file, f"=== converting gguf {spec.key} ===")
+    gguf_stage = convert_and_quantize(spec, raw_stage, stage_root, log_file)
+
+    append_log(log_file, f"=== uploading raw {spec.key} -> {spec.raw_repo} ===")
+    upload_folder(raw_stage, spec.raw_repo, commit_message=f"Upload {spec.label} raw checkpoint", log_file=log_file)
+
+    append_log(log_file, f"=== uploading gguf {spec.key} -> {spec.gguf_repo} ===")
+    upload_folder(gguf_stage, spec.gguf_repo, commit_message=f"Upload {spec.label} Q4_K_M GGUF", log_file=log_file)
 
 
 def run_model(spec: ModelSpec, run_root: Path) -> None:
@@ -439,16 +473,23 @@ def run_model(spec: ModelSpec, run_root: Path) -> None:
     gguf_stage = convert_and_quantize(spec, raw_stage, stage_root, log_file)
 
     print(f"=== uploading raw {spec.key} -> {spec.raw_repo} ===", flush=True)
-    upload_folder(raw_stage, spec.raw_repo, commit_message=f"Upload {spec.label} raw checkpoint")
+    upload_folder(raw_stage, spec.raw_repo, commit_message=f"Upload {spec.label} raw checkpoint", log_file=log_file)
 
     print(f"=== uploading gguf {spec.key} -> {spec.gguf_repo} ===", flush=True)
-    upload_folder(gguf_stage, spec.gguf_repo, commit_message=f"Upload {spec.label} Q4_K_M GGUF")
+    upload_folder(gguf_stage, spec.gguf_repo, commit_message=f"Upload {spec.label} Q4_K_M GGUF", log_file=log_file)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run BOS-fixed 1M/10M/100M sweep and upload raw + Q4_K_M GGUF.")
     parser.add_argument("--models", nargs="+", choices=[spec.key for spec in MODEL_SPECS], default=[spec.key for spec in MODEL_SPECS])
     parser.add_argument("--run-root", type=Path, default=ROOT / "outputs" / f"bos_size_sweep_pipeline_{now_slug()}")
+    parser.add_argument(
+        "--postprocess-existing",
+        action="append",
+        default=[],
+        metavar="KEY=OUTPUT_DIR",
+        help="Stage, convert, and upload an already trained model before running selected models.",
+    )
     return parser.parse_args()
 
 
@@ -461,6 +502,14 @@ def main() -> None:
     if not (os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")):
         print("WARNING: HF_TOKEN/HUGGINGFACE_HUB_TOKEN is not set; upload will require a cached Hugging Face login.", flush=True)
     args.run_root.mkdir(parents=True, exist_ok=True)
+    specs_by_key = {spec.key: spec for spec in MODEL_SPECS}
+    for item in args.postprocess_existing:
+        if "=" not in item:
+            raise ValueError(f"--postprocess-existing must be KEY=OUTPUT_DIR: {item}")
+        key, output_dir = item.split("=", 1)
+        if key not in specs_by_key:
+            raise ValueError(f"unknown model key in --postprocess-existing: {key}")
+        postprocess_and_upload_existing(specs_by_key[key], Path(output_dir), args.run_root)
     selected = {key for key in args.models}
     for spec in MODEL_SPECS:
         if spec.key in selected:
