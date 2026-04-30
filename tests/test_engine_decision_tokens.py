@@ -412,7 +412,7 @@ def test_reaction_resolution_matrix(
         assert tokenizer.players[seat].riichi_furiten is (seat in riichi_furiten_seats)
 
 
-def test_self_resolution_emits_take_before_pass_in_sorted_order() -> None:
+def test_self_resolution_follows_option_order() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
     tokenizer.pending_self = SelfDecision(
@@ -425,8 +425,8 @@ def test_self_resolution_emits_take_before_pass_in_sorted_order() -> None:
 
     tail = tokenizer.tokens[-3:]
     assert tail == [
-        "take_self_0_riichi",
         "pass_self_0_ankan",
+        "take_self_0_riichi",
         "pass_self_0_tsumo",
     ]
 
@@ -1142,7 +1142,7 @@ def test_fulou_emits_red_used_and_not_used_for_pon() -> None:
     assert tokenizer.tokens.index("take_react_0_pon") < tokenizer.tokens.index("red_not_used")
 
 
-def test_fulou_does_not_emit_red_token_when_no_choice() -> None:
+def test_fulou_emits_red_token_for_any_consumed_five() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(
         qipai_payload(hands=["m05p123s123z11223", "m123456789p1234", "m123456789p1234", "m123456789p1234"])
@@ -1154,7 +1154,7 @@ def test_fulou_does_not_emit_red_token_when_no_choice() -> None:
     )
     tokenizer._on_fulou({"l": 0, "m": "m05+5"})
     assert "take_react_0_pon" in tokenizer.tokens
-    assert all(token not in {"red_used", "red_not_used"} for token in tokenizer.tokens)
+    assert "red_used" in tokenizer.tokens
 
 
 def test_kakan_no_longer_emits_kan_token(monkeypatch: pytest.MonkeyPatch) -> None:

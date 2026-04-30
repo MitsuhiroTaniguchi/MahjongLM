@@ -678,6 +678,10 @@ chi_pos_mid
 chi_pos_high
 red_used
 red_not_used
+hule_0
+hule_1
+hule_2
+hule_3
 opened_hand_0
 opened_hand_1
 opened_hand_2

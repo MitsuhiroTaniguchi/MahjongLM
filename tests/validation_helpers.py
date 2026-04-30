@@ -90,6 +90,9 @@ def _is_view_token(token: str) -> bool:
 
 
 def _is_hule_detail_token(token: str) -> bool:
+    if token.startswith("hule_"):
+        parts = token.split("_")
+        return len(parts) == 2 and parts[1].isdigit()
     if token.startswith("opened_hand_"):
         parts = token.split("_")
         return len(parts) == 3 and parts[2].isdigit()
@@ -342,6 +345,7 @@ class TokenStreamFSM:
                 or token.startswith("pass_react_")
                 or token.startswith("score_delta_")
                 or token == "pingju_sanchahou"
+                or _is_hule_detail_token(token)
             )
         if token.startswith("opt_self_"):
             key = token.replace("opt_self_", "", 1)

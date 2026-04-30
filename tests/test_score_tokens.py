@@ -1113,7 +1113,7 @@ def test_pingju_deducts_riichi_stick_when_closing_ron_window_without_win() -> No
     assert tokenizer.players[0].score == 24000
 
 
-def test_multiple_hule_emits_take_before_each_ron(
+def test_multiple_hule_emits_all_reaction_resolutions_before_hule_details(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -1141,13 +1141,14 @@ def test_multiple_hule_emits_take_before_each_ron(
 
     take_ron_1 = tokens.index("take_react_1_ron")
     take_ron_2 = tokens.index("take_react_2_ron")
-    first_delta_0 = tokens.index("score_delta_0", take_ron_1)
-    second_delta_0 = tokens.index("score_delta_0", take_ron_2)
+    hule_1 = tokens.index("hule_1")
+    hule_2 = tokens.index("hule_2")
+    delta_0 = tokens.index("score_delta_0", hule_2)
 
-    assert take_ron_1 < first_delta_0 < take_ron_2 < second_delta_0
+    assert take_ron_1 < take_ron_2 < hule_1 < hule_2 < delta_0
 
 
-def test_multiple_hule_emits_score_deltas_immediately_after_each_ron(
+def test_multiple_hule_emits_one_combined_score_delta_block(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -1173,12 +1174,13 @@ def test_multiple_hule_emits_score_deltas_immediately_after_each_ron(
     tokens = TenhouTokenizer().tokenize_game(game)
 
     take_ron_1 = tokens.index("take_react_1_ron")
-    first_delta_0 = tokens.index("score_delta_0", take_ron_1)
     take_ron_2 = tokens.index("take_react_2_ron")
-    second_delta_0 = tokens.index("score_delta_0", take_ron_2)
-    take_ron_1 = tokens.index("take_react_1_ron")
+    hule_1 = tokens.index("hule_1")
+    hule_2 = tokens.index("hule_2")
+    delta_positions = [idx for idx, token in enumerate(tokens) if token == "score_delta_0"]
 
-    assert take_ron_1 < first_delta_0 < take_ron_2 < second_delta_0
+    assert take_ron_1 < take_ron_2 < hule_1 < hule_2 < delta_positions[-1]
+    assert len(delta_positions) == 1
 
 
 def test_multiple_hule_emits_declined_ron_pass_before_first_result(
@@ -1209,7 +1211,8 @@ def test_multiple_hule_emits_declined_ron_pass_before_first_result(
     pass_idx = tokens.index("pass_react_3_ron_voluntary")
     second_take = tokens.index("take_react_2_ron")
     first_take = tokens.index("take_react_1_ron")
-    assert first_take < pass_idx < second_take
+    hule_idx = tokens.index("hule_1")
+    assert first_take < second_take < pass_idx < hule_idx
     validate_token_stream(tokens)
 
 
@@ -1240,9 +1243,9 @@ def test_multiple_hule_delays_later_winner_non_ron_pass_until_their_ron(
 
     take_ron_2 = tokens.index("take_react_2_ron")
     pass_pon_2 = tokens.index("pass_react_2_pon_voluntary")
-    first_delta_0 = tokens.index("score_delta_0", tokens.index("take_react_1_ron"))
-    second_delta_0 = tokens.index("score_delta_0", take_ron_2)
-    assert first_delta_0 < take_ron_2 < pass_pon_2 < second_delta_0
+    hule_idx = tokens.index("hule_1")
+    delta_0 = tokens.index("score_delta_0", hule_idx)
+    assert take_ron_2 < pass_pon_2 < hule_idx < delta_0
     assert "pass_react_2_pon_forced_priority" not in tokens
 
 
