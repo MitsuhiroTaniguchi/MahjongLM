@@ -1066,7 +1066,15 @@ class TenhouTokenizer:
         return block
 
     def _self_option_order(self, options: Set[str]) -> List[str]:
-        return sorted(options)
+        priority = {
+            "tsumo": 0,
+            "kyushukyuhai": 1,
+            "penuki": 2,
+            "riichi": 3,
+            "ankan": 4,
+            "kakan": 5,
+        }
+        return sorted(options, key=lambda opt: (priority.get(opt, 99), opt))
 
     def _reaction_priority_sort_key(self, seat: int, opt: str) -> Tuple[int, int, int, str]:
         priority = {"ron": 0, "pon": 1, "minkan": 1, "chi": 2}.get(opt, 99)
@@ -2095,9 +2103,6 @@ class TenhouTokenizer:
         self.first_turn_open_calls_seen = True
 
         self.pending_reaction.chosen[actor] = action
-        if actor not in self.pending_reaction.emitted_chosen:
-            self.tokens.append(f"take_react_{actor}_{action}")
-            self.pending_reaction.emitted_chosen.add(actor)
         discard_tile = self.pending_reaction.discard_tile
 
         p = self.players[actor]
@@ -2169,14 +2174,12 @@ class TenhouTokenizer:
             pre_counts=pre_counts,
             pre_red_fives=pre_red_fives,
         )
-        self.tokens.extend(
-            self._build_reaction_detail_block(
-                action=action,
-                chi_pos=chi_pos,
-                red_choice=red_choice,
-            )
+        detail_tokens = self._build_reaction_detail_block(
+            action=action,
+            chi_pos=chi_pos,
+            red_choice=red_choice,
         )
-        self._finalize_reaction()
+        self._finalize_reaction(chosen_details={(actor, action): detail_tokens})
         if action == "minkan":
             self.awaiting_kaigang += 1
             p.last_draw_tile = None
@@ -2743,7 +2746,11 @@ class TenhouTokenizer:
             )
         )
 
-    def _finalize_reaction(self, close_reason: str = "voluntary") -> None:
+    def _finalize_reaction(
+        self,
+        close_reason: str = "voluntary",
+        chosen_details: Optional[Dict[Tuple[int, str], List[str]]] = None,
+    ) -> None:
         if not self.pending_reaction:
             return
 
@@ -2770,6 +2777,8 @@ class TenhouTokenizer:
                             opt=chosen,
                         )
                     )
+                    if chosen_details is not None:
+                        self.tokens.extend(chosen_details.get((seat, chosen), []))
                     self.pending_reaction.emitted_chosen.add(seat)
                 continue
 

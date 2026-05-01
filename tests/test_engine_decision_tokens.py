@@ -425,9 +425,9 @@ def test_self_resolution_follows_option_order() -> None:
 
     tail = tokenizer.tokens[-3:]
     assert tail == [
-        "pass_self_0_ankan",
-        "take_self_0_riichi",
         "pass_self_0_tsumo",
+        "take_self_0_riichi",
+        "pass_self_0_ankan",
     ]
 
 
@@ -450,6 +450,25 @@ def test_reaction_resolution_emits_take_and_pass_in_priority_order() -> None:
         "pass_react_1_minkan_voluntary",
         "pass_react_0_chi_forced_priority",
     ]
+
+
+def test_fulou_resolution_keeps_take_at_opt_order_position() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.players[0].concealed[tile_to_index("m5")] = 1
+    tokenizer.players[0].concealed[tile_to_index("m6")] = 1
+    tokenizer.pending_reaction = ReactionDecision(
+        discarder=3,
+        discard_tile=tile_to_index("m4"),
+        options_by_player={0: {"chi"}, 1: {"pon"}},
+    )
+
+    tokenizer._on_fulou({"l": 0, "m": "m4-56"})
+
+    pass_idx = tokenizer.tokens.index("pass_react_1_pon_voluntary")
+    take_idx = tokenizer.tokens.index("take_react_0_chi")
+    detail_idx = tokenizer.tokens.index("chi_pos_low")
+    assert pass_idx < take_idx < detail_idx
 
 
 def test_reaction_option_block_orders_pon_before_minkan_for_same_player() -> None:
