@@ -437,17 +437,18 @@ def test_reaction_resolution_emits_take_and_pass_in_priority_order() -> None:
     tokenizer.pending_reaction = ReactionDecision(
         discarder=3,
         discard_tile=tile_to_index("m4"),
-        options_by_player={1: {"pon", "ron", "minkan"}},
+        options_by_player={0: {"chi"}, 1: {"pon", "minkan"}, 2: {"ron"}},
         chosen={1: "pon"},
     )
 
     tokenizer._finalize_reaction()
 
-    tail = tokenizer.tokens[-3:]
+    tail = tokenizer.tokens[-4:]
     assert tail == [
-        "pass_react_1_ron_voluntary",
+        "pass_react_2_ron_voluntary",
         "take_react_1_pon",
         "pass_react_1_minkan_voluntary",
+        "pass_react_0_chi_forced_priority",
     ]
 
 
