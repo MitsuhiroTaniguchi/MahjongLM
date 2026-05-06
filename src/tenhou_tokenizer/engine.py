@@ -290,14 +290,20 @@ def _opened_hand_tokens(seat: int, hand_text: str) -> List[str]:
     return [f"opened_hand_{seat}", *tiles]
 
 
-def _opened_hule_hand_tokens(seat: int, hand_text: str, *, keep_winning_tile: bool) -> List[str]:
+def _hule_winning_tile_token(hand_text: str) -> Optional[str]:
+    tiles = _parse_tiles(hand_text, stop_at_comma=True, context="hule_opened_hand")
+    if not tiles:
+        return None
+    # Tenhou hule.shoupai includes the winning tile as the last concealed tile.
+    return tiles[-1]
+
+
+def _opened_hule_hand_tokens(seat: int, hand_text: str) -> List[str]:
     tiles = _parse_tiles(hand_text, stop_at_comma=True, context="hule_opened_hand")
     if not tiles:
         return []
     # Tenhou hule.shoupai includes the winning tile as the last concealed tile.
     concealed_tiles = sorted(tiles[:-1], key=token_tile_sort_key)
-    if keep_winning_tile:
-        return [f"opened_hand_{seat}", *concealed_tiles, tiles[-1]]
     if not concealed_tiles:
         return []
     return [f"opened_hand_{seat}", *concealed_tiles]
@@ -1060,13 +1066,21 @@ class TenhouTokenizer:
         return block
 
     def _self_option_order(self, options: Set[str]) -> List[str]:
-        return sorted(options)
+        priority = {
+            "tsumo": 0,
+            "kyushukyuhai": 1,
+            "penuki": 2,
+            "riichi": 3,
+            "ankan": 4,
+            "kakan": 5,
+        }
+        return sorted(options, key=lambda opt: (priority.get(opt, 99), opt))
 
     def _reaction_priority_sort_key(self, seat: int, opt: str) -> Tuple[int, int, int, str]:
         priority = {"ron": 0, "pon": 1, "minkan": 1, "chi": 2}.get(opt, 99)
         # pon/minkan share priority by rule; keep deterministic tie-break order.
         tiebreak = {"ron": 0, "pon": 1, "minkan": 2, "chi": 3}.get(opt, 99)
-        return (seat, priority, tiebreak, opt)
+        return (priority, seat, tiebreak, opt)
 
     def _iter_reaction_priority_entries(self, options_by_player: Dict[int, Set[str]]) -> List[Tuple[int, str]]:
         entries: List[Tuple[int, str]] = []
@@ -2089,9 +2103,6 @@ class TenhouTokenizer:
         self.first_turn_open_calls_seen = True
 
         self.pending_reaction.chosen[actor] = action
-        if actor not in self.pending_reaction.emitted_chosen:
-            self.tokens.append(f"take_react_{actor}_{action}")
-            self.pending_reaction.emitted_chosen.add(actor)
         discard_tile = self.pending_reaction.discard_tile
 
         p = self.players[actor]
@@ -2163,14 +2174,12 @@ class TenhouTokenizer:
             pre_counts=pre_counts,
             pre_red_fives=pre_red_fives,
         )
-        self.tokens.extend(
-            self._build_reaction_detail_block(
-                action=action,
-                chi_pos=chi_pos,
-                red_choice=red_choice,
-            )
+        detail_tokens = self._build_reaction_detail_block(
+            action=action,
+            chi_pos=chi_pos,
+            red_choice=red_choice,
         )
-        self._finalize_reaction()
+        self._finalize_reaction(chosen_details={(actor, action): detail_tokens})
         if action == "minkan":
             self.awaiting_kaigang += 1
             p.last_draw_tile = None
@@ -2381,7 +2390,16 @@ class TenhouTokenizer:
                 raise TokenizeError("tsumo requires a pending self decision")
             if "tsumo" not in self.pending_self.options:
                 raise TokenizeError("tsumo action was not offered")
-            self._finalize_self({"tsumo"}, actor=winner)
+            chosen_tiles: Dict[str, str] = {}
+            shoupai = h.get("shoupai")
+            if shoupai is not None:
+                if not isinstance(shoupai, str):
+                    raise TokenizeError("hule.shoupai must be a string")
+                winning_tile = _hule_winning_tile_token(shoupai)
+                if winning_tile is not None:
+                    self.pending_self.option_tiles["tsumo"] = [winning_tile]
+                    chosen_tiles["tsumo"] = winning_tile
+            self._finalize_self({"tsumo"}, actor=winner, chosen_tiles=chosen_tiles)
 
         detail_tokens = [f"hule_{winner}", *self._build_hule_detail_block(h, winner=winner)]
         deltas = [self._require_score(delta, field=f"hule.fenpei[{seat}]") for seat, delta in enumerate(fenpei)]
@@ -2486,8 +2504,7 @@ class TenhouTokenizer:
         if shoupai is not None:
             if not isinstance(shoupai, str):
                 raise TokenizeError("hule.shoupai must be a string")
-            is_tsumo = h.get("baojia") is None
-            block.extend(_opened_hule_hand_tokens(winner, shoupai, keep_winning_tile=is_tsumo))
+            block.extend(_opened_hule_hand_tokens(winner, shoupai))
         hupai = h.get("hupai")
         has_riichi_yaku = False
         if isinstance(hupai, list):
@@ -2613,6 +2630,7 @@ class TenhouTokenizer:
 
     def _self_option_tiles(self, actor: int, drawn_tile: int) -> Dict[str, List[str]]:
         option_tiles: Dict[str, List[str]] = {}
+        option_tiles["tsumo"] = [index_to_tile(drawn_tile)]
         if self.seat_count == 3 and self.players[actor].concealed[tile_to_index("z4")] > 0:
             option_tiles["penuki"] = ["z4"]
         ankan_tiles = self._ankan_candidate_tiles(actor, drawn_tile=drawn_tile)
@@ -2633,7 +2651,7 @@ class TenhouTokenizer:
             self.tokens.extend(self._build_self_action_block(seat=actor, kind="opt", opt=opt))
 
     def _self_action_reveals_tile(self, opt: str, *, kind: str) -> bool:
-        if opt in {"ankan", "kakan"}:
+        if opt in {"ankan", "kakan", "tsumo"}:
             return kind == "take"
         return False
 
@@ -2728,7 +2746,11 @@ class TenhouTokenizer:
             )
         )
 
-    def _finalize_reaction(self, close_reason: str = "voluntary") -> None:
+    def _finalize_reaction(
+        self,
+        close_reason: str = "voluntary",
+        chosen_details: Optional[Dict[Tuple[int, str], List[str]]] = None,
+    ) -> None:
         if not self.pending_reaction:
             return
 
@@ -2755,6 +2777,8 @@ class TenhouTokenizer:
                             opt=chosen,
                         )
                     )
+                    if chosen_details is not None:
+                        self.tokens.extend(chosen_details.get((seat, chosen), []))
                     self.pending_reaction.emitted_chosen.add(seat)
                 continue
 

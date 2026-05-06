@@ -365,7 +365,7 @@ class TokenStreamFSM:
                 self._enter_result_phase(allow_post_tsumo_pass_self=True)
             if parts[-1] in {"ankan", "kakan"}:
                 self.pending_kaigang_reveals += 1
-            if parts[-1] in {"ankan", "kakan"}:
+            if parts[-1] in {"ankan", "kakan", "tsumo"}:
                 self.idx = _consume_tile_payload(self.tokens, self.idx + 1, minimum=1, exact=1)
             else:
                 self.idx += 1
@@ -615,7 +615,10 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
 
     if event_key == "hule":
         if any(token.startswith("take_react_") and token.endswith("_ron") for token in emitted):
-            first_delta_idx = next(i for i, token in enumerate(emitted) if token.startswith("score_delta_"))
+            first_delta_idx = next(
+                (i for i, token in enumerate(emitted) if token.startswith("score_delta_")),
+                len(emitted),
+            )
             idx = 0
             while idx < first_delta_idx:
                 token = emitted[idx]
@@ -629,7 +632,10 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
                 idx += 1
         elif any(token.startswith("score_delta_") for token in emitted):
             first_delta_idx = next(i for i, token in enumerate(emitted) if token.startswith("score_delta_"))
-            assert any(token.startswith("take_self_") and token.endswith("_tsumo") for token in emitted[:first_delta_idx])
+            has_tsumo_take = any(
+                token.startswith("take_self_") and token.endswith("_tsumo") for token in emitted[:first_delta_idx]
+            )
+            assert has_tsumo_take or any(token.startswith("hule_") for token in emitted[:first_delta_idx])
             idx = 0
             while idx < first_delta_idx:
                 token = emitted[idx]
@@ -695,8 +701,13 @@ def trace_round_token_slices(round_data: list[dict]) -> tuple[TenhouTokenizer, l
                 is_multi_ron_continuation = (
                     key == "hule"
                     and isinstance(value, dict)
-                    and tokenizer.pending_reaction is not None
-                    and value.get("baojia") == tokenizer.pending_reaction.discarder
+                    and (
+                        (
+                            tokenizer.pending_reaction is not None
+                            and value.get("baojia") == tokenizer.pending_reaction.discarder
+                        )
+                        or value.get("baojia") == tokenizer.pending_multi_ron_baojia
+                    )
                 )
                 assert is_multi_ron_continuation, "round already ended"
 

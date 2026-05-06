@@ -248,7 +248,7 @@ def test_hule_emits_ura_dora_reveal_tiles_for_riichi_win() -> None:
     assert tokenizer.tokens.count("yaku_ura_dora") == 2
 
 
-def test_hule_emits_opened_winning_hand_with_winning_tile_at_end_on_tsumo() -> None:
+def test_hule_emits_tsumo_winning_tile_after_take_not_opened_hand() -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
     tokenizer.pending_self = engine.SelfDecision(actor=0, options={"tsumo"})
@@ -264,8 +264,11 @@ def test_hule_emits_opened_winning_hand_with_winning_tile_at_end_on_tsumo() -> N
         }
     )
 
+    take_idx = tokenizer.tokens.index("take_self_0_tsumo")
+    assert tokenizer.tokens[take_idx : take_idx + 2] == ["take_self_0_tsumo", "p3"]
+
     opened_idx = tokenizer.tokens.index("opened_hand_0")
-    assert tokenizer.tokens[opened_idx : opened_idx + 15] == [
+    assert tokenizer.tokens[opened_idx : opened_idx + 14] == [
         "opened_hand_0",
         "p4",
         "p0",
@@ -280,8 +283,8 @@ def test_hule_emits_opened_winning_hand_with_winning_tile_at_end_on_tsumo() -> N
         "z3",
         "z3",
         "z3",
-        "p3",
     ]
+    assert "p3" not in tokenizer.tokens[opened_idx : opened_idx + 14]
     assert "z1" not in tokenizer.tokens[opened_idx : opened_idx + 20]
 
 
