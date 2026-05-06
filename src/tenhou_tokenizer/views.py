@@ -23,14 +23,22 @@ TENBO_TOKENS = {
     "TENBO_100",
     "TENBO_200",
     "TENBO_300",
+    "TENBO_400",
     "TENBO_500",
+    "TENBO_600",
+    "TENBO_700",
+    "TENBO_800",
+    "TENBO_900",
     "TENBO_1000",
     "TENBO_2000",
     "TENBO_3000",
+    "TENBO_4000",
     "TENBO_5000",
+    "TENBO_6000",
+    "TENBO_7000",
+    "TENBO_8000",
+    "TENBO_9000",
     "TENBO_10000",
-    "TENBO_20000",
-    "TENBO_30000",
 }
 
 
@@ -218,7 +226,7 @@ def tokenize_game_views(game: dict) -> list[TokenizedGameView]:
             TokenizedGameView(
                 view_type=VIEW_COMPLETE,
                 viewer_seat=None,
-                tokens=[*rule_prefix, TOKEN_VIEW_COMPLETE, *body_tokens],
+                tokens=[TOKEN_VIEW_COMPLETE, *rule_prefix, *body_tokens],
             )
         ]
 
@@ -226,14 +234,14 @@ def tokenize_game_views(game: dict) -> list[TokenizedGameView]:
         TokenizedGameView(
             view_type=VIEW_COMPLETE,
             viewer_seat=None,
-            tokens=[*rule_prefix, TOKEN_VIEW_COMPLETE, *body_tokens],
+            tokens=[TOKEN_VIEW_COMPLETE, *rule_prefix, *body_tokens],
         )
     ]
     round_kyoku = _round_kyoku_by_index(game, tokenizer.seat_count)
     for viewer_player in range(tokenizer.seat_count):
         transformed: list[str] = [
-            *rule_prefix,
             imperfect_view_token(viewer_player),
+            *rule_prefix,
         ]
         cursor = len(rule_prefix)
         last_viewer_round_seat: int | None = None

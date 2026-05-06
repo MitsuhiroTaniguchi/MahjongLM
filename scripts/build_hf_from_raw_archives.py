@@ -29,6 +29,7 @@ DEFAULT_CONVERT = ROOT / "scripts" / "paifu_scraping" / "convert.pl"
 
 _WORKER_CONVERT: str | None = None
 _WORKER_TOKEN_TO_ID: Dict[str, int] | None = None
+_WORKER_PERL: str | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,6 +61,12 @@ def parse_args() -> argparse.Namespace:
         help=f"Path to convert.pl (default: {DEFAULT_CONVERT})",
     )
     parser.add_argument(
+        "--perl-path",
+        type=Path,
+        default=None,
+        help="Explicit path to perl executable. Auto-detected by default.",
+    )
+    parser.add_argument(
         "--year",
         action="append",
         type=int,
@@ -84,6 +91,39 @@ def parse_args() -> argparse.Namespace:
         help="Keep intermediate Arrow cache directories after completion.",
     )
     return parser.parse_args()
+
+
+def resolve_perl_executable(explicit_path: Path | None = None) -> str:
+    candidates: list[Path] = []
+    if explicit_path is not None:
+        candidates.append(explicit_path)
+    env_perl = os.environ.get("PERL")
+    if env_perl:
+        candidates.append(Path(env_perl))
+
+    which_perl = shutil.which("perl")
+    if which_perl:
+        candidates.append(Path(which_perl))
+
+    candidates.extend(
+        [
+            Path(r"C:\Program Files\Git\usr\bin\perl.exe"),
+            Path(r"C:\Strawberry\perl\bin\perl.exe"),
+            Path(r"C:\msys64\usr\bin\perl.exe"),
+        ]
+    )
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        candidate = candidate.expanduser()
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate.is_file():
+            return str(candidate)
+
+    searched = "\n".join(str(path) for path in seen)
+    raise FileNotFoundError(f"perl executable not found. Searched:\n{searched}")
 
 
 def infer_seat_count(game: dict) -> int:
@@ -116,10 +156,11 @@ def infer_seat_count(game: dict) -> int:
     return 4
 
 
-def _init_worker(convert_path: str, token_to_id: Dict[str, int]) -> None:
-    global _WORKER_CONVERT, _WORKER_TOKEN_TO_ID
+def _init_worker(convert_path: str, token_to_id: Dict[str, int], perl_path: str) -> None:
+    global _WORKER_CONVERT, _WORKER_TOKEN_TO_ID, _WORKER_PERL
     _WORKER_CONVERT = convert_path
     _WORKER_TOKEN_TO_ID = token_to_id
+    _WORKER_PERL = perl_path
 
 
 def _encode(tokens: List[str]) -> List[int]:
@@ -132,12 +173,15 @@ def _encode(tokens: List[str]) -> List[int]:
 
 def _process_one(year: int, log_id: str, raw_text: str) -> Tuple[List[dict], str | None]:
     assert _WORKER_CONVERT is not None
+    assert _WORKER_PERL is not None
     env = {**os.environ, "LC_ALL": "C", "LANG": "C"}
     try:
         proc = subprocess.run(
-            ["perl", "-T", _WORKER_CONVERT],
+            [_WORKER_PERL, "-T", _WORKER_CONVERT],
             input=raw_text,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             check=True,
             env=env,
@@ -177,6 +221,8 @@ def _iter_raw_logs(zip_path: Path) -> Iterable[Tuple[str, str]]:
                     member_name = Path(member.name).name
                     if not member_name.endswith(".txt"):
                         continue
+                    if member_name.startswith("._"):
+                        continue
                     src = tf.extractfile(member)
                     if src is None:
                         continue
@@ -190,6 +236,7 @@ def iter_year_rows(
     workers: int,
     max_inflight: int,
     convert_path: str,
+    perl_path: str,
     token_to_id: Dict[str, int],
 ) -> Iterable[dict]:
     started_at = time.time()
@@ -201,7 +248,7 @@ def iter_year_rows(
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=workers,
         initializer=_init_worker,
-        initargs=(convert_path, token_to_id),
+        initargs=(convert_path, token_to_id, perl_path),
     ) as executor:
         for log_id, raw_text in _iter_raw_logs(Path(zip_path)):
             future = executor.submit(_process_one, year, log_id, raw_text)
@@ -264,6 +311,7 @@ def build_year_dataset(
     workers: int,
     max_inflight: int,
     convert_path: Path,
+    perl_path: str,
     token_to_id: Dict[str, int],
     token_dtype: str,
     keep_cache: bool,
@@ -302,6 +350,7 @@ def build_year_dataset(
                 "workers": workers,
                 "max_inflight": max_inflight,
                 "convert_path": str(convert_path),
+                "perl_path": perl_path,
                 "token_to_id": token_to_id,
             },
             features=features,
@@ -335,6 +384,8 @@ def main() -> int:
     if args.max_inflight <= 0:
         raise ValueError("--max-inflight must be positive")
 
+    perl_path = resolve_perl_executable(args.perl_path)
+
     disable_progress_bar()
     save_hf_tokenizer_assets()
     vocab = Vocabulary.load()
@@ -356,6 +407,7 @@ def main() -> int:
             workers=args.workers,
             max_inflight=args.max_inflight,
             convert_path=args.convert_path,
+            perl_path=perl_path,
             token_to_id=token_to_id,
             token_dtype=token_dtype,
             keep_cache=args.keep_cache,
