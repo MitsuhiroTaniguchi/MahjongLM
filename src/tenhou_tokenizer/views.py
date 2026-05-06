@@ -226,7 +226,7 @@ def tokenize_game_views(game: dict) -> list[TokenizedGameView]:
             TokenizedGameView(
                 view_type=VIEW_COMPLETE,
                 viewer_seat=None,
-                tokens=[*rule_prefix, TOKEN_VIEW_COMPLETE, *body_tokens],
+                tokens=[TOKEN_VIEW_COMPLETE, *rule_prefix, *body_tokens],
             )
         ]
 
@@ -234,14 +234,14 @@ def tokenize_game_views(game: dict) -> list[TokenizedGameView]:
         TokenizedGameView(
             view_type=VIEW_COMPLETE,
             viewer_seat=None,
-            tokens=[*rule_prefix, TOKEN_VIEW_COMPLETE, *body_tokens],
+            tokens=[TOKEN_VIEW_COMPLETE, *rule_prefix, *body_tokens],
         )
     ]
     round_kyoku = _round_kyoku_by_index(game, tokenizer.seat_count)
     for viewer_player in range(tokenizer.seat_count):
         transformed: list[str] = [
-            *rule_prefix,
             imperfect_view_token(viewer_player),
+            *rule_prefix,
         ]
         cursor = len(rule_prefix)
         last_viewer_round_seat: int | None = None

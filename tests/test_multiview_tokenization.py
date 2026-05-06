@@ -36,9 +36,9 @@ def test_tokenize_game_views_emits_complete_plus_per_player_views() -> None:
     assert len(views) == 5
     assert views[0].view_type == "complete"
     assert views[0].viewer_seat is None
-    assert views[0].tokens[:4] == ["rule_player_4", TOKEN_VIEW_COMPLETE, "game_start", "round_start"]
+    assert views[0].tokens[:4] == [TOKEN_VIEW_COMPLETE, "rule_player_4", "game_start", "round_start"]
     assert [view.viewer_seat for view in views[1:]] == [0, 1, 2, 3]
-    assert [view.tokens[1] for view in views[1:]] == [
+    assert [view.tokens[0] for view in views[1:]] == [
         imperfect_view_token(0),
         imperfect_view_token(1),
         imperfect_view_token(2),
@@ -144,7 +144,7 @@ def test_imperfect_view_uses_qijia_relative_player_token() -> None:
 
     views = tokenize_game_views(game)
 
-    assert [view.tokens[1] for view in views[1:]] == [
+    assert [view.tokens[0] for view in views[1:]] == [
         imperfect_view_token(0),
         imperfect_view_token(1),
         imperfect_view_token(2),
@@ -172,6 +172,6 @@ def test_imperfect_view_tracks_same_player_across_round_seat_rotation() -> None:
     views = tokenize_game_views(game)
     player0_view = views[1]
 
-    assert player0_view.tokens[1] == imperfect_view_token(0)
+    assert player0_view.tokens[0] == imperfect_view_token(0)
     assert "draw_3_p1" in player0_view.tokens
     assert "draw_3_hidden" not in player0_view.tokens
