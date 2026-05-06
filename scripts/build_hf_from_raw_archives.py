@@ -191,8 +191,6 @@ def _process_one(year: int, log_id: str, raw_text: str) -> Tuple[List[dict], str
         seat_count = infer_seat_count(game)
         rows: List[dict] = []
         for view in views:
-            if not view.tokens or not view.tokens[0].startswith("view_"):
-                raise ValueError(f"{log_id}: tokenized view does not start with view token")
             rows.append(
                 {
                     "game_id": log_id,
