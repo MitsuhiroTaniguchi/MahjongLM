@@ -12,6 +12,7 @@ import tarfile
 import time
 import zipfile
 from pathlib import Path
+import re
 from typing import Dict, Iterable, List, Tuple
 
 from datasets import Dataset, Features, Sequence, Value, disable_progress_bar
@@ -30,6 +31,7 @@ DEFAULT_CONVERT = ROOT / "scripts" / "paifu_scraping" / "convert.pl"
 _WORKER_CONVERT: str | None = None
 _WORKER_TOKEN_TO_ID: Dict[str, int] | None = None
 _WORKER_PERL: str | None = None
+SHUFFLE_SEED_RE = re.compile(r'<SHUFFLE\s+[^>]*seed="mt19937ar-sha512-n288-base64,([^"]+)"')
 
 
 def parse_args() -> argparse.Namespace:
@@ -171,6 +173,11 @@ def _encode(tokens: List[str]) -> List[int]:
         raise KeyError(f"token not in vocab: {exc}") from exc
 
 
+def _extract_shuffle_seed(raw_text: str) -> str | None:
+    match = SHUFFLE_SEED_RE.search(raw_text)
+    return match.group(1) if match else None
+
+
 def _process_one(year: int, log_id: str, raw_text: str) -> Tuple[List[dict], str | None]:
     assert _WORKER_CONVERT is not None
     assert _WORKER_PERL is not None
@@ -187,6 +194,9 @@ def _process_one(year: int, log_id: str, raw_text: str) -> Tuple[List[dict], str
             env=env,
         )
         game = json.loads(proc.stdout)
+        shuffle_seed = _extract_shuffle_seed(raw_text)
+        if shuffle_seed is not None:
+            game["_shuffle_seed"] = shuffle_seed
         views = tokenize_game_views(game)
         seat_count = infer_seat_count(game)
         rows: List[dict] = []

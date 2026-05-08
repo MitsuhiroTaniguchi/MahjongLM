@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from tenhou_tokenizer import TOKEN_VIEW_COMPLETE, imperfect_view_token, tokenize_game_views
+from tenhou_tokenizer import TOKEN_VIEW_COMPLETE, TOKEN_VIEW_OMNISCIENT, imperfect_view_token, tokenize_game_views
 from tests.fixtures.synthetic_logs import minimal_game, pingju_event, qipai_event
 
 
@@ -16,16 +17,22 @@ CONVERT = ROOT / "scripts" / "paifu_scraping" / "convert.pl"
 SANMA_RAW = ROOT / "tests" / "fixtures" / "tenhou" / "2014091101gm-00b9-0000-5ca6b487.txt"
 
 
-def _convert_sanma_sample() -> dict:
+def _convert_sanma_sample(*, include_shuffle_seed: bool = False) -> dict:
     if shutil.which("perl") is None:
         pytest.skip("perl is required for sanma conversion sample tests")
+    raw_text = SANMA_RAW.read_text(encoding="utf-8")
     proc = subprocess.run(
         ["perl", "-T", str(CONVERT), str(SANMA_RAW)],
         cwd=ROOT,
         check=True,
         capture_output=True,
     )
-    return json.loads(proc.stdout.decode("utf-8"))
+    game = json.loads(proc.stdout.decode("utf-8"))
+    if include_shuffle_seed:
+        match = re.search(r'<SHUFFLE\s+[^>]*seed="mt19937ar-sha512-n288-base64,([^"]+)"', raw_text)
+        assert match is not None
+        game["_shuffle_seed"] = match.group(1)
+    return game
 
 
 def test_tokenize_game_views_emits_complete_plus_per_player_views() -> None:
@@ -136,6 +143,33 @@ def test_tokenize_game_views_emits_three_player_view_count() -> None:
     assert len(views) == 4
     assert views[0].view_type == "complete"
     assert [view.viewer_seat for view in views[1:]] == [0, 1, 2]
+
+
+def test_omniscient_view_adds_wall_blocks_without_changing_existing_views() -> None:
+    seeded_game = _convert_sanma_sample(include_shuffle_seed=True)
+    seeded_views = tokenize_game_views(seeded_game)
+    unseeded_views = tokenize_game_views(_convert_sanma_sample())
+
+    assert [view.view_type for view in unseeded_views] == ["complete", "imperfect", "imperfect", "imperfect"]
+    assert [view.view_type for view in seeded_views] == [
+        "complete",
+        "omniscient",
+        "imperfect",
+        "imperfect",
+        "imperfect",
+    ]
+    assert seeded_views[0].tokens == unseeded_views[0].tokens
+    assert seeded_views[2].tokens == unseeded_views[1].tokens
+
+    omniscient = seeded_views[1]
+    assert omniscient.tokens[1] == TOKEN_VIEW_OMNISCIENT
+    round_start_index = omniscient.tokens.index("round_start")
+    assert omniscient.tokens[round_start_index + 1] == "wall"
+    first_wall = omniscient.tokens[round_start_index + 2 : round_start_index + 138]
+    assert len(first_wall) == 136
+    assert first_wall.count("m0") == 1
+    assert first_wall.count("p0") == 1
+    assert first_wall.count("s0") == 1
 
 
 def test_imperfect_view_uses_qijia_relative_player_token() -> None:

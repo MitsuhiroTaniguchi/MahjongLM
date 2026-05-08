@@ -824,3 +824,5 @@ pingju_sufurenda
 pingju_sukantsu
 pingju_suuchariichi
 pingju_sanchahou
+view_omniscient
+wall
