@@ -14,8 +14,10 @@ __all__ = [
     "Vocabulary",
     "VIEW_COMPLETE",
     "VIEW_IMPERFECT",
+    "VIEW_OMNISCIENT",
     "TOKEN_VIEW_COMPLETE",
     "TOKEN_VIEW_IMPERFECT_PREFIX",
+    "TOKEN_VIEW_OMNISCIENT",
     "imperfect_view_token",
     "iter_tokenized_games",
     "load_token_ids",
@@ -26,8 +28,10 @@ __all__ = [
 from .viewspec import (
     TOKEN_VIEW_COMPLETE,
     TOKEN_VIEW_IMPERFECT_PREFIX,
+    TOKEN_VIEW_OMNISCIENT,
     VIEW_COMPLETE,
     VIEW_IMPERFECT,
+    VIEW_OMNISCIENT,
     imperfect_view_token,
 )
 _HUGGINGFACE_EXPORTS = {

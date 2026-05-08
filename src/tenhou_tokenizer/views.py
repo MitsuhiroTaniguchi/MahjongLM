@@ -6,8 +6,11 @@ from .viewspec import (
     TOKEN_VIEW_COMPLETE,
     VIEW_COMPLETE,
     VIEW_IMPERFECT,
+    TOKEN_VIEW_OMNISCIENT,
+    VIEW_OMNISCIENT,
     imperfect_view_token,
 )
+from .wall import assert_wall_consistent_with_game, generate_tenhou_wall_tokens
 
 
 TILE_TOKENS = {
@@ -54,6 +57,23 @@ def _split_rule_prefix(tokens: list[str]) -> tuple[list[str], list[str]]:
     while prefix_end < len(tokens) and tokens[prefix_end].startswith("rule_"):
         prefix_end += 1
     return tokens[:prefix_end], tokens[prefix_end:]
+
+
+def _inject_wall_blocks(tokens: list[str], wall_tokens_by_round: list[list[str]]) -> list[str]:
+    out: list[str] = []
+    round_index = 0
+    for token in tokens:
+        out.append(token)
+        if token != "round_start":
+            continue
+        if round_index >= len(wall_tokens_by_round):
+            raise ValueError("more round_start tokens than reconstructed walls")
+        out.append("wall")
+        out.extend(wall_tokens_by_round[round_index])
+        round_index += 1
+    if round_index != len(wall_tokens_by_round):
+        raise ValueError("fewer round_start tokens than reconstructed walls")
+    return out
 
 
 def _hidden_haipai_token(seat: int) -> str:
@@ -221,14 +241,31 @@ def tokenize_game_views(game: dict) -> list[TokenizedGameView]:
     complete_tokens = tokenizer.tokenize_game(game)
     event_traces = list(tokenizer.event_traces)
     rule_prefix, body_tokens = _split_rule_prefix(complete_tokens)
+    shuffle_seed = game.get("_shuffle_seed")
+    omniscient_view: TokenizedGameView | None = None
+    if isinstance(shuffle_seed, str) and shuffle_seed:
+        wall_tokens_by_round = generate_tenhou_wall_tokens(shuffle_seed, len(game.get("log", [])))
+        assert_wall_consistent_with_game(game, wall_tokens_by_round)
+        omniscient_view = TokenizedGameView(
+            view_type=VIEW_OMNISCIENT,
+            viewer_seat=None,
+            tokens=[
+                *rule_prefix,
+                TOKEN_VIEW_OMNISCIENT,
+                *_inject_wall_blocks(body_tokens, wall_tokens_by_round),
+            ],
+        )
     if not event_traces:
-        return [
+        views_without_traces = [
             TokenizedGameView(
                 view_type=VIEW_COMPLETE,
                 viewer_seat=None,
                 tokens=[*rule_prefix, TOKEN_VIEW_COMPLETE, *body_tokens],
             )
         ]
+        if omniscient_view is not None:
+            views_without_traces.append(omniscient_view)
+        return views_without_traces
 
     views = [
         TokenizedGameView(
@@ -237,6 +274,8 @@ def tokenize_game_views(game: dict) -> list[TokenizedGameView]:
             tokens=[*rule_prefix, TOKEN_VIEW_COMPLETE, *body_tokens],
         )
     ]
+    if omniscient_view is not None:
+        views.append(omniscient_view)
     round_kyoku = _round_kyoku_by_index(game, tokenizer.seat_count)
     for viewer_player in range(tokenizer.seat_count):
         transformed: list[str] = [

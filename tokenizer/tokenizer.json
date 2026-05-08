@@ -899,7 +899,9 @@
       "pingju_sufurenda": 822,
       "pingju_sukantsu": 823,
       "pingju_suuchariichi": 824,
-      "pingju_sanchahou": 825
+      "pingju_sanchahou": 825,
+      "view_omniscient": 826,
+      "wall": 827
     },
     "unk_token": "<unk>"
   }
