@@ -16,6 +16,8 @@ wandb/
 data/raw/
 data/processed/
 data/cache/
+data/huggingface_datasets/
+data/huggingface_datasets_omniscient/
 
 # Local experiment environments and caches.
 .venv-unsloth-probe/
