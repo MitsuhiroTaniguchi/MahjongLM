@@ -41,3 +41,13 @@ docs/references/legacy_colab/
 data/raw/tenhou/
 data/huggingface_datasets/
 data/processed/
+data/cache/
+data/huggingface_datasets_omniscient/
+
+# Local experiment environments and caches.
+.venv-unsloth-probe/
+unsloth_compiled_cache/
+wandb_recovery/
+
+# Python bytecode.
+*.pyc
