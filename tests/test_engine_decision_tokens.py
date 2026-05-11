@@ -535,7 +535,7 @@ def test_penuki_ron_option_uses_qianggang_context(monkeypatch: pytest.MonkeyPatc
     assert "ron" in reaction.options_by_player.get(1, set())
 
 
-def test_ankan_ron_option_requires_kokushi_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ankan_never_opens_reaction_window_under_tenhou_rule(monkeypatch: pytest.MonkeyPatch) -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
     offered = tile_to_index("z7")
@@ -546,8 +546,7 @@ def test_ankan_ron_option_requires_kokushi_shape(monkeypatch: pytest.MonkeyPatch
     tokenizer.players[1].concealed = parse_hand_counts("m119p19s19z123456")
     reaction = tokenizer._compute_ankan_reaction_options(actor=0, tile_idx=offered)
 
-    assert reaction is not None
-    assert reaction.options_by_player == {1: {"ron"}}
+    assert reaction is None
 
     tokenizer.players[1].concealed = parse_hand_counts("m123456789p1234")
     tokenizer._invalidate_wait_mask(1)
@@ -1217,7 +1216,9 @@ def test_ankan_no_longer_emits_kan_token() -> None:
     assert all(not t.startswith("kan_") for t in tokenizer.tokens)
 
 
-def test_ankan_generates_reaction_decision_and_rob_kan_take(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ankan_does_not_emit_reaction_options_even_if_kokushi_could_ron(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
 
@@ -1228,25 +1229,17 @@ def test_ankan_generates_reaction_decision_and_rob_kan_take(monkeypatch: pytest.
     tokenizer.pending_self = SelfDecision(actor=actor, options={"ankan"}, option_tiles={"ankan": ["m1"]})
     tokenizer.expected_discard_actor = actor
 
-    def fake_ankan_reaction(self: TenhouTokenizer, actor: int, tile_idx: int) -> ReactionDecision:
-        return ReactionDecision(
-            discarder=actor,
-            discard_tile=tile_idx,
-            options_by_player={1: {"ron"}},
-            trigger="ankan",
-        )
+    def fail_ankan_reaction(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("ankan must not compute reaction options under Tenhou rules")
 
-    monkeypatch.setattr(TenhouTokenizer, "_compute_ankan_reaction_options", fake_ankan_reaction)
-
+    monkeypatch.setattr(TenhouTokenizer, "_compute_ankan_reaction_options", fail_ankan_reaction)
     tokenizer._on_gang({"l": actor, "m": "m1111"})
-    tokenizer._on_hule({"l": 1, "baojia": actor, "fenpei": [0, 0, 0, 0]})
     tokenizer._flush_pending()
 
     assert "take_self_0_ankan" in tokenizer.tokens
     take_idx = tokenizer.tokens.index("take_self_0_ankan")
     assert tokenizer.tokens[take_idx + 1] == "m1"
-    assert "opt_react_1_ron" in tokenizer.tokens
-    assert tokenizer.tokens.count("take_react_1_ron") == 1
+    assert all(not token.startswith(("opt_react_", "take_react_", "pass_react_")) for token in tokenizer.tokens)
 
 
 def test_multiple_ankan_candidates_only_reveal_tile_on_take() -> None:
@@ -1315,7 +1308,6 @@ def test_multiple_kakan_candidates_do_not_emit_tiles_in_opt_block() -> None:
     ("method_name", "trigger_arg"),
     [
         ("_compute_kakan_reaction_options", {"actor": 0, "tile_idx": tile_to_index("m1")}),
-        ("_compute_ankan_reaction_options", {"actor": 0, "tile_idx": tile_to_index("z7")}),
     ],
 )
 def test_rob_kan_reaction_skips_furiten_players(

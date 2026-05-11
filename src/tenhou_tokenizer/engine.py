@@ -1911,73 +1911,9 @@ class TenhouTokenizer:
         )
 
     def _compute_ankan_reaction_options(self, actor: int, tile_idx: int) -> Optional[ReactionDecision]:
-        if self._use_multi_player_simulation():
-            result_pairs = self._compute_simulation_rob_kan_pairs(actor, tile_idx, require_kokushi=True)
-            options_by_player = {
-                int(seat): {"ron"} for seat, mask in result_pairs if mask & REACT_OPT_RON
-            }
-            if not options_by_player:
-                return None
-            return ReactionDecision(
-                discarder=actor,
-                discard_tile=tile_idx,
-                options_by_player=options_by_player,
-                trigger="ankan",
-            )
-        options_by_player: Dict[int, Set[str]] = {}
-        ron_cases: List[
-            Tuple[List[int], List[Tuple[str, int]], int, bool, bool, bool, int, int, bool, bool, bool, bool]
-        ] = []
-        ron_case_seats: List[int] = []
-
-        for seat in range(self.seat_count):
-            if seat == actor:
-                continue
-
-            p = self.players[seat]
-            if p.temporary_furiten or p.riichi_furiten:
-                continue
-
-            wait_mask = self._wait_mask(seat)
-            if self._is_permanent_furiten(seat, wait_mask=wait_mask) or not ((wait_mask >> tile_idx) & 1):
-                continue
-
-            counts_plus = list(p.concealed)
-            counts_plus[tile_idx] += 1
-            if not _is_kokushi_agari_shape(counts_plus, p.meld_count):
-                continue
-
-            ron_cases.append(
-                (
-                    counts_plus,
-                    p.melds,
-                    tile_idx,
-                    False,
-                    (p.open_melds == 0),
-                    p.is_riichi,
-                    self.bakaze,
-                    self._player_wind(seat),
-                    False,
-                    False,
-                    True,
-                    self.seat_count == 3,
-                )
-            )
-            ron_case_seats.append(seat)
-
-        if ron_cases:
-            for seat, can_ron in zip(ron_case_seats, _pm_has_hupai_multi(ron_cases)):
-                if can_ron:
-                    options_by_player[seat] = {"ron"}
-
-        if not options_by_player:
-            return None
-        return ReactionDecision(
-            discarder=actor,
-            discard_tile=tile_idx,
-            options_by_player=options_by_player,
-            trigger="ankan",
-        )
+        # Tenhou does not allow kokushi ron/chankan on another player's closed kan.
+        # Therefore ankan never opens a reaction decision window in this corpus.
+        return None
 
     def _compute_penuki_reaction_options(self, actor: int, tile_idx: int) -> Optional[ReactionDecision]:
         if self.seat_count != 3:
@@ -2257,8 +2193,6 @@ class TenhouTokenizer:
         reaction: Optional[ReactionDecision] = None
         if kind == "kakan":
             reaction = self._compute_kakan_reaction_options(actor, tile)
-        elif kind == "ankan":
-            reaction = self._compute_ankan_reaction_options(actor, tile)
         self.awaiting_kaigang += 1
         if reaction:
             self.pending_reaction = reaction

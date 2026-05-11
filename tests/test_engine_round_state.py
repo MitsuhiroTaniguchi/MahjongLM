@@ -550,7 +550,9 @@ def test_compute_kakan_reaction_options_skips_permanent_furiten(monkeypatch: pyt
     assert reaction.options_by_player == {1: {"ron"}, 3: {"ron"}}
 
 
-def test_compute_ankan_reaction_options_requires_kokushi_per_seat(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_compute_ankan_reaction_options_always_none_under_tenhou_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
     offered = tile_to_index("z7")
@@ -567,9 +569,7 @@ def test_compute_ankan_reaction_options_requires_kokushi_per_seat(monkeypatch: p
 
     reaction = tokenizer._compute_ankan_reaction_options(actor=0, tile_idx=offered)
 
-    assert reaction is not None
-    assert reaction.trigger == "ankan"
-    assert reaction.options_by_player == {1: {"ron"}, 3: {"ron"}}
+    assert reaction is None
 
 
 def test_riichi_missed_ron_becomes_persistent_furiten(monkeypatch: pytest.MonkeyPatch) -> None:
