@@ -1736,6 +1736,9 @@ class TenhouTokenizer:
             if self.seat_count == 3 and p.concealed[tile_to_index("z4")] > 0:
                 options.add("penuki")
 
+        if self.live_draws_left <= 0:
+            options.difference_update({"ankan", "kakan", "penuki"})
+
         return options
 
     def _can_kyushukyuhai(self, actor: int) -> bool:

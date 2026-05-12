@@ -865,6 +865,59 @@ def test_compute_self_options_offers_riichi_after_closed_kan_in_fallback(
     assert "riichi" in opts
 
 
+@pytest.mark.parametrize(
+    "option",
+    ["ankan", "kakan", "penuki"],
+)
+def test_compute_self_options_suppresses_dead_wall_actions_when_no_live_draws(
+    monkeypatch: pytest.MonkeyPatch,
+    option: str,
+) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_use_multi_player_simulation", lambda _self: False)
+    monkeypatch.setattr(TenhouTokenizer, "_evaluate_draw", lambda *_args, **_kwargs: (False, False))
+    seat_count = 3 if option == "penuki" else 4
+    tokenizer = TenhouTokenizer()
+    tokenizer.seat_count = seat_count
+    tokenizer._on_qipai(qipai_payload(seat_count=seat_count))
+    actor = 0
+    player = tokenizer.players[actor]
+    if option == "ankan":
+        player.concealed = parse_hand_counts("m1111p123s123z11")
+    elif option == "kakan":
+        player.concealed = parse_hand_counts("m1p123456s123z11")
+        player.open_pons[tile_to_index("m1")] = 1
+        player.melds = [("pon", tile_to_index("m1"))]
+        player.open_melds = 1
+    else:
+        player.concealed[tile_to_index("z4")] += 1
+    tokenizer.live_draws_left = 0
+
+    opts = tokenizer._compute_self_options(actor=actor, drawn_tile=tile_to_index("m1"))
+
+    assert option not in opts
+
+
+def test_compute_self_options_filters_dead_wall_actions_from_simulation_mask(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_use_multi_player_simulation", lambda _self: True)
+    monkeypatch.setattr(engine, "PM_STATELESS_SIMULATION_API_AVAILABLE", True)
+    monkeypatch.setattr(engine, "PM_SHOUPAI_SIMULATION_API_AVAILABLE", False)
+    monkeypatch.setattr(
+        engine.pm,
+        "compute_self_option_mask",
+        lambda *_args, **_kwargs: engine.SELF_OPT_ANKAN | engine.SELF_OPT_KAKAN | engine.SELF_OPT_PENUKI,
+        raising=False,
+    )
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.live_draws_left = 0
+
+    opts = tokenizer._compute_self_options(actor=0, drawn_tile=tile_to_index("m1"))
+
+    assert opts.isdisjoint({"ankan", "kakan", "penuki"})
+
+
 def test_pm_has_hupai_uses_context_enabled_has_hupai(monkeypatch: pytest.MonkeyPatch) -> None:
     called: dict[str, object] = {}
 
