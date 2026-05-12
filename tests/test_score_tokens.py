@@ -491,24 +491,58 @@ def test_kyushukyuhai_emits_opened_hand_when_shoupai_is_present() -> None:
         {
             "name": "九種九牌",
             "fenpei": [0, 0, 0, 0],
-            "shoupai": ["", "m19p19s19z1234", "", ""],
+            "shoupai": ["", "m119p1569s125z1347", "", ""],
         }
     )
 
     opened_idx = tokenizer.tokens.index("opened_hand_1")
-    assert tokenizer.tokens[opened_idx : opened_idx + 11] == [
+    assert tokenizer.tokens[opened_idx : opened_idx + 15] == [
         "opened_hand_1",
+        "m1",
         "m1",
         "m9",
         "p1",
+        "p5",
+        "p6",
         "p9",
         "s1",
-        "s9",
+        "s2",
+        "s5",
         "z1",
-        "z2",
         "z3",
         "z4",
+        "z7",
     ]
+
+
+def test_kyushukyuhai_opened_hand_requires_draw_tile() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_self = engine.SelfDecision(actor=1, options={"kyushukyuhai"})
+
+    with pytest.raises(TokenizeError, match="must contain 14 tiles"):
+        tokenizer._on_pingju(
+            {
+                "name": "九種九牌",
+                "fenpei": [0, 0, 0, 0],
+                "shoupai": ["", "m119p1569s125z134", "", ""],
+            }
+        )
+
+
+def test_kyushukyuhai_opened_hand_rejects_extra_tile() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    tokenizer.pending_self = engine.SelfDecision(actor=1, options={"kyushukyuhai"})
+
+    with pytest.raises(TokenizeError, match="must contain 14 tiles"):
+        tokenizer._on_pingju(
+            {
+                "name": "九種九牌",
+                "fenpei": [0, 0, 0, 0],
+                "shoupai": ["", "m119p1569s125z13477", "", ""],
+            }
+        )
 
 
 def test_kyushukyuhai_opened_hand_uses_only_declaring_actor_on_converter_variant() -> None:
@@ -520,7 +554,7 @@ def test_kyushukyuhai_opened_hand_uses_only_declaring_actor_on_converter_variant
         {
             "name": "九種九牌",
             "fenpei": [0, 0, 0, 0],
-            "shoupai": ["m1", "", "m19p19s19z1234", ""],
+            "shoupai": ["m1", "", "m119p1569s125z1347", ""],
         }
     )
 

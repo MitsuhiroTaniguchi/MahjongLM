@@ -283,10 +283,14 @@ def encode_tenbo_tokens(value: int) -> List[str]:
     return tokens
 
 
-def _opened_hand_tokens(seat: int, hand_text: str) -> List[str]:
+def _opened_hand_tokens(seat: int, hand_text: str, *, expected_tile_count: int | None = None) -> List[str]:
     tiles = sorted(_parse_tiles(hand_text, stop_at_comma=True, context="opened_hand"), key=token_tile_sort_key)
     if not tiles:
         return []
+    if expected_tile_count is not None and len(tiles) != expected_tile_count:
+        raise TokenizeError(
+            f"opened_hand_{seat} must contain {expected_tile_count} tiles, got {len(tiles)}"
+        )
     return [f"opened_hand_{seat}", *tiles]
 
 
@@ -2508,7 +2512,8 @@ class TenhouTokenizer:
                 raise TokenizeError(f"pingju.shoupai[{seat}] must be a string")
             if kyushukyuhai_actor is not None and seat != kyushukyuhai_actor:
                 continue
-            block.extend(_opened_hand_tokens(seat, hand))
+            expected_tile_count = 14 if kyushukyuhai_actor is not None and seat == kyushukyuhai_actor else None
+            block.extend(_opened_hand_tokens(seat, hand, expected_tile_count=expected_tile_count))
         return block
 
     def _build_hule_detail_block(self, h: dict, *, winner: int) -> List[str]:
