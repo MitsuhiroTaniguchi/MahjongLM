@@ -924,6 +924,57 @@ def test_tokenize_game_uses_reconstructed_final_scores_instead_of_top_level_defe
     assert "TENBO_500" in tokens[final_score_idx : tokens.index("final_score_1")]
 
 
+def test_reconstructed_final_scores_account_for_winners_own_riichi_stick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_self_options(
+        _self: TenhouTokenizer,
+        actor: int,
+        _tile_idx: int,
+        **_kwargs: object,
+    ) -> set[str]:
+        if actor == 0:
+            return {"riichi"}
+        if actor == 1:
+            return {"tsumo"}
+        return set()
+
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", fake_self_options)
+    monkeypatch.setattr(TenhouTokenizer, "_compute_reaction_options", lambda *_args, **_kwargs: None)
+
+    tokens = TenhouTokenizer().tokenize_game(
+        {
+            "qijia": 0,
+            # This mirrors old rounded owari-style data. The tokenizer must use
+            # reconstructed in-game scores rather than trusting top-level defen.
+            "defen": [25000, 31000, 22000, 22000],
+            "rank": [2, 1, 3, 4],
+            "log": [
+                [
+                    qipai_event(),
+                    {"zimo": {"l": 0, "p": "m1"}},
+                    {"dapai": {"l": 0, "p": "m1*"}},
+                    {"zimo": {"l": 1, "p": "m2"}},
+                    {
+                        "hule": {
+                            "l": 1,
+                            "fenpei": [0, 6000, -3000, -3000],
+                            "shoupai": "m123456789p123m2",
+                        }
+                    },
+                ]
+            ],
+        }
+    )
+
+    final_score_0 = tokens.index("final_score_0")
+    final_score_1 = tokens.index("final_score_1")
+    final_score_2 = tokens.index("final_score_2")
+    assert "TENBO_4000" in tokens[final_score_0:final_score_1]
+    assert "TENBO_1000" not in tokens[final_score_0:final_score_1]
+    assert "TENBO_1000" in tokens[final_score_1:final_score_2]
+
+
 def test_tokenize_game_omits_final_suffix_without_top_level_defen() -> None:
     tokens = TenhouTokenizer().tokenize_game({"log": [[qipai_event(), pingju_event()]]})
     assert "final_score_0" not in tokens
