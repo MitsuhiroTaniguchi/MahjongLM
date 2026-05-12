@@ -708,6 +708,8 @@ class TenhouTokenizer:
         self.pending_multi_ron_baojia: Optional[int] = None
         self.pending_multi_ron_remaining: Set[int] = set()
         self.pending_multi_ron_deltas: Optional[List[int]] = None
+        self.pending_multi_ron_detail_blocks: List[List[str]] = []
+        self.pending_multi_ron_ura_blocks: List[List[str]] = []
         self.pending_riichi_actor: Optional[int] = None
         self.round_index = 0
         self.live_draws_left = 55 if self.seat_count == 3 else 70
@@ -741,6 +743,8 @@ class TenhouTokenizer:
         self.pending_multi_ron_baojia = None
         self.pending_multi_ron_remaining = set()
         self.pending_multi_ron_deltas = None
+        self.pending_multi_ron_detail_blocks = []
+        self.pending_multi_ron_ura_blocks = []
         self.pending_riichi_actor = None
         self.round_index = 0
         self.expected_draw_actor = None
@@ -862,6 +866,8 @@ class TenhouTokenizer:
         self.pending_multi_ron_baojia = None
         self.pending_multi_ron_remaining = set()
         self.pending_multi_ron_deltas = None
+        self.pending_multi_ron_detail_blocks = []
+        self.pending_multi_ron_ura_blocks = []
         self.pending_riichi_actor = None
         self.expected_draw_actor = None
         self.expected_discard_actor = None
@@ -2418,9 +2424,17 @@ class TenhouTokenizer:
                     chosen_tiles["tsumo"] = winning_tile
             self._finalize_self({"tsumo"}, actor=winner, chosen_tiles=chosen_tiles)
 
-        detail_tokens = [f"hule_{winner}", *self._build_hule_detail_block(h, winner=winner)]
+        is_multi_ron = self.pending_multi_ron_baojia is not None
+        detail_tokens = [f"hule_{winner}", *self._build_hule_detail_block(h, winner=winner, include_ura_dora=not is_multi_ron)]
         deltas = [self._require_score(delta, field=f"hule.fenpei[{seat}]") for seat, delta in enumerate(fenpei)]
-        self.tokens.extend(detail_tokens)
+        if is_multi_ron:
+            self.tokens.append(f"hule_{winner}")
+            self.pending_multi_ron_detail_blocks.append(detail_tokens[1:])
+            ura_block = self._build_hule_ura_dora_block(h)
+            if ura_block:
+                self.pending_multi_ron_ura_blocks.append(ura_block)
+        else:
+            self.tokens.extend(detail_tokens)
         for seat in range(self.seat_count):
             self.players[seat].score += deltas[seat]
         if self.pending_multi_ron_baojia is not None:
@@ -2433,6 +2447,11 @@ class TenhouTokenizer:
                 self.pending_multi_ron_baojia = None
                 self.pending_multi_ron_remaining = set()
                 self.pending_multi_ron_deltas = None
+                self.tokens.extend(self._merge_hule_ura_dora_blocks(self.pending_multi_ron_ura_blocks))
+                for block in self.pending_multi_ron_detail_blocks:
+                    self.tokens.extend(block)
+                self.pending_multi_ron_detail_blocks = []
+                self.pending_multi_ron_ura_blocks = []
                 self._finish_hule_result(total_deltas)
         else:
             self._finish_hule_result(deltas)
@@ -2516,31 +2535,64 @@ class TenhouTokenizer:
             block.extend(_opened_hand_tokens(seat, hand, expected_tile_count=expected_tile_count))
         return block
 
-    def _build_hule_detail_block(self, h: dict, *, winner: int) -> List[str]:
-        block: List[str] = []
-        shoupai = h.get("shoupai")
-        if shoupai is not None:
-            if not isinstance(shoupai, str):
-                raise TokenizeError("hule.shoupai must be a string")
-            block.extend(_opened_hule_hand_tokens(winner, shoupai))
+    def _hule_has_riichi_yaku(self, h: dict) -> bool:
         hupai = h.get("hupai")
-        has_riichi_yaku = False
         if isinstance(hupai, list):
             for idx, entry in enumerate(hupai):
                 if not isinstance(entry, dict):
                     raise TokenizeError(f"hule.hupai[{idx}] must be a dict")
                 name = entry.get("name")
                 if isinstance(name, str) and name in RIICHI_HUPAI_NAMES:
-                    has_riichi_yaku = True
-                    break
+                    return True
+        return False
+
+    def _build_hule_ura_dora_block(self, h: dict) -> List[str]:
         fubaopai = h.get("fubaopai")
-        if fubaopai is not None:
-            if not isinstance(fubaopai, list):
-                raise TokenizeError("hule.fubaopai must be a list")
-            if has_riichi_yaku:
-                block.append("ura_dora")
-                for idx, tile in enumerate(fubaopai):
-                    block.append(token_tile(_strip_tile_suffix(self._require_str(tile, field=f"hule.fubaopai[{idx}]"))))
+        if fubaopai is None:
+            return []
+        if not isinstance(fubaopai, list):
+            raise TokenizeError("hule.fubaopai must be a list")
+        if not self._hule_has_riichi_yaku(h):
+            return []
+        block = ["ura_dora"]
+        for idx, tile in enumerate(fubaopai):
+            block.append(token_tile(_strip_tile_suffix(self._require_str(tile, field=f"hule.fubaopai[{idx}]"))))
+        return block
+
+    def _merge_hule_ura_dora_blocks(self, blocks: List[List[str]]) -> List[str]:
+        if not blocks:
+            return []
+        counts: Dict[str, int] = {}
+        order: List[str] = []
+        for block in blocks:
+            if not block:
+                continue
+            if block[0] != "ura_dora":
+                raise TokenizeError("invalid ura_dora block")
+            current: Dict[str, int] = {}
+            for tile in block[1:]:
+                current[tile] = current.get(tile, 0) + 1
+                if tile not in order:
+                    order.append(tile)
+            for tile, count in current.items():
+                counts[tile] = max(counts.get(tile, 0), count)
+        if not counts:
+            return []
+        merged = ["ura_dora"]
+        for tile in order:
+            merged.extend([tile] * counts[tile])
+        return merged
+
+    def _build_hule_detail_block(self, h: dict, *, winner: int, include_ura_dora: bool = True) -> List[str]:
+        block: List[str] = []
+        shoupai = h.get("shoupai")
+        if shoupai is not None:
+            if not isinstance(shoupai, str):
+                raise TokenizeError("hule.shoupai must be a string")
+            block.extend(_opened_hule_hand_tokens(winner, shoupai))
+        if include_ura_dora:
+            block.extend(self._build_hule_ura_dora_block(h))
+        hupai = h.get("hupai")
         if hupai is not None:
             if not isinstance(hupai, list):
                 raise TokenizeError("hule.hupai must be a list")

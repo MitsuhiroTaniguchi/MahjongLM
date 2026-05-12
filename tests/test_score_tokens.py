@@ -1370,6 +1370,63 @@ def test_multiple_hule_emits_one_combined_score_delta_block(
     assert len(delta_positions) == 1
 
 
+def test_multiple_hule_emits_shared_ura_dora_before_hule_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        TenhouTokenizer,
+        "_compute_reaction_options",
+        lambda _self, discarder, tile_idx: engine.ReactionDecision(
+            discarder=discarder,
+            discard_tile=tile_idx,
+            options_by_player={1: {"ron"}, 2: {"ron"}},
+            trigger="discard",
+        ),
+    )
+    win_common = {
+        "baojia": 0,
+        "fubaopai": ["p2"],
+        "hupai": [{"name": "立直", "fanshu": 1}, {"name": "裏ドラ", "fanshu": 1}],
+    }
+    game = minimal_game(
+        [
+            qipai_event(),
+            {"zimo": {"l": 0, "p": "m1"}},
+            {"dapai": {"l": 0, "p": "m1"}},
+            {
+                "hule": {
+                    **win_common,
+                    "l": 1,
+                    "shoupai": "m123p123s123z123m1",
+                    "fenpei": [-2000, 4000, -1000, -1000],
+                }
+            },
+            {
+                "hule": {
+                    **win_common,
+                    "l": 2,
+                    "shoupai": "m234p234s234z123m1",
+                    "fenpei": [-2000, -1000, 4000, -1000],
+                }
+            },
+        ]
+    )
+
+    tokens = TenhouTokenizer().tokenize_game(game)
+
+    hule_1 = tokens.index("hule_1")
+    hule_2 = tokens.index("hule_2")
+    ura_idx = tokens.index("ura_dora")
+    opened_1 = tokens.index("opened_hand_1")
+    opened_2 = tokens.index("opened_hand_2")
+    delta_0 = tokens.index("score_delta_0", opened_2)
+
+    assert tokens.count("ura_dora") == 1
+    assert tokens[ura_idx : ura_idx + 2] == ["ura_dora", "p2"]
+    assert hule_1 < hule_2 < ura_idx < opened_1 < opened_2 < delta_0
+    assert tokens.count("yaku_ura_dora") == 2
+
+
 def test_multiple_hule_emits_declined_ron_pass_before_first_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
