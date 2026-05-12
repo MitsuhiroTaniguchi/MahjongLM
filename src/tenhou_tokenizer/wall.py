@@ -137,12 +137,27 @@ def generate_tenhou_wall_tokens(seed_b64: str, round_count: int) -> list[list[st
 
 def _round_observed_tile_tokens(round_data: list[dict]) -> list[str]:
     observed: list[str] = []
+    pending_hule_fubaopai: list[Counter[str]] = []
+
+    def flush_hule_fubaopai() -> None:
+        nonlocal pending_hule_fubaopai
+        if not pending_hule_fubaopai:
+            return
+        merged: Counter[str] = Counter()
+        for counter in pending_hule_fubaopai:
+            for tile, count in counter.items():
+                merged[tile] = max(merged[tile], count)
+        observed.extend(merged.elements())
+        pending_hule_fubaopai = []
+
     for event in round_data:
         if not isinstance(event, dict) or not event:
             continue
         key, value = next(iter(event.items()))
         if not isinstance(value, dict):
             continue
+        if key != "hule":
+            flush_hule_fubaopai()
         if key == "qipai":
             shoupai = value.get("shoupai")
             if isinstance(shoupai, list):
@@ -163,9 +178,12 @@ def _round_observed_tile_tokens(round_data: list[dict]) -> list[str]:
         elif key == "hule":
             fubaopai = value.get("fubaopai")
             if isinstance(fubaopai, list):
+                counter: Counter[str] = Counter()
                 for tile in fubaopai:
                     if isinstance(tile, str):
-                        observed.append(token_tile(tile.replace("*", "").replace("_", "")))
+                        counter[token_tile(tile.replace("*", "").replace("_", ""))] += 1
+                pending_hule_fubaopai.append(counter)
+    flush_hule_fubaopai()
     return observed
 
 

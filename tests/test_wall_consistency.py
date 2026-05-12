@@ -53,3 +53,20 @@ def test_wall_assertion_checks_dora_and_ura_indicators() -> None:
     }
     with pytest.raises(TokenizeError, match="observed tile contradicts reconstructed wall"):
         assert_wall_consistent_with_game(impossible_indicators, [wall])
+
+
+def test_wall_assertion_counts_shared_double_ron_ura_indicators_once() -> None:
+    wall = _canonical_wall_tokens()
+    game = {
+        "log": [
+            [
+                {"qipai": {"shoupai": ["p2", "", "", ""], "baopai": "m1"}},
+                {"zimo": {"l": 0, "p": "p2"}},
+                {"zimo": {"l": 0, "p": "p2"}},
+                {"hule": {"l": 1, "fubaopai": ["p2"]}},
+                {"hule": {"l": 2, "fubaopai": ["p2"]}},
+            ]
+        ]
+    }
+
+    assert_wall_consistent_with_game(game, [wall])

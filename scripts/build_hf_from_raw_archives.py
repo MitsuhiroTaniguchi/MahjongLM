@@ -92,6 +92,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep intermediate Arrow cache directories after completion.",
     )
+    parser.add_argument(
+        "--skip-log",
+        type=Path,
+        default=None,
+        help="Write skipped game details as JSONL (default: <output-dir>/skipped_games.jsonl).",
+    )
     return parser.parse_args()
 
 
@@ -248,9 +254,10 @@ def iter_year_rows(
     convert_path: str,
     perl_path: str,
     token_to_id: Dict[str, int],
+    skip_log_path: str | None,
 ) -> Iterable[dict]:
     started_at = time.time()
-    pending: Dict[concurrent.futures.Future, int] = {}
+    pending: Dict[concurrent.futures.Future, str] = {}
     submitted = 0
     emitted = 0
     skipped = 0
@@ -262,7 +269,7 @@ def iter_year_rows(
     ) as executor:
         for log_id, raw_text in _iter_raw_logs(Path(zip_path)):
             future = executor.submit(_process_one, year, log_id, raw_text)
-            pending[future] = 1
+            pending[future] = log_id
             submitted += 1
 
             if len(pending) < max_inflight:
@@ -273,10 +280,11 @@ def iter_year_rows(
                 return_when=concurrent.futures.FIRST_COMPLETED,
             )
             for completed in done:
-                pending.pop(completed)
+                log_id = pending.pop(completed)
                 rows, err = completed.result()
                 if err is not None:
                     skipped += 1
+                    _write_skip_log(skip_log_path, year=year, log_id=log_id, error=err)
                 else:
                     for row in rows:
                         emitted += 1
@@ -295,10 +303,11 @@ def iter_year_rows(
                 return_when=concurrent.futures.FIRST_COMPLETED,
             )
             for completed in done:
-                pending.pop(completed)
+                log_id = pending.pop(completed)
                 rows, err = completed.result()
                 if err is not None:
                     skipped += 1
+                    _write_skip_log(skip_log_path, year=year, log_id=log_id, error=err)
                 else:
                     for row in rows:
                         emitted += 1
@@ -310,6 +319,15 @@ def iter_year_rows(
         f"skipped_games={skipped} elapsed={elapsed:.1f}s",
         flush=True,
     )
+
+
+def _write_skip_log(skip_log_path: str | None, *, year: int, log_id: str, error: str) -> None:
+    if skip_log_path is None:
+        return
+    path = Path(skip_log_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"year": year, "log_id": log_id, "error": error}, ensure_ascii=False) + "\n")
 
 
 def build_year_dataset(
@@ -325,6 +343,7 @@ def build_year_dataset(
     token_to_id: Dict[str, int],
     token_dtype: str,
     keep_cache: bool,
+    skip_log_path: Path,
 ) -> None:
     year_out_dir = output_dir / str(year)
     year_cache_dir = cache_root / str(year)
@@ -362,6 +381,7 @@ def build_year_dataset(
                 "convert_path": str(convert_path),
                 "perl_path": perl_path,
                 "token_to_id": token_to_id,
+                "skip_log_path": str(skip_log_path),
             },
             features=features,
             cache_dir=str(year_cache_dir),
@@ -402,6 +422,9 @@ def main() -> int:
     token_to_id = vocab.token_to_id
     token_dtype = "uint16" if len(vocab.tokens) < 2**16 else "uint32"
     cache_root = args.cache_dir if args.cache_dir is not None else (args.output_dir / "_cache")
+    skip_log_path = args.skip_log if args.skip_log is not None else (args.output_dir / "skipped_games.jsonl")
+    if skip_log_path.exists():
+        skip_log_path.unlink()
 
     selected_years = set(args.year)
     archives = _iter_year_archives(args.raw_dir, selected_years)
@@ -421,6 +444,7 @@ def main() -> int:
             token_to_id=token_to_id,
             token_dtype=token_dtype,
             keep_cache=args.keep_cache,
+            skip_log_path=skip_log_path,
         )
 
     if not args.keep_cache:
