@@ -824,6 +824,47 @@ def test_compute_self_options_uses_combined_draw_eval(monkeypatch: pytest.Monkey
     assert observed["is_lingshang"] is False
 
 
+@pytest.mark.parametrize(
+    ("hand", "meld_count", "three_player"),
+    [
+        ("m123p123s12344z111", 0, False),
+        ("m1122p3344s5566z12", 0, False),
+        ("m119p19s19z1234567", 0, False),
+        ("m123p123s123z11", 1, False),
+        ("p1122s33445566z12", 0, True),
+    ],
+)
+def test_fallback_riichi_discard_shanten_covers_common_tenpai_shapes(
+    monkeypatch: pytest.MonkeyPatch,
+    hand: str,
+    meld_count: int,
+    three_player: bool,
+) -> None:
+    monkeypatch.setattr(engine, "PM_FASTAPI_AVAILABLE", False)
+
+    assert engine._pm_has_riichi_discard(parse_hand_counts(hand), meld_count, three_player) is True
+
+
+def test_compute_self_options_offers_riichi_after_closed_kan_in_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_use_multi_player_simulation", lambda _self: False)
+    monkeypatch.setattr(engine, "PM_EVALUATE_DRAW_AVAILABLE", False)
+    monkeypatch.setattr(engine, "PM_FASTAPI_AVAILABLE", False)
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    actor = 0
+    player = tokenizer.players[actor]
+    player.concealed = parse_hand_counts("m123p123s123z11")
+    player.closed_kans = 1
+    player.melds = [("ankan", tile_to_index("z2"))]
+    tokenizer.live_draws_left = tokenizer.seat_count
+
+    opts = tokenizer._compute_self_options(actor=actor, drawn_tile=tile_to_index("m1"), is_gangzimo=True)
+
+    assert "riichi" in opts
+
+
 def test_pm_has_hupai_uses_context_enabled_has_hupai(monkeypatch: pytest.MonkeyPatch) -> None:
     called: dict[str, object] = {}
 
