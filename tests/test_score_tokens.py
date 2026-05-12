@@ -975,6 +975,105 @@ def test_reconstructed_final_scores_account_for_winners_own_riichi_stick(
     assert "TENBO_1000" in tokens[final_score_1:final_score_2]
 
 
+def test_pao_tsumo_uses_fenpei_full_responsibility_payment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: {"tsumo"})
+
+    tokens = TenhouTokenizer().tokenize_game(
+        {
+            "qijia": 0,
+            "defen": [57000, -23000, 33000, 33000],
+            "rank": [1, 4, 2, 3],
+            "log": [
+                [
+                    qipai_event(),
+                    {"zimo": {"l": 0, "p": "z7"}},
+                    {
+                        "hule": {
+                            "l": 0,
+                            "fenpei": [32000, -32000, 0, 0],
+                            "shoupai": "z1112223334445z7",
+                            "hupai": [{"name": "大三元", "fanshu": "*"}],
+                            "damanguan": 1,
+                        }
+                    },
+                ]
+            ],
+        }
+    )
+
+    delta_0 = tokens.index("score_delta_0")
+    delta_1 = tokens.index("score_delta_1")
+    delta_2 = tokens.index("score_delta_2")
+    assert tokens[delta_0:delta_1].count("TENBO_10000") == 3
+    assert "TENBO_2000" in tokens[delta_0:delta_1]
+    assert tokens[delta_1:delta_2].count("TENBO_10000") == 3
+    assert "TENBO_2000" in tokens[delta_1:delta_2]
+    assert "hule_0" in tokens
+    assert "yaku_daisangen" in tokens
+    assert "yakuman_1" in tokens
+
+
+def test_pao_ron_uses_fenpei_split_responsibility_payment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_reaction(
+        _self: TenhouTokenizer,
+        discarder: int,
+        tile_idx: int,
+    ) -> engine.ReactionDecision:
+        return engine.ReactionDecision(
+            discarder=discarder,
+            discard_tile=tile_idx,
+            options_by_player={0: {"ron"}},
+            trigger="discard",
+        )
+
+    tokenizer = TenhouTokenizer()
+    monkeypatch.setattr(tokenizer, "_compute_reaction_options", fake_reaction.__get__(tokenizer, TenhouTokenizer))
+    tokens = tokenizer.tokenize_game(
+        {
+            "qijia": 0,
+            "defen": [57000, 9000, 9000, 25000],
+            "rank": [1, 2, 3, 4],
+            "log": [
+                [
+                    qipai_event(),
+                    {"zimo": {"l": 2, "p": "z7"}},
+                    {"dapai": {"l": 2, "p": "z7"}},
+                    {
+                        "hule": {
+                            "l": 0,
+                            "baojia": 2,
+                            "fenpei": [32000, -16000, -16000, 0],
+                            "shoupai": "z1112223334445z7",
+                            "hupai": [{"name": "大四喜", "fanshu": "*"}],
+                            "damanguan": 1,
+                        }
+                    },
+                ]
+            ],
+        }
+    )
+
+    take_ron = tokens.index("take_react_0_ron")
+    hule = tokens.index("hule_0")
+    delta_0 = tokens.index("score_delta_0")
+    delta_1 = tokens.index("score_delta_1")
+    delta_2 = tokens.index("score_delta_2")
+    delta_3 = tokens.index("score_delta_3")
+    assert take_ron < hule < delta_0
+    assert tokens[delta_0:delta_1].count("TENBO_10000") == 3
+    assert "TENBO_2000" in tokens[delta_0:delta_1]
+    assert "TENBO_6000" in tokens[delta_1:delta_2]
+    assert "TENBO_6000" in tokens[delta_2:delta_3]
+    assert tokenizer.players[0].score == 57000
+    assert tokenizer.players[1].score == 9000
+    assert tokenizer.players[2].score == 9000
+    assert tokenizer.players[3].score == 25000
+
+
 def test_tokenize_game_omits_final_suffix_without_top_level_defen() -> None:
     tokens = TenhouTokenizer().tokenize_game({"log": [[qipai_event(), pingju_event()]]})
     assert "final_score_0" not in tokens
