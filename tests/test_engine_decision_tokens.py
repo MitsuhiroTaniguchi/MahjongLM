@@ -83,6 +83,10 @@ def test_kaigang_does_not_force_self_pass_before_tsumo(monkeypatch: pytest.Monke
     assert "opt_self_0_tsumo" in tokens
     assert "take_self_0_tsumo" in tokens
     assert "pass_self_0_tsumo" not in tokens
+    ankan_idx = tokens.index("take_self_0_ankan")
+    dora_idx = tokens.index("dora", ankan_idx)
+    gang_draw_idx = tokens.index("draw_0_m1", dora_idx)
+    assert ankan_idx < dora_idx < gang_draw_idx
     assert "win_tsumo_0" not in tokens
     assert "score_delta_0" in tokens
     assert "TENBO_ZERO" in tokens
@@ -761,8 +765,43 @@ def test_kaigang_after_minkan_discard_keeps_discard_reaction(
     assert "take_react_0_minkan" in tokens
     dora_tiles = [tokens[i + 1] for i, token in enumerate(tokens[:-1]) if token == "dora"]
     assert "z1" in dora_tiles
-    assert "discard_0_p1_tsumogiri" in tokens
-    assert "pass_react_1_chi_voluntary" in tokens
+    discard_idx = tokens.index("discard_0_p1_tsumogiri")
+    dora_idx = tokens.index("dora", discard_idx)
+    pass_idx = tokens.index("pass_react_1_chi_voluntary")
+    assert discard_idx < dora_idx < pass_idx
+
+
+def test_delayed_kaigang_before_next_kan_draw_emits_before_draw(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: {"kakan"})
+    monkeypatch.setattr(TenhouTokenizer, "_compute_kakan_reaction_options", lambda *_args, **_kwargs: None)
+
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(
+        qipai_payload(
+            hands=[
+                "m123456789p1234",
+                "m888p123s123z1112",
+                "m123456789p1234",
+                "m123456789p1234",
+            ]
+        )
+    )
+    p = tokenizer.players[1]
+    p.concealed = parse_hand_counts("m888p123s123z1112")
+    p.open_melds = 1
+    p.open_pons[tile_to_index("m8")] = 1
+    p.melds = [("pon", tile_to_index("m8"))]
+    tokenizer._invalidate_meld_cache(1)
+    tokenizer.pending_self = SelfDecision(actor=1, options={"kakan"})
+    tokenizer.expected_discard_actor = 1
+
+    tokenizer._on_gang({"l": 1, "m": "m888=8"})
+    tokenizer._on_kaigang({"baopai": "m4"})
+    tokenizer._on_draw({"l": 1, "p": "m9"}, is_gangzimo=True)
+
+    dora_idx = tokenizer.tokens.index("dora")
+    draw_idx = tokenizer.tokens.index("draw_1_m9")
+    assert dora_idx < draw_idx
 
 
 def test_multiple_kaigang_reveals_after_consecutive_kans(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -794,14 +833,16 @@ def test_multiple_kaigang_reveals_after_consecutive_kans(monkeypatch: pytest.Mon
     tokenizer.pending_self = SelfDecision(actor=1, options={"ankan"})
     tokenizer.expected_discard_actor = 1
     tokenizer._on_gang({"l": 1, "m": "z1111"})
-    tokenizer._on_draw({"l": 1, "p": "m9"}, is_gangzimo=True)
     tokenizer._on_kaigang({"baopai": "m4"})
-    tokenizer._on_discard({"l": 1, "p": "p1"})
     tokenizer._on_kaigang({"baopai": "m3"})
+    tokenizer._on_draw({"l": 1, "p": "m9"}, is_gangzimo=True)
+    tokenizer._on_discard({"l": 1, "p": "p1"})
 
     dora_tiles = [tokenizer.tokens[i + 1] for i, token in enumerate(tokenizer.tokens[:-1]) if token == "dora"]
     assert dora_tiles.count("m4") == 1
     assert dora_tiles.count("m3") == 1
+    draw_idx = tokenizer.tokens.index("draw_1_m9")
+    assert tokenizer.tokens.index("dora", 0) < draw_idx
 
 
 def test_last_discard_after_rinshan_still_uses_houtei_context(

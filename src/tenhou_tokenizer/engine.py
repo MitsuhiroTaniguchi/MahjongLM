@@ -717,6 +717,8 @@ class TenhouTokenizer:
         self.expected_draw_actor: Optional[int] = None
         self.expected_discard_actor: Optional[int] = None
         self.awaiting_kaigang = 0
+        self.pending_kan_dora_modes: List[str] = []
+        self.pending_dora_tiles: List[str] = []
         self.pending_dead_wall_draw = False
 
     def tokenize_game(self, game: dict) -> List[str]:
@@ -740,6 +742,8 @@ class TenhouTokenizer:
         self.expected_draw_actor = None
         self.expected_discard_actor = None
         self.awaiting_kaigang = 0
+        self.pending_kan_dora_modes = []
+        self.pending_dora_tiles = []
         self.pending_dead_wall_draw = False
         self.initial_qijia = 0
         self.has_initial_qijia = False
@@ -858,10 +862,15 @@ class TenhouTokenizer:
         self.expected_draw_actor = None
         self.expected_discard_actor = None
         self.awaiting_kaigang = 0
+        self.pending_kan_dora_modes = []
+        self.pending_dora_tiles = []
         saw_qipai = False
         round_ended = False
+        skipped_event_indices: Set[int] = set()
 
         for event_index, event in enumerate(round_data):
+            if event_index in skipped_event_indices:
+                continue
             if not isinstance(event, dict):
                 raise TokenizeError("round event must be a dict")
             if not event:
@@ -911,9 +920,13 @@ class TenhouTokenizer:
                     is_replacement_draw=is_dead_wall_draw,
                 )
             elif key == "gangzimo":
+                reveal_count = self._kaigang_lookahead_count_before_gangzimo()
+                if reveal_count:
+                    self._consume_following_kaigang_events(round_data, event_index, reveal_count, skipped_event_indices)
                 self.pending_dead_wall_draw = False
                 self._on_draw(value, is_gangzimo=True, is_replacement_draw=False)
             elif key == "dapai":
+                self._consume_following_kaigang_events(round_data, event_index, None, skipped_event_indices)
                 self._on_discard(value)
             elif key == "fulou":
                 self._on_fulou(value)
@@ -978,6 +991,59 @@ class TenhouTokenizer:
 
     def _build_dora_block(self, tile: str) -> List[str]:
         return ["dora", tile]
+
+    def _record_kan_dora_mode(self, mode: str) -> None:
+        if mode not in {"immediate", "delayed"}:
+            raise TokenizeError(f"invalid kan dora mode: {mode}")
+        self.pending_kan_dora_modes.append(mode)
+
+    def _emit_pending_dora_reveals(self, count: Optional[int] = None) -> None:
+        if count is None:
+            count = len(self.pending_dora_tiles)
+        if count > len(self.pending_dora_tiles):
+            raise TokenizeError("not enough pending dora reveals")
+        for _ in range(count):
+            tile = self.pending_dora_tiles.pop(0)
+            if self.pending_kan_dora_modes:
+                self.pending_kan_dora_modes.pop(0)
+            self.tokens.extend(self._build_dora_block(tile))
+
+    def _kaigang_lookahead_count_before_gangzimo(self) -> int:
+        if not self.pending_kan_dora_modes:
+            return 0
+        if "immediate" in self.pending_kan_dora_modes:
+            return self.pending_kan_dora_modes.index("immediate") + 1
+        return 0
+
+    def _dora_reveal_count_before_gangzimo(self) -> int:
+        if not self.pending_kan_dora_modes:
+            return 0
+        if "immediate" in self.pending_kan_dora_modes:
+            return self.pending_kan_dora_modes.index("immediate") + 1
+        if self.pending_dora_tiles:
+            return 1
+        return 0
+
+    def _consume_following_kaigang_events(
+        self,
+        round_data: list,
+        event_index: int,
+        max_count: Optional[int],
+        skipped_event_indices: Set[int],
+    ) -> int:
+        consumed = 0
+        lookahead_index = event_index + 1
+        while lookahead_index < len(round_data):
+            if max_count is not None and consumed >= max_count:
+                break
+            lookahead_event = round_data[lookahead_index]
+            if not isinstance(lookahead_event, dict) or "kaigang" not in lookahead_event:
+                break
+            self._on_kaigang(lookahead_event["kaigang"])
+            skipped_event_indices.add(lookahead_index)
+            consumed += 1
+            lookahead_index += 1
+        return consumed
 
     def _build_game_rule_block(self, game: dict) -> List[str]:
         title = game.get("title")
@@ -1523,6 +1589,8 @@ class TenhouTokenizer:
         self.expected_draw_actor = None
         self.expected_discard_actor = None
         self.awaiting_kaigang = 0
+        self.pending_kan_dora_modes = []
+        self.pending_dora_tiles = []
         self.pending_dead_wall_draw = False
 
         self.tokens.extend(
@@ -1558,6 +1626,10 @@ class TenhouTokenizer:
             self.live_draws_left -= 1
         self.last_draw_was_gangzimo = is_gangzimo
 
+        if is_gangzimo:
+            reveal_count = min(len(self.pending_dora_tiles), self._dora_reveal_count_before_gangzimo())
+            if reveal_count:
+                self._emit_pending_dora_reveals(reveal_count)
         self.tokens.append(f"draw_{actor}_{tile_token}")
 
         options = self._compute_self_options(actor, tile_idx, is_gangzimo=is_gangzimo)
@@ -1699,6 +1771,7 @@ class TenhouTokenizer:
 
         discard_kind = "tsumogiri" if is_tsumogiri else "tedashi"
         self.tokens.append(f"discard_{actor}_{tile_token}_{discard_kind}")
+        self._emit_pending_dora_reveals()
 
         if is_riichi:
             self.players[actor].is_riichi = True
@@ -2115,6 +2188,7 @@ class TenhouTokenizer:
         self._finalize_reaction(chosen_details={(actor, action): detail_tokens})
         if action == "minkan":
             self.awaiting_kaigang += 1
+            self._record_kan_dora_mode("delayed")
             p.last_draw_tile = None
             self.expected_draw_actor = actor
             self.expected_discard_actor = None
@@ -2191,6 +2265,7 @@ class TenhouTokenizer:
         if kind == "kakan":
             reaction = self._compute_kakan_reaction_options(actor, tile)
         self.awaiting_kaigang += 1
+        self._record_kan_dora_mode("immediate" if kind == "ankan" else "delayed")
         if reaction:
             self.pending_reaction = reaction
             self.tokens.extend(self._build_reaction_option_block(reaction.options_by_player))
@@ -2203,7 +2278,7 @@ class TenhouTokenizer:
             raise TokenizeError("kaigang is not expected")
         k = self._require_dict(k, field="kaigang")
         tile = token_tile(_strip_tile_suffix(self._require_str(k["baopai"], field="kaigang.baopai"))).replace("0", "5")
-        self.tokens.extend(self._build_dora_block(tile))
+        self.pending_dora_tiles.append(tile)
         self.awaiting_kaigang -= 1
 
     def _on_penuki(self, n: dict) -> None:
