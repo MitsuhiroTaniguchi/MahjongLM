@@ -8,7 +8,9 @@ import sys
 from pathlib import Path
 
 import pytest
+from datasets import Dataset
 
+from gpt2.data import validate_grouped_dataset
 from tenhou_tokenizer import (
     MahjongDataCollatorForCausalLM,
     MahjongGroupBatchSampler,
@@ -178,6 +180,32 @@ def test_group_batch_sampler_keeps_views_together() -> None:
     batches = list(sampler)
 
     assert batches == [[0, 1, 2, 3, 4], [5]]
+
+
+def test_validate_grouped_dataset_accepts_optional_omniscient_view() -> None:
+    rows = []
+    for view_type, viewer_seat in [
+        ("complete", -1),
+        ("omniscient", -1),
+        ("imperfect", 0),
+        ("imperfect", 1),
+        ("imperfect", 2),
+        ("imperfect", 3),
+    ]:
+        rows.append(
+            {
+                "game_id": "g0",
+                "group_id": "g0",
+                "year": 2026,
+                "seat_count": 4,
+                "view_type": view_type,
+                "viewer_seat": viewer_seat,
+                "length": 2,
+                "input_ids": [4, 5],
+            }
+        )
+
+    validate_grouped_dataset(Dataset.from_list(rows))
 
 
 def test_hf_tokenizer_assets_cover_converted_sanma_game() -> None:

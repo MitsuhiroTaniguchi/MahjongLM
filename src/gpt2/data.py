@@ -93,12 +93,26 @@ def validate_grouped_dataset(dataset: Dataset) -> None:
         if len(seat_counts) != 1:
             raise ValueError(f"inconsistent seat_count within group {group_id}")
         seat_count = seat_counts.pop()
-        expected_rows = seat_count + 1
-        if len(rows) != expected_rows:
-            raise ValueError(f"group {group_id} expected {expected_rows} views, found {len(rows)}")
+        unknown_view_types = {
+            row["view_type"]
+            for row in rows
+            if row["view_type"] not in {"complete", "imperfect", "omniscient"}
+        }
+        if unknown_view_types:
+            raise ValueError(f"group {group_id} contains unknown view types: {sorted(unknown_view_types)}")
         complete_rows = [row for row in rows if row["view_type"] == "complete"]
         if len(complete_rows) != 1:
             raise ValueError(f"group {group_id} must contain exactly one complete view")
+        if int(complete_rows[0]["viewer_seat"]) != -1:
+            raise ValueError(f"group {group_id} complete view must use viewer_seat=-1")
+        omniscient_rows = [row for row in rows if row["view_type"] == "omniscient"]
+        if len(omniscient_rows) > 1:
+            raise ValueError(f"group {group_id} must contain at most one omniscient view")
+        if omniscient_rows and int(omniscient_rows[0]["viewer_seat"]) != -1:
+            raise ValueError(f"group {group_id} omniscient view must use viewer_seat=-1")
+        expected_rows = seat_count + 1 + len(omniscient_rows)
+        if len(rows) != expected_rows:
+            raise ValueError(f"group {group_id} expected {expected_rows} views, found {len(rows)}")
         imperfect_viewers = sorted(row["viewer_seat"] for row in rows if row["view_type"] == "imperfect")
         if imperfect_viewers != list(range(seat_count)):
             raise ValueError(

@@ -84,7 +84,7 @@ def _is_rule_token(token: str) -> bool:
 
 
 def _is_view_token(token: str) -> bool:
-    return token == "view_complete" or (
+    return token in {"view_complete", "view_omniscient"} or (
         token.startswith("view_imperfect_") and token.split("_")[-1].isdigit()
     )
 
@@ -137,6 +137,8 @@ def _consume_tile_payload(tokens: Sequence[str], start: int, *, minimum: int, ex
 
 def _consume_round_prelude(tokens: Sequence[str], start: int, *, seat_count: int) -> int:
     idx = start
+    if idx < len(tokens) and tokens[idx] == "wall":
+        idx = _consume_tile_payload(tokens, idx + 1, minimum=136, exact=136)
     assert idx < len(tokens) and tokens[idx].startswith("bakaze_")
     idx += 1
     assert idx < len(tokens) and tokens[idx].startswith("kyoku_")
@@ -488,12 +490,13 @@ def validate_score_rotation(game: dict) -> None:
             tokenizer.has_initial_qijia = True
         for round_data in rounds:
             tokenizer._process_round(round_data)
-        if "defen" in game:
-            final_scores = game["defen"]
-        else:
-            final_scores = None
-        if final_scores is not None and "rank" in game:
-            assert tokenizer._compute_final_rank_places(final_scores) == game["rank"]
+        if "rank" in game:
+            final_scores = tokenizer._current_game_order_scores()
+            # Older Tenhou logs can expose rounded top-level owari/defen values,
+            # so top-level rank is only a reliable validator when defen matches
+            # the exact score reconstructed from round deltas.
+            if game.get("defen") == final_scores:
+                assert tokenizer._compute_final_rank_places(final_scores) == game["rank"]
 
 
 def validate_player_state_invariants(tokenizer: TenhouTokenizer) -> None:

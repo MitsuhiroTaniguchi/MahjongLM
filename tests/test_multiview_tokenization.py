@@ -162,7 +162,9 @@ def test_omniscient_view_adds_wall_blocks_without_changing_existing_views() -> N
     assert seeded_views[2].tokens == unseeded_views[1].tokens
 
     omniscient = seeded_views[1]
-    assert omniscient.tokens[1] == TOKEN_VIEW_OMNISCIENT
+    view_index = omniscient.tokens.index(TOKEN_VIEW_OMNISCIENT)
+    assert all(token.startswith("rule_") for token in omniscient.tokens[:view_index])
+    assert omniscient.tokens[view_index + 1] == "game_start"
     round_start_index = omniscient.tokens.index("round_start")
     assert omniscient.tokens[round_start_index + 1] == "wall"
     first_wall = omniscient.tokens[round_start_index + 2 : round_start_index + 138]

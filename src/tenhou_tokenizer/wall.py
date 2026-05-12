@@ -9,6 +9,20 @@ from typing import Iterable
 from .engine import TokenizeError, _parse_tiles, token_tile
 
 
+def _expected_wall_counter() -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for suit in ("m", "p", "s"):
+        for number in range(1, 10):
+            if number == 5:
+                counts[f"{suit}0"] = 1
+                counts[f"{suit}5"] = 3
+            else:
+                counts[f"{suit}{number}"] = 4
+    for number in range(1, 8):
+        counts[f"z{number}"] = 4
+    return counts
+
+
 class MT19937ar:
     """Minimal mt19937ar port for Tenhou shuffle seed replay."""
 
@@ -135,10 +149,23 @@ def _round_observed_tile_tokens(round_data: list[dict]) -> list[str]:
                 for hand in shoupai:
                     if isinstance(hand, str):
                         observed.extend(_parse_tiles(hand, stop_at_comma=True, context="omniscient_wall_qipai"))
+            baopai = value.get("baopai")
+            if isinstance(baopai, str):
+                observed.append(token_tile(baopai.replace("*", "").replace("_", "")))
         elif key in {"zimo", "gangzimo"}:
             tile = value.get("p")
             if isinstance(tile, str):
                 observed.append(token_tile(tile.replace("*", "").replace("_", "")))
+        elif key == "kaigang":
+            baopai = value.get("baopai")
+            if isinstance(baopai, str):
+                observed.append(token_tile(baopai.replace("*", "").replace("_", "")))
+        elif key == "hule":
+            fubaopai = value.get("fubaopai")
+            if isinstance(fubaopai, list):
+                for tile in fubaopai:
+                    if isinstance(tile, str):
+                        observed.append(token_tile(tile.replace("*", "").replace("_", "")))
     return observed
 
 
@@ -155,6 +182,8 @@ def assert_wall_consistent_with_game(game: dict, wall_tokens_by_round: list[list
             raise TokenizeError("round data must be a list for wall assertion")
         if len(wall_tokens) != 136:
             raise TokenizeError(f"wall must contain 136 tiles: round={round_index} len={len(wall_tokens)}")
+        if Counter(wall_tokens) != _expected_wall_counter():
+            raise TokenizeError(f"wall tile multiset is invalid: round={round_index}")
         remaining = Counter(wall_tokens)
         for tile in _round_observed_tile_tokens(round_data):
             remaining[tile] -= 1

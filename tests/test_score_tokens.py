@@ -904,13 +904,13 @@ def test_tokenize_game_emits_game_end_before_final_scores_and_ranks() -> None:
     assert tokens[round_end_idx : game_end_idx + 1] == ["round_end", "game_end"]
 
 
-def test_tokenize_game_uses_top_level_final_defen_for_final_score_block() -> None:
+def test_tokenize_game_uses_reconstructed_final_scores_instead_of_top_level_defen() -> None:
     tokens = TenhouTokenizer().tokenize_game(
         {
             "qijia": 0,
             "defen": [26000, 24000, 25000, 25000],
             "rank": [1, 4, 2, 3],
-            "log": [[qipai_event(), pingju_event()]],
+            "log": [[qipai_event(), pingju_event(fenpei=[500, -500, 0, 0])]],
         }
     )
     final_score_idx = tokens.index("final_score_0")
@@ -919,9 +919,9 @@ def test_tokenize_game_uses_top_level_final_defen_for_final_score_block() -> Non
         "TENBO_PLUS",
         "TENBO_10000",
         "TENBO_10000",
-        "TENBO_6000",
+        "TENBO_5000",
     ]
-    assert "TENBO_1000" not in tokens[final_score_idx : tokens.index("final_score_1")]
+    assert "TENBO_500" in tokens[final_score_idx : tokens.index("final_score_1")]
 
 
 def test_tokenize_game_omits_final_suffix_without_top_level_defen() -> None:
@@ -942,13 +942,13 @@ def test_tokenize_game_requires_qijia_for_tied_final_rank_reconstruction() -> No
         )
 
 
-def test_tokenize_game_validates_top_level_final_rank() -> None:
+def test_tokenize_game_validates_top_level_final_rank_shape() -> None:
     with pytest.raises(TokenizeError, match="game.rank"):
         TenhouTokenizer().tokenize_game(
             {
                 "qijia": 0,
                 "defen": [25000, 25000, 25000, 25000],
-                "rank": [4, 3, 2, 1],
+                "rank": [4, 3, 2],
                 "log": [[qipai_event(), pingju_event()]],
             }
         )
