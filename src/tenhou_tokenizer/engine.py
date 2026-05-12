@@ -1303,11 +1303,11 @@ class TenhouTokenizer:
         if called_tile is None:
             return None
         if called_tile == sorted_tiles[0]:
-            return "low"
+            return "high"
         if called_tile == sorted_tiles[1]:
             return "mid"
         if called_tile == sorted_tiles[2]:
-            return "high"
+            return "low"
         return None
 
     def _red_choice_token(

@@ -471,7 +471,7 @@ def test_fulou_resolution_keeps_take_at_opt_order_position() -> None:
 
     pass_idx = tokenizer.tokens.index("pass_react_1_pon_voluntary")
     take_idx = tokenizer.tokens.index("take_react_0_chi")
-    detail_idx = tokenizer.tokens.index("chi_pos_low")
+    detail_idx = tokenizer.tokens.index("chi_pos_high")
     assert pass_idx < take_idx < detail_idx
 
 
@@ -1110,9 +1110,9 @@ def test_fulou_no_longer_emits_call_token(monkeypatch: pytest.MonkeyPatch) -> No
 @pytest.mark.parametrize(
     ("meld", "discard", "hand", "expected"),
     [
-        ("m-456", "m4", "m56p123456s123z11", "chi_pos_low"),
+        ("m-456", "m4", "m56p123456s123z11", "chi_pos_high"),
         ("m4-56", "m5", "m46p123456s123z11", "chi_pos_mid"),
-        ("m45-6", "m6", "m45p123456s123z11", "chi_pos_high"),
+        ("m45-6", "m6", "m45p123456s123z11", "chi_pos_low"),
     ],
 )
 def test_fulou_emits_chi_position_token(
@@ -1153,9 +1153,9 @@ def test_fulou_emits_red_used_when_choice_exists(monkeypatch: pytest.MonkeyPatch
 
     tokens = TenhouTokenizer().tokenize_game(game)
     assert "take_react_0_chi" in tokens
-    assert "chi_pos_high" in tokens
+    assert "chi_pos_low" in tokens
     assert "red_used" in tokens
-    assert tokens.index("take_react_0_chi") < tokens.index("chi_pos_high") < tokens.index("red_used")
+    assert tokens.index("take_react_0_chi") < tokens.index("chi_pos_low") < tokens.index("red_used")
 
 
 def test_fulou_emits_red_not_used_when_choice_exists(monkeypatch: pytest.MonkeyPatch) -> None:
