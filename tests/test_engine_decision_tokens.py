@@ -639,6 +639,45 @@ def test_gangzimo_last_tile_draw_eval_uses_lingshang_and_haidi(
     assert "opt_self_0_tsumo" in tokenizer.tokens
 
 
+@pytest.mark.parametrize(
+    ("draw_kwargs", "seat_count"),
+    [
+        ({"is_gangzimo": True}, 4),
+        ({"is_gangzimo": True, "is_replacement_draw": True}, 3),
+    ],
+)
+def test_dead_wall_draws_emit_all_self_options_returned_by_evaluator(
+    monkeypatch: pytest.MonkeyPatch,
+    draw_kwargs: dict[str, bool],
+    seat_count: int,
+) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer.seat_count = seat_count
+    tokenizer._on_qipai(qipai_payload(seat_count=seat_count))
+    if draw_kwargs.get("is_replacement_draw"):
+        tokenizer.players[0].concealed[tile_to_index("z4")] += 1
+        tokenizer.pending_self = engine.SelfDecision(actor=0, options={"penuki"}, option_tiles={"penuki": ["z4"]})
+        monkeypatch.setattr(TenhouTokenizer, "_compute_penuki_reaction_options", lambda *_args, **_kwargs: None)
+        tokenizer._on_penuki({"l": 0, "p": "z4"})
+        draw_kwargs = {
+            "is_gangzimo": tokenizer.pending_dead_wall_draw,
+            "is_replacement_draw": tokenizer.pending_dead_wall_draw,
+        }
+
+    all_options = {"tsumo", "kyushukyuhai", "penuki", "riichi", "ankan", "kakan"}
+    monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: set(all_options))
+    monkeypatch.setattr(
+        TenhouTokenizer,
+        "_self_option_tiles",
+        lambda *_args, **_kwargs: {"tsumo": ["m1"], "penuki": ["z4"], "ankan": ["m1"], "kakan": ["m2"]},
+    )
+
+    tokenizer._on_draw({"l": 0, "p": "m1"}, **draw_kwargs)
+
+    for option in all_options:
+        assert f"opt_self_0_{option}" in tokenizer.tokens
+
+
 def test_last_rinshan_discard_sets_houtei_context(monkeypatch: pytest.MonkeyPatch) -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
