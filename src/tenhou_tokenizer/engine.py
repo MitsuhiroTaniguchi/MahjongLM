@@ -989,8 +989,10 @@ class TenhouTokenizer:
     def _apply_riichi_stick(self, actor: int) -> None:
         self.players[actor].score -= 1000
 
-    def _build_dora_block(self, tile: str) -> List[str]:
-        return ["dora", tile]
+    def _build_dora_block(self, *tiles: str) -> List[str]:
+        if not tiles:
+            raise TokenizeError("dora block requires at least one tile")
+        return ["dora", *tiles]
 
     def _record_kan_dora_mode(self, mode: str) -> None:
         if mode not in {"immediate", "delayed"}:
@@ -1002,11 +1004,13 @@ class TenhouTokenizer:
             count = len(self.pending_dora_tiles)
         if count > len(self.pending_dora_tiles):
             raise TokenizeError("not enough pending dora reveals")
+        tiles: List[str] = []
         for _ in range(count):
-            tile = self.pending_dora_tiles.pop(0)
+            tiles.append(self.pending_dora_tiles.pop(0))
             if self.pending_kan_dora_modes:
                 self.pending_kan_dora_modes.pop(0)
-            self.tokens.extend(self._build_dora_block(tile))
+        if tiles:
+            self.tokens.extend(self._build_dora_block(*tiles))
 
     def _kaigang_lookahead_count_before_gangzimo(self) -> int:
         if not self.pending_kan_dora_modes:

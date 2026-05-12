@@ -799,7 +799,9 @@ def test_delayed_kaigang_before_next_kan_draw_emits_before_draw(monkeypatch: pyt
     tokenizer._on_kaigang({"baopai": "m4"})
     tokenizer._on_draw({"l": 1, "p": "m9"}, is_gangzimo=True)
 
-    dora_idx = tokenizer.tokens.index("dora")
+    dora_idx = next(
+        i for i, token in enumerate(tokenizer.tokens[:-2]) if token == "dora" and tokenizer.tokens[i + 1] == "m4"
+    )
     draw_idx = tokenizer.tokens.index("draw_1_m9")
     assert dora_idx < draw_idx
 
@@ -840,9 +842,12 @@ def test_multiple_kaigang_reveals_after_consecutive_kans(monkeypatch: pytest.Mon
 
     dora_tiles = [tokenizer.tokens[i + 1] for i, token in enumerate(tokenizer.tokens[:-1]) if token == "dora"]
     assert dora_tiles.count("m4") == 1
-    assert dora_tiles.count("m3") == 1
+    dora_idx = next(
+        i for i, token in enumerate(tokenizer.tokens[:-2]) if token == "dora" and tokenizer.tokens[i + 1] == "m4"
+    )
+    assert tokenizer.tokens[dora_idx : dora_idx + 3] == ["dora", "m4", "m3"]
     draw_idx = tokenizer.tokens.index("draw_1_m9")
-    assert tokenizer.tokens.index("dora", 0) < draw_idx
+    assert dora_idx < draw_idx
 
 
 def test_last_discard_after_rinshan_still_uses_houtei_context(

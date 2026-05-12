@@ -411,8 +411,10 @@ class TokenStreamFSM:
             return True
         if token == "dora":
             assert self.pending_kaigang_reveals > 0
-            self.idx = _consume_tile_payload(self.tokens, self.idx + 1, minimum=1, exact=1)
-            self.pending_kaigang_reveals -= 1
+            start = self.idx + 1
+            self.idx = _consume_tile_payload(self.tokens, start, minimum=1)
+            self.pending_kaigang_reveals -= self.idx - start
+            assert self.pending_kaigang_reveals >= 0
             return True
         if _is_discard_token(token):
             self.idx += 1
@@ -550,7 +552,7 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
                 idx += 1
                 continue
             if token == "dora":
-                idx = _consume_tile_payload(emitted, idx + 1, minimum=1, exact=1)
+                idx = _consume_tile_payload(emitted, idx + 1, minimum=1)
                 continue
             raise AssertionError(f"unexpected draw-prefix token: {token}")
         idx = draw_idx + 1
@@ -580,7 +582,7 @@ def validate_event_token_slice(event_key: str, emitted: Sequence[str]) -> None:
             raise AssertionError(f"unexpected discard-prefix token: {token}")
         idx = discard_idx + 1
         while idx < len(emitted) and emitted[idx] == "dora":
-            idx = _consume_tile_payload(emitted, idx + 1, minimum=1, exact=1)
+            idx = _consume_tile_payload(emitted, idx + 1, minimum=1)
         assert all(token.startswith("opt_react_") for token in emitted[idx:])
         return
 
