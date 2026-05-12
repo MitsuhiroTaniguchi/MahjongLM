@@ -1708,7 +1708,7 @@ class TenhouTokenizer:
                 not p.is_riichi
                 and p.open_melds == 0
                 and p.score >= 1000
-                and self.live_draws_left >= 4
+                and self.live_draws_left >= self.seat_count
             )
             is_haidi = self.live_draws_left == 0 and not is_gangzimo
             can_tsumo, has_riichi_discard = self._evaluate_draw(

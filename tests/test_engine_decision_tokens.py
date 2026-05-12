@@ -106,6 +106,66 @@ def test_riichi_take_does_not_emit_riichi_event_token(monkeypatch: pytest.Monkey
     assert "riichi_0" not in tokenizer.tokens
 
 
+@pytest.mark.parametrize(
+    ("seat_count", "live_draws_after_draw", "should_offer"),
+    [
+        (4, 4, True),
+        (4, 3, False),
+        (3, 3, True),
+        (3, 2, False),
+    ],
+)
+def test_riichi_option_requires_next_self_draw_by_seat_count(
+    monkeypatch: pytest.MonkeyPatch,
+    seat_count: int,
+    live_draws_after_draw: int,
+    should_offer: bool,
+) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_use_multi_player_simulation", lambda _self: False)
+    monkeypatch.setattr(TenhouTokenizer, "_evaluate_draw", lambda *_args, **_kwargs: (False, True))
+    hands = ["m123456789p1234"] * seat_count
+    tokenizer = TenhouTokenizer()
+    tokenizer.seat_count = seat_count
+    tokenizer._on_qipai(qipai_payload(hands=hands, seat_count=seat_count))
+    tokenizer.live_draws_left = live_draws_after_draw
+
+    options = tokenizer._compute_self_options(actor=0, drawn_tile=tile_to_index("m1"))
+
+    assert ("riichi" in options) is should_offer
+
+
+@pytest.mark.parametrize(
+    ("seat_count", "draw_kwargs", "live_draws_before_draw", "should_offer"),
+    [
+        (4, {"is_gangzimo": True}, 5, True),
+        (4, {"is_gangzimo": True}, 4, False),
+        (3, {"is_gangzimo": True}, 4, True),
+        (3, {"is_gangzimo": True}, 3, False),
+        (3, {"is_gangzimo": True, "is_replacement_draw": True}, 4, True),
+        (3, {"is_gangzimo": True, "is_replacement_draw": True}, 3, False),
+    ],
+)
+def test_riichi_option_uses_live_draws_after_replacement_draw_decrement(
+    monkeypatch: pytest.MonkeyPatch,
+    seat_count: int,
+    draw_kwargs: dict[str, bool],
+    live_draws_before_draw: int,
+    should_offer: bool,
+) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_use_multi_player_simulation", lambda _self: False)
+    monkeypatch.setattr(TenhouTokenizer, "_evaluate_draw", lambda *_args, **_kwargs: (False, True))
+    hands = ["m123456789p1234"] * seat_count
+    tokenizer = TenhouTokenizer()
+    tokenizer.seat_count = seat_count
+    tokenizer._on_qipai(qipai_payload(hands=hands, seat_count=seat_count))
+    tokenizer.live_draws_left = live_draws_before_draw
+
+    tokenizer._on_draw({"l": 0, "p": "m1"}, **draw_kwargs)
+
+    assert tokenizer.live_draws_left == live_draws_before_draw - 1
+    assert (f"opt_self_0_riichi" in tokenizer.tokens) is should_offer
+
+
 def test_riichi_discard_ron_does_not_deduct_stick(monkeypatch: pytest.MonkeyPatch) -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
