@@ -804,6 +804,22 @@ def test_riichi_okurigang_is_not_allowed(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "ankan" not in opts
 
 
+def test_riichi_okurigang_example_with_different_draw_tile_is_not_offered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    actor = 0
+    player = tokenizer.players[actor]
+    player.is_riichi = True
+    player.concealed = parse_hand_counts("m123p123s4444567z1")
+
+    monkeypatch.setattr(TenhouTokenizer, "_evaluate_draw", lambda *_args, **_kwargs: (False, False))
+
+    opts = tokenizer._compute_self_options(actor=actor, drawn_tile=tile_to_index("s7"))
+    assert "ankan" not in opts
+
+
 def test_riichi_ankan_uses_pre_draw_waits_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
