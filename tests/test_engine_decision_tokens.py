@@ -1033,6 +1033,64 @@ def test_kyushukyuhai_is_not_offered_after_other_player_calls() -> None:
     assert "pass_self_2_kyushukyuhai" not in tokens
 
 
+def test_kyushukyuhai_is_not_offered_after_penuki() -> None:
+    hands = [
+        "m119p119s19z12344",
+        "m123456789p1234",
+        "m123456789p1234",
+    ]
+    game = minimal_game(
+        [
+            qipai_event(hands=hands, seat_count=3),
+            {"zimo": {"l": 0, "p": "m9"}},
+            {"penuki": {"l": 0, "p": "z4"}},
+            {"zimo": {"l": 0, "p": "z5"}},
+            {"dapai": {"l": 0, "p": "z5_"}},
+        ]
+    )
+
+    tokens = TenhouTokenizer().tokenize_game(game)
+
+    first_draw_idx = tokens.index("draw_0_m9")
+    replacement_draw_idx = tokens.index("draw_0_z5")
+    first_draw_block = tokens[first_draw_idx:replacement_draw_idx]
+    replacement_draw_block = tokens[replacement_draw_idx:]
+    assert "opt_self_0_kyushukyuhai" in first_draw_block
+    assert "opt_self_0_penuki" in first_draw_block
+    assert "pass_self_0_kyushukyuhai" in first_draw_block
+    assert "take_self_0_penuki" in first_draw_block
+    assert "opt_self_0_kyushukyuhai" not in replacement_draw_block
+
+
+def test_kyushukyuhai_is_not_offered_after_other_player_penuki() -> None:
+    hands = [
+        "m123456789p1234",
+        "m123456789p123z4",
+        "m1199p19s19z12345",
+    ]
+    game = minimal_game(
+        [
+            qipai_event(hands=hands, seat_count=3),
+            {"zimo": {"l": 0, "p": "m1"}},
+            {"dapai": {"l": 0, "p": "m1_"}},
+            {"zimo": {"l": 1, "p": "p4"}},
+            {"penuki": {"l": 1, "p": "z4"}},
+            {"zimo": {"l": 1, "p": "m2"}},
+            {"dapai": {"l": 1, "p": "m2_"}},
+            {"zimo": {"l": 2, "p": "m2"}},
+            {"dapai": {"l": 2, "p": "m2_"}},
+        ]
+    )
+
+    tokens = TenhouTokenizer().tokenize_game(game)
+
+    own_first_draw_idx = tokens.index("draw_2_m2")
+    own_first_draw_block = tokens[own_first_draw_idx:]
+    assert "take_self_1_penuki" in tokens
+    assert "opt_self_2_kyushukyuhai" not in own_first_draw_block
+    assert "pass_self_2_kyushukyuhai" not in own_first_draw_block
+
+
 def test_kyushukyuhai_is_emitted_as_take_on_pingju() -> None:
     kyushu_hand = "m1199p19s19z12345"
     game = minimal_game(
