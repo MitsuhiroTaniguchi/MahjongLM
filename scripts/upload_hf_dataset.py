@@ -62,7 +62,7 @@ Train/validation splits are created deterministically by the training pipeline a
 - `input_ids` are ready to use for causal language modeling without additional tokenization.
 - Training code wraps each sequence with `<bos>` and `<eos>`.
 - `round_start` / `round_end` delimit each hand; `game_start` / `game_end` delimit the game log.
-- Win detail blocks begin with `hule_{seat}` and score deltas are emitted once after all win details.
+- Win result blocks begin with one or more `hule_{seat}` markers. For multiple wins, shared `ura_dora` reveal tiles are emitted once after those markers, then each winner detail follows, and score deltas are emitted once after all win details.
 - Self and reaction decisions are emitted as `opt_*` followed by matching `take_*` / `pass_*` tokens in option order.
 - Kan dora timing follows Tenhou behavior: ankan reveals immediately before the replacement draw; minkan/kakan reveals after the following discard or before a chained replacement draw.
 - Kyushukyuhai result `opened_hand_*` contains exactly 14 tiles including the draw tile. North extraction (`penuki`) is treated like a call for first-turn kyushukyuhai suppression.
