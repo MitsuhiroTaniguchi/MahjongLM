@@ -6,6 +6,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,7 @@ PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 TRAIN = ROOT / "scripts" / "train_qwen3.py"
 DATASET_ROOT = ROOT / "data" / "huggingface_datasets_omniscient"
 WANDB_PROJECT = "mahjongLM_qwen3_plain_omniscient_sweep"
+PUBLISH_ROOT = ROOT / "outputs" / "omniscient_publish"
 
 
 @dataclass(frozen=True)
@@ -216,13 +218,14 @@ def run_training(cmd: list[str], *, run_root: Path, log_file: Path) -> None:
     )
 
 
-def run_model(spec: ModelSpec, run_root: Path) -> None:
+def run_model(spec: ModelSpec, run_root: Path) -> Path:
     run_name = f"q{spec.key}-omniscient-allyears-0p2ep-{now_slug()}"
     output_dir = ROOT / "outputs" / run_name
     stop_file = output_dir / "STOP"
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"=== training {spec.key}: {run_name} ===", flush=True)
     run_training(build_train_command(spec, output_dir, run_name, stop_file), run_root=run_root, log_file=run_root / f"{spec.key}.log")
+    return output_dir
 
 
 def parse_args() -> argparse.Namespace:
@@ -234,6 +237,12 @@ def parse_args() -> argparse.Namespace:
         default=[spec.key for spec in MODEL_SPECS],
     )
     parser.add_argument("--run-root", type=Path, default=ROOT / "outputs" / f"omniscient_sweep_{now_slug()}")
+    parser.add_argument(
+        "--publish",
+        action="store_true",
+        help="Publish each model raw checkpoint and Q4_K_M GGUF immediately after it finishes.",
+    )
+    parser.add_argument("--publish-root", type=Path, default=PUBLISH_ROOT)
     return parser.parse_args()
 
 
@@ -245,10 +254,24 @@ def main() -> None:
     if missing:
         raise FileNotFoundError("omniscient dataset directories are missing:\n" + "\n".join(missing))
     args.run_root.mkdir(parents=True, exist_ok=True)
+    publish_model: Callable[[str, Path], None] | None = None
+    if args.publish:
+        from publish_omniscient_models import MODEL_SPECS as PUBLISH_SPECS
+        from publish_omniscient_models import publish_existing
+
+        args.publish_root.mkdir(parents=True, exist_ok=True)
+
+        def _publish_model(key: str, output_dir: Path) -> None:
+            publish_existing(PUBLISH_SPECS[key], output_dir, args.publish_root)
+
+        publish_model = _publish_model
     selected = set(args.models)
     for spec in MODEL_SPECS:
         if spec.key in selected:
-            run_model(spec, args.run_root)
+            output_dir = run_model(spec, args.run_root)
+            if publish_model is not None:
+                print(f"=== publishing {spec.key}: {output_dir} ===", flush=True)
+                publish_model(spec.key, output_dir)
     print("=== complete ===", flush=True)
 
 

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from datasets import load_from_disk
 from huggingface_hub import HfApi
+from huggingface_hub.utils import get_token
 
 
 README_TEXT = """---
@@ -41,6 +42,14 @@ It is intended for pretraining and evaluating MahjongLM-family models on long-fo
 - `length`
 - `input_ids`
 
+`view_type` is one of:
+
+- `complete`: full public game state.
+- `imperfect`: player-perspective view. `viewer_seat` identifies the player perspective.
+- `omniscient`: complete view plus a reconstructed wall block.
+
+The `omniscient` view inserts `wall` immediately after each `round_start`, followed by the full 136-tile wall including red fives (`m0`, `p0`, `s0`). Omniscient rows are emitted only when the Tenhou shuffle seed is available and the reconstructed wall is consistent with the observed hands, draws, dora indicators, and result data.
+
 ## Splits
 
 This repository stores the full yearly training corpora only.
@@ -51,6 +60,13 @@ Train/validation splits are created deterministically by the training pipeline a
 - `group_id` is omitted from the public release.
 - The dataset is pre-tokenized for MahjongLM training.
 - `input_ids` are ready to use for causal language modeling without additional tokenization.
+- Training code wraps each sequence with `<bos>` and `<eos>`.
+- `round_start` / `round_end` delimit each hand; `game_start` / `game_end` delimit the game log.
+- Win detail blocks begin with `hule_{seat}` and score deltas are emitted once after all win details.
+- Self and reaction decisions are emitted as `opt_*` followed by matching `take_*` / `pass_*` tokens in option order.
+- Kan dora timing follows Tenhou behavior: ankan reveals immediately before the replacement draw; minkan/kakan reveals after the following discard or before a chained replacement draw.
+- Kyushukyuhai result `opened_hand_*` contains exactly 14 tiles including the draw tile. North extraction (`penuki`) is treated like a call for first-turn kyushukyuhai suppression.
+- Chi position tokens describe the consumed-tile side: `chi_pos_low` / `chi_pos_high`.
 
 ## Intended Use
 
@@ -178,7 +194,7 @@ def clean_remote_repo(api: HfApi, repo_id: str, token: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Prepare and upload the public MahjongLM dataset to Hugging Face.")
     parser.add_argument("--repo-id", required=True, help="Dataset repo id, e.g. mitsutani/mahjonglm-dataset")
-    parser.add_argument("--token", required=True, help="HF write token")
+    parser.add_argument("--token", default=None, help="HF write token. Defaults to HF_TOKEN/cache login.")
     parser.add_argument("--source-dir", type=Path, default=Path("data/processed"))
     parser.add_argument("--tokenizer-dir", type=Path, default=Path("tokenizer"))
     parser.add_argument("--export-dir", type=Path, default=_default_export_dir())
@@ -195,11 +211,15 @@ def main() -> None:
             f"choose a directory outside {repo_root}"
         )
 
-    api = HfApi(token=args.token)
+    token = args.token or get_token()
+    if not token:
+        raise RuntimeError("HF token not found. Set HF_TOKEN or run huggingface-cli login.")
+
+    api = HfApi(token=token)
     api.create_repo(repo_id=args.repo_id, repo_type="dataset", exist_ok=True)
 
     export_clean_dataset(source_dir, export_dir, tokenizer_dir)
-    clean_remote_repo(api, args.repo_id, args.token)
+    clean_remote_repo(api, args.repo_id, token)
 
     print("Uploading cleaned dataset export ...")
     api.upload_large_folder(
