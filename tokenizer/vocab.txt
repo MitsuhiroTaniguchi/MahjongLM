@@ -9,11 +9,13 @@ view_imperfect_0
 view_imperfect_1
 view_imperfect_2
 view_imperfect_3
+view_omniscient
 rule_player_3
 rule_player_4
 rule_length_tonpu
 rule_length_hanchan
 round_start
+wall
 round_end
 bakaze_0
 bakaze_1
@@ -824,5 +826,3 @@ pingju_sufurenda
 pingju_sukantsu
 pingju_suuchariichi
 pingju_sanchahou
-view_omniscient
-wall
