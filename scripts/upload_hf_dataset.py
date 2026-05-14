@@ -137,12 +137,13 @@ def export_clean_dataset(source_dir: Path, export_dir: Path, tokenizer_dir: Path
         raise RuntimeError(f"no yearly datasets found under {source_dir}")
 
     for year_dir in year_dirs:
-        print(f"Exporting {year_dir.name} ...")
+        print(f"Exporting {year_dir.name} ...", flush=True)
         dataset = load_from_disk(str(year_dir))
         removable = [column for column in ("group_id",) if column in dataset.column_names]
         if removable:
             dataset = dataset.remove_columns(removable)
-        dataset.save_to_disk(str(export_dir / year_dir.name))
+        dataset.save_to_disk(str(export_dir / year_dir.name), max_shard_size="512MB")
+        print(f"Exported {year_dir.name}: {dataset.num_rows} rows", flush=True)
 
     tokenizer_export_dir = export_dir / "tokenizer"
     shutil.copytree(tokenizer_dir, tokenizer_export_dir, dirs_exist_ok=True)
@@ -154,7 +155,7 @@ def clean_remote_repo(api: HfApi, repo_id: str, token: str) -> None:
     existing_files = set(api.list_repo_files(repo_id, repo_type="dataset"))
     year_dirs = sorted({path.split("/")[0] for path in existing_files if "/" in path and path.split("/")[0].isdigit()})
     for year in year_dirs:
-        print(f"Deleting remote folder {year}/ ...")
+        print(f"Deleting remote folder {year}/ ...", flush=True)
         api.delete_folder(
             path_in_repo=year,
             repo_id=repo_id,
@@ -163,7 +164,7 @@ def clean_remote_repo(api: HfApi, repo_id: str, token: str) -> None:
             commit_message=f"Remove old {year} dataset export",
         )
     if "tokenizer/tokenizer.json" in existing_files:
-        print("Deleting remote folder tokenizer/ ...")
+        print("Deleting remote folder tokenizer/ ...", flush=True)
         api.delete_folder(
             path_in_repo="tokenizer",
             repo_id=repo_id,
@@ -172,7 +173,7 @@ def clean_remote_repo(api: HfApi, repo_id: str, token: str) -> None:
             commit_message="Remove old tokenizer export",
         )
     if any(path.startswith(".ingested/") for path in existing_files):
-        print("Deleting remote folder .ingested/ ...")
+        print("Deleting remote folder .ingested/ ...", flush=True)
         api.delete_folder(
             path_in_repo=".ingested",
             repo_id=repo_id,
@@ -181,7 +182,7 @@ def clean_remote_repo(api: HfApi, repo_id: str, token: str) -> None:
             commit_message="Remove internal ingestion markers",
         )
     if ".DS_Store" in existing_files:
-        print("Deleting remote file .DS_Store ...")
+        print("Deleting remote file .DS_Store ...", flush=True)
         api.delete_file(
             path_in_repo=".DS_Store",
             repo_id=repo_id,
@@ -221,7 +222,7 @@ def main() -> None:
     export_clean_dataset(source_dir, export_dir, tokenizer_dir)
     clean_remote_repo(api, args.repo_id, token)
 
-    print("Uploading cleaned dataset export ...")
+    print("Uploading cleaned dataset export ...", flush=True)
     api.upload_large_folder(
         repo_id=args.repo_id,
         repo_type="dataset",
