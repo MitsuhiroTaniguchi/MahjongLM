@@ -247,7 +247,7 @@ my $paipu = {};
 my $log;
 my $zimo;
 my $gang;
-my $baopai;
+my @baopai;
 my $lizhi;
 
 for (join('', <>) =~ /<.*?>/g) {
@@ -271,6 +271,7 @@ for (join('', <>) =~ /<.*?>/g) {
     elsif ($elem eq 'INIT') {
         @fulou = map { [] } (0 .. $player_count - 1);
         @nuki  = map { [] } (0 .. $player_count - 1);
+        @baopai = ();
         $oya = $attr{oya};
         $log = [ qipai(%attr) ];
         push(@{$paipu->{log}}, $log);
@@ -286,9 +287,9 @@ for (join('', <>) =~ /<.*?>/g) {
         }
         $zimo = $2;
         undef $gang;
-        if ($baopai) {
-            push(@$log, { kaigang => { baopai => $baopai } });
-            undef $baopai;
+        if (@baopai) {
+            push(@$log, map { { kaigang => { baopai => $_ } } } @baopai);
+            @baopai = ();
         }
     }
     elsif ($elem =~ /^([DEFG])(\d+)$/) {
@@ -298,9 +299,9 @@ for (join('', <>) =~ /<.*?>/g) {
         $p .= '*'   if ($lizhi);
         push(@$log, { dapai => { l => $l, p => $p} });
         undef $lizhi;
-        if ($baopai) {
-            push(@$log, { kaigang => { baopai => $baopai } });
-            undef $baopai;
+        if (@baopai) {
+            push(@$log, map { { kaigang => { baopai => $_ } } } @baopai);
+            @baopai = ();
         }
     }
     elsif ($elem eq 'N') {
@@ -323,15 +324,23 @@ for (join('', <>) =~ /<.*?>/g) {
         }
     }
     elsif ($elem eq 'DORA') {
-        $baopai = pai($attr{hai});
+        push(@baopai, pai($attr{hai}));
     }
     elsif ($elem eq 'REACH' && $attr{step} == 1) {
         $lizhi = 1;
     }
     elsif ($elem eq 'AGARI') {
+        if (@baopai) {
+            push(@$log, map { { kaigang => { baopai => $_ } } } @baopai);
+            @baopai = ();
+        }
         push(@$log, hule(%attr));
     }
     elsif ($elem eq 'RYUUKYOKU') {
+        if (@baopai) {
+            push(@$log, map { { kaigang => { baopai => $_ } } } @baopai);
+            @baopai = ();
+        }
         push(@$log, pingju(%attr));
     }
 

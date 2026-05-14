@@ -5,6 +5,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from scripts.build_hf_from_raw_archives import resolve_perl_executable
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CONVERT = ROOT / "scripts" / "paifu_scraping" / "convert.pl"
@@ -13,7 +15,7 @@ SANMA_RAW = ROOT / "tests" / "fixtures" / "tenhou" / "2014091101gm-00b9-0000-5ca
 
 def _convert(path: Path) -> dict:
     proc = subprocess.run(
-        ["perl", "-T", str(CONVERT), str(path)],
+        [resolve_perl_executable(None), "-T", str(CONVERT), str(path)],
         cwd=ROOT,
         check=True,
         capture_output=True,
@@ -87,3 +89,30 @@ def test_convert_preserves_penuki_state_in_pingju_shoupai() -> None:
 
     assert saw_penuki
     assert saw_pingju_with_penuki
+
+
+def test_convert_preserves_consecutive_dora_reveals_after_gangzimo() -> None:
+    game = _convert_inline(
+        '<mjloggm ver="2.3"><GO type="1" lobby="0"/>'
+        '<UN n0="A" n1="B" n2="C" n3="D" dan="10,10,10,10" '
+        'rate="1500,1500,1500,1500" sx="M,M,M,M"/>'
+        '<TAIKYOKU oya="0"/>'
+        '<INIT seed="0,0,0,0,0,16" ten="250,250,250,250" '
+        'oya="0" hai0="0,1,2,3,4,5,6,7,8,9,10,11,12" '
+        'hai1="13,14,15,16,17,18,19,20,21,22,23,24,25" '
+        'hai2="26,27,28,29,30,31,32,33,34,35,36,37,38" '
+        'hai3="39,40,41,42,43,44,45,46,47,48,49,50,51"/>'
+        '<N who="0" m="11776"/>'
+        '<T44/>'
+        '<DORA hai="62"/>'
+        '<DORA hai="51"/>'
+        '<RYUUKYOKU type="yao9" ba="0,0" sc="250,0,250,0,250,0,250,0"/>'
+        '</mjloggm>'
+    )
+
+    round_data = game["log"][0]
+    gangzimo_idx = next(idx for idx, event in enumerate(round_data) if "gangzimo" in event)
+    assert round_data[gangzimo_idx + 1 : gangzimo_idx + 3] == [
+        {"kaigang": {"baopai": "p7"}},
+        {"kaigang": {"baopai": "p4"}},
+    ]

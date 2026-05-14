@@ -930,9 +930,7 @@ class TenhouTokenizer:
                     is_replacement_draw=is_dead_wall_draw,
                 )
             elif key == "gangzimo":
-                reveal_count = self._kaigang_lookahead_count_before_gangzimo()
-                if reveal_count:
-                    self._consume_following_kaigang_events(round_data, event_index, reveal_count, skipped_event_indices)
+                self._consume_following_kaigang_events(round_data, event_index, None, skipped_event_indices)
                 self.pending_dead_wall_draw = False
                 self._on_draw(value, is_gangzimo=True, is_replacement_draw=False)
             elif key == "dapai":
@@ -1021,13 +1019,6 @@ class TenhouTokenizer:
                 self.pending_kan_dora_modes.pop(0)
         if tiles:
             self.tokens.extend(self._build_dora_block(*tiles))
-
-    def _kaigang_lookahead_count_before_gangzimo(self) -> int:
-        if not self.pending_kan_dora_modes:
-            return 0
-        if "immediate" in self.pending_kan_dora_modes:
-            return self.pending_kan_dora_modes.index("immediate") + 1
-        return 0
 
     def _dora_reveal_count_before_gangzimo(self) -> int:
         if not self.pending_kan_dora_modes:

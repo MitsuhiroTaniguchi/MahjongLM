@@ -965,6 +965,54 @@ def test_multiple_kaigang_reveals_after_consecutive_kans(monkeypatch: pytest.Mon
     assert dora_idx < draw_idx
 
 
+def test_post_gangzimo_kaigang_events_emit_before_replacement_draw(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        TenhouTokenizer,
+        "_compute_self_options",
+        lambda _self, actor, drawn_tile, **_kwargs: {"ankan"} if drawn_tile == tile_to_index("p3") else set(),
+    )
+    monkeypatch.setattr(
+        TenhouTokenizer,
+        "_compute_reaction_options",
+        lambda _self, discarder, tile_idx: ReactionDecision(
+            discarder=discarder,
+            discard_tile=tile_idx,
+            options_by_player={0: {"minkan"}},
+            trigger="discard",
+        ),
+    )
+    monkeypatch.setattr(TenhouTokenizer, "_compute_ankan_reaction_options", lambda *_args, **_kwargs: None)
+
+    game = minimal_game(
+        [
+            qipai_event(
+                hands=[
+                    "m111p333s123z1122",
+                    "m123456789p1234",
+                    "m123456789p1234",
+                    "m123456789p1234",
+                ]
+            ),
+            {"zimo": {"l": 1, "p": "m9"}},
+            {"dapai": {"l": 1, "p": "m1"}},
+            {"fulou": {"l": 0, "m": "m1111+"}},
+            {"gangzimo": {"l": 0, "p": "p3"}},
+            {"gang": {"l": 0, "m": "p3333"}},
+            {"gangzimo": {"l": 0, "p": "p5"}},
+            {"kaigang": {"baopai": "p4"}},
+            {"kaigang": {"baopai": "z5"}},
+            pingju_event(),
+        ]
+    )
+
+    tokens = TenhouTokenizer().tokenize_game(game)
+
+    draw_idx = tokens.index("draw_0_p5")
+    dora_idx = next(i for i, token in enumerate(tokens[:-2]) if token == "dora" and tokens[i + 1] == "p4")
+    assert tokens[dora_idx : dora_idx + 3] == ["dora", "p4", "z5"]
+    assert dora_idx < draw_idx
+
+
 def test_last_discard_after_rinshan_still_uses_houtei_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
