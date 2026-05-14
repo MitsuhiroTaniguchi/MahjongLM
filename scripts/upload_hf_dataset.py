@@ -22,17 +22,21 @@ pretty_name: MahjongLM Dataset
 
 # MahjongLM Dataset
 
-MahjongLM Dataset is a processed, pre-tokenized Japanese mahjong game-log corpus for causal language modeling.
-It is intended for pretraining and evaluating MahjongLM-family models on long-form sequential prediction over riichi mahjong game records.
+MahjongLM Dataset is a processed, pre-tokenized riichi mahjong game-log corpus for causal language modeling.
+It is built from Tenhou game logs and is intended for training MahjongLM-family models to predict long structured mahjong token streams.
+
+The dataset is distributed as token IDs, not as raw Tenhou XML. The corresponding tokenizer assets are included in this repository.
 
 ## Dataset Structure
 
-- `2011/` ... `2024/`: yearly Hugging Face `Dataset` directories saved with `save_to_disk`
+- `2011/` ... `2024/`: yearly Hugging Face `Dataset` directories saved with `datasets.Dataset.save_to_disk`
 - `tokenizer/`: tokenizer assets used for MahjongLM training
 - `README.md`: dataset card
 - `LICENSE`: custom source-data license notice
 
-## Features
+## Rows and Features
+
+Each row is one tokenized view of one game:
 
 - `game_id`
 - `year`
@@ -42,31 +46,68 @@ It is intended for pretraining and evaluating MahjongLM-family models on long-fo
 - `length`
 - `input_ids`
 
+`group_id` is used internally during dataset construction and training, but is omitted from the public export.
+
+## Views
+
 `view_type` is one of:
 
-- `complete`: full public game state.
-- `imperfect`: player-perspective view. `viewer_seat` identifies the player perspective.
-- `omniscient`: complete view plus a reconstructed wall block.
+- `complete`: complete public information for the game.
+- `imperfect`: player-perspective information. `viewer_seat` identifies the visible player's seat.
+- `omniscient`: the `complete` view plus a reconstructed full wall block for each hand.
 
-The `omniscient` view inserts `wall` immediately after each `round_start`, followed by the full 136-tile wall including red fives (`m0`, `p0`, `s0`). Omniscient rows are emitted only when the Tenhou shuffle seed is available and the reconstructed wall is consistent with the observed hands, draws, dora indicators, and result data.
+The `omniscient` view inserts:
+
+```text
+round_start wall <136 wall tile tokens> ...
+```
+
+The wall contains all 136 physical tiles, including red fives (`m0`, `p0`, `s0`), in Tenhou shuffle order. Omniscient rows are emitted only when the Tenhou shuffle seed is available and the reconstructed wall is consistent with the observed initial hands, draws, dora indicators, ura-dora indicators, and result data.
 
 ## Splits
 
 This repository stores the full yearly training corpora only.
 Train/validation splits are created deterministically by the training pipeline and are not stored in the public dataset repository.
 
-## Notes
+## Token Stream Outline
 
-- `group_id` is omitted from the public release.
-- The dataset is pre-tokenized for MahjongLM training.
-- `input_ids` are ready to use for causal language modeling without additional tokenization.
-- Training code wraps each sequence with `<bos>` and `<eos>`.
+Sequences are stored without `<bos>` and `<eos>` in `input_ids`; MahjongLM training code adds those boundary tokens at training time.
+
+A game begins with view and rule tokens, then `game_start`, then one or more hand blocks:
+
+```text
+view_* rule_* ... game_start round_start ... round_end ... game_end
+```
+
+Important conventions:
+
 - `round_start` / `round_end` delimit each hand; `game_start` / `game_end` delimit the game log.
-- Win result blocks begin with one or more `hule_{seat}` markers. For multiple wins, shared `ura_dora` reveal tiles are emitted once after those markers, then each winner detail follows, and score deltas are emitted once after all win details.
-- Self and reaction decisions are emitted as `opt_*` followed by matching `take_*` / `pass_*` tokens in option order.
-- Kan dora timing follows Tenhou behavior: ankan reveals immediately before the replacement draw; minkan/kakan reveals after the following discard or before a chained replacement draw.
+- `round_end` and `game_end` are emitted after rank tokens and before final-score tokens at game end.
+- `seat` numbers are table-relative seats in the tokenized game. `player` identifiers, when present in token names, are original player indices from the source game.
+- Self decisions and reaction decisions are emitted as `opt_*` option tokens followed by matching `take_*` / `pass_*` resolution tokens in the same option order.
+- Reaction options are ordered by `(priority, seat, tiebreak, option)`, with `ron` before `pon`/`minkan`, then `chi`.
+- Self option priority is `tsumo > kyusyu > penuki > riichi > ankan > kakan`.
+- `chi_pos_low` / `chi_pos_mid` / `chi_pos_high` describe the position of the consumed tiles, not the called discard.
+- `red_used` / `red_not_used` is emitted whenever a call consumes a five tile; it records whether the consumed five was red.
+- `take_self_*_tsumo` is followed by the winning tile token. The winning tile is excluded from the later `opened_hand_*` block.
+- Win result blocks begin with one or more `hule_{seat}` markers.
+- For multiple ron wins, all `hule_{seat}` markers are emitted first, shared `ura_dora` reveal tiles are emitted once, then each winner detail follows, and one combined score-delta block is emitted after all win details.
+- `ura_dora` is emitted only when relevant to a riichi win.
+- Kan dora timing follows Tenhou behavior: closed kan reveals immediately before the replacement draw; open kan / added kan reveal after the following discard or before a chained replacement draw. If multiple dora indicators are revealed together, they are emitted as one `dora` token followed by all revealed tile tokens.
 - Kyushukyuhai result `opened_hand_*` contains exactly 14 tiles including the draw tile. North extraction (`penuki`) is treated like a call for first-turn kyushukyuhai suppression.
-- Chi position tokens describe the consumed-tile side: `chi_pos_low` / `chi_pos_high`.
+
+## Vocabulary Summary
+
+The vocabulary contains:
+
+- special tokens: `<pad>`, `<bos>`, `<eos>`, `<unk>`
+- view and rule tokens
+- game and hand boundary tokens
+- physical tile tokens, including red fives
+- draw, discard, call, decision, and pass/take tokens
+- dora and ura-dora reveal tokens
+- opened-hand, hule, yaku, fu, han, score, score-delta, rank, and final-score tokens
+- point-stick tokens from 100-point through 10,000-point units
 
 ## Intended Use
 
@@ -74,11 +115,17 @@ Train/validation splits are created deterministically by the training pipeline a
 - Sequence modeling research on Japanese mahjong game logs
 - Reproducible training runs across yearly subsets or the full 2011-2024 corpus
 
+## Source Code
+
+The dataset construction code is maintained at:
+
+https://github.com/MitsuhiroTaniguchi/MahjongLM
+
 ## License
 
 `source-data-terms-apply`
 
-This dataset is a processed derivative of third-party game log data. Use of this dataset is subject to the terms and restrictions of the original data source. Users are responsible for confirming that their usage complies with the source data terms. See `LICENSE` for the repository notice used for this release.
+This dataset is a processed derivative of third-party Tenhou game log data. Use of this dataset is subject to Tenhou's source-data terms and restrictions. See `LICENSE` for the repository notice used for this release.
 
 ## Tokenizer
 
@@ -95,7 +142,9 @@ LICENSE_TEXT = """MahjongLM Dataset License Notice
 
 Identifier: source-data-terms-apply
 
-This repository contains a processed derivative of third-party game log data.
+This repository contains a processed derivative of Tenhou game log data.
+The raw source logs are published by Tenhou / C-EGG Inc. and are subject to
+Tenhou's source-data terms and use restrictions.
 
 Use of this dataset is subject to the terms, restrictions, and any downstream
 requirements imposed by the original data source. This repository does not
@@ -104,6 +153,22 @@ grant broader rights than those permitted by the source data terms.
 By using, copying, redistributing, modifying, or training on this dataset, you
 are responsible for ensuring that your use complies with the original source
 terms and with any applicable laws, regulations, or platform policies.
+
+Tenhou source-data restrictions
+-------------------------------
+
+The following restrictions are quoted from Tenhou's published notes for using
+game logs:
+
+※天鳳と競合する製品への開発・応用を目的として牌譜を使用していただくことはできません。
+※天鳳の牌譜は、天鳳での対戦を公正に楽しんでいただく目的で公開されています。天鳳での対戦を必要としないサービスへの応用は無償有償ともに行えません。一般の麻雀への応用を目的に牌譜を使用する場合は support@c-egg.com までお問い合わせください。
+※不特定多数が天鳳の牌譜をダウンロードするサービスは作成できません。
+※企業として利用する場合には協賛イベントの開催をお願いします。
+
+Reference:
+
+- https://tenhou.net/sc/raw/?old=
+- https://tenhou.net/man/
 
 No warranty is provided. The dataset is distributed on an "as is" basis.
 """
