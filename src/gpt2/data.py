@@ -168,6 +168,28 @@ def count_unique_groups(dataset: Dataset) -> int:
     return len(dict.fromkeys(dataset["group_id"]))
 
 
+def _dataset_dir_cache_signature(path: str | Path) -> dict[str, object]:
+    dataset_dir = Path(path).resolve()
+    if not dataset_dir.exists():
+        raise FileNotFoundError(dataset_dir)
+    files: list[dict[str, object]] = []
+    for child in sorted(dataset_dir.iterdir(), key=lambda item: item.name):
+        if child.name not in {"dataset_info.json", "state.json"} and child.suffix != ".arrow":
+            continue
+        stat = child.stat()
+        files.append(
+            {
+                "name": child.name,
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+            }
+        )
+    return {
+        "path": str(dataset_dir).lower(),
+        "files": files,
+    }
+
+
 def build_split_cache_paths(
     dataset_dirs: Sequence[str | Path],
     *,
@@ -175,9 +197,8 @@ def build_split_cache_paths(
     seed: int,
     cache_dir: str | Path,
 ) -> tuple[Path, Path, Path]:
-    normalized_paths = [str(Path(path).resolve()).lower() for path in dataset_dirs]
     cache_key_payload = {
-        "dataset_dirs": normalized_paths,
+        "datasets": [_dataset_dir_cache_signature(path) for path in dataset_dirs],
         "eval_ratio": eval_ratio,
         "seed": seed,
     }
@@ -225,6 +246,7 @@ def save_split_cache(
     eval_dataset.save_to_disk(str(eval_path))
     metadata = {
         "dataset_dirs": [str(Path(path).resolve()) for path in dataset_dirs],
+        "dataset_cache_signatures": [_dataset_dir_cache_signature(path) for path in dataset_dirs],
         "eval_ratio": eval_ratio,
         "seed": seed,
         "train_rows": len(train_dataset),
