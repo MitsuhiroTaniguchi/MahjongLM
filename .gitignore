@@ -18,6 +18,7 @@ data/processed/
 data/cache/
 data/huggingface_datasets/
 data/huggingface_datasets_omniscient/
+data/huggingface_dpo_preferences/
 
 # Local experiment environments and caches.
 .venv-unsloth-probe/

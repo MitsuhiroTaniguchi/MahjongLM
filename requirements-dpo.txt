@@ -1,0 +1,10 @@
+# Optional dependencies for scripts/train_dpo_unsloth.py.
+# Keep separate from the base runtime because these packages are CUDA/TRL-version sensitive.
+
+unsloth
+trl
+peft
+bitsandbytes>=0.46.0
+accelerate>=0.33.0
+wandb>=0.18.0
+mergekit
