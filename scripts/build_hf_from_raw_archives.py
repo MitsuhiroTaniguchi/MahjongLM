@@ -11,7 +11,7 @@ import sys
 import tarfile
 import time
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 from typing import Dict, Iterable, List, Tuple
 
@@ -23,6 +23,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from tenhou_tokenizer import Vocabulary, save_hf_tokenizer_assets, tokenize_game_views
+from tenhou_tokenizer.wall import raw_tenhou_tile_id_to_token
 
 DEFAULT_RAW_DIR = ROOT.parent / "raw_data"
 DEFAULT_OUTPUT_DIR = ROOT / "data" / "huggingface_datasets"
@@ -32,6 +33,8 @@ _WORKER_CONVERT: str | None = None
 _WORKER_TOKEN_TO_ID: Dict[str, int] | None = None
 _WORKER_PERL: str | None = None
 SHUFFLE_SEED_RE = re.compile(r'<SHUFFLE\s+[^>]*seed="mt19937ar-sha512-n288-base64,([^"]+)"')
+INIT_TAG_RE = re.compile(r"<INIT\s+([^>]*)/>")
+ATTR_RE = re.compile(r'([A-Za-z0-9_]+)="([^"]*)"')
 
 
 def parse_args() -> argparse.Namespace:
@@ -184,6 +187,46 @@ def _extract_shuffle_seed(raw_text: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _extract_ordered_qipai_metadata(raw_text: str, seat_count: int) -> list[dict]:
+    rounds: list[dict] = []
+    for match in INIT_TAG_RE.finditer(raw_text):
+        attrs = dict(ATTR_RE.findall(match.group(1)))
+        hands: list[list[str]] = []
+        for seat in range(seat_count):
+            raw_hand = attrs.get(f"hai{seat}", "")
+            if not raw_hand:
+                hands.append([])
+                continue
+            hands.append(
+                [
+                    raw_tenhou_tile_id_to_token(int(tile_id), seat_count=seat_count)
+                    for tile_id in raw_hand.split(",")
+                    if tile_id
+                ]
+            )
+        oya = int(attrs.get("oya", "0"))
+        rounds.append({"ordered_hands": hands, "oya": oya})
+    return rounds
+
+
+def _attach_ordered_qipai_tokens(game: dict, raw_text: str, seat_count: int) -> None:
+    ordered_rounds = _extract_ordered_qipai_metadata(raw_text, seat_count)
+    log = game.get("log")
+    if not isinstance(log, list):
+        return
+    for round_data, metadata in zip(log, ordered_rounds):
+        if not isinstance(round_data, list):
+            continue
+        for event in round_data:
+            if not isinstance(event, dict):
+                continue
+            qipai = event.get("qipai")
+            if isinstance(qipai, dict):
+                qipai["_ordered_shoupai_tokens"] = metadata["ordered_hands"]
+                qipai["_wall_oya"] = metadata["oya"]
+                break
+
+
 def _process_one(year: int, log_id: str, raw_text: str) -> Tuple[List[dict], str | None]:
     assert _WORKER_CONVERT is not None
     assert _WORKER_PERL is not None
@@ -200,11 +243,12 @@ def _process_one(year: int, log_id: str, raw_text: str) -> Tuple[List[dict], str
             env=env,
         )
         game = json.loads(proc.stdout)
+        seat_count = infer_seat_count(game)
+        _attach_ordered_qipai_tokens(game, raw_text, seat_count)
         shuffle_seed = _extract_shuffle_seed(raw_text)
         if shuffle_seed is not None:
             game["_shuffle_seed"] = shuffle_seed
         views = tokenize_game_views(game)
-        seat_count = infer_seat_count(game)
         rows: List[dict] = []
         for view in views:
             rows.append(
@@ -234,7 +278,7 @@ def _iter_raw_logs(zip_path: Path) -> Iterable[Tuple[str, str]]:
                 for member in tf:
                     if not member.isfile():
                         continue
-                    member_name = Path(member.name).name
+                    member_name = PurePosixPath(member.name).name
                     if not member_name.endswith(".txt"):
                         continue
                     if member_name.startswith("._"):

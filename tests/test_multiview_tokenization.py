@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tenhou_tokenizer import TOKEN_VIEW_COMPLETE, TOKEN_VIEW_OMNISCIENT, imperfect_view_token, tokenize_game_views
+from tenhou_tokenizer.wall import raw_tenhou_tile_id_to_token
 from tests.fixtures.synthetic_logs import minimal_game, pingju_event, qipai_event
 
 
@@ -32,6 +33,20 @@ def _convert_sanma_sample(*, include_shuffle_seed: bool = False) -> dict:
         match = re.search(r'<SHUFFLE\s+[^>]*seed="mt19937ar-sha512-n288-base64,([^"]+)"', raw_text)
         assert match is not None
         game["_shuffle_seed"] = match.group(1)
+        init_tags = re.findall(r"<INIT\s+([^>]*)/>", raw_text)
+        attr_re = re.compile(r'([A-Za-z0-9_]+)="([^"]*)"')
+        for round_data, init_tag in zip(game["log"], init_tags):
+            attrs = dict(attr_re.findall(init_tag))
+            ordered = [
+                [
+                    raw_tenhou_tile_id_to_token(int(tile_id), seat_count=3)
+                    for tile_id in attrs.get(f"hai{seat}", "").split(",")
+                    if tile_id
+                ]
+                for seat in range(3)
+            ]
+            round_data[0]["qipai"]["_ordered_shoupai_tokens"] = ordered
+            round_data[0]["qipai"]["_wall_oya"] = int(attrs["oya"])
     return game
 
 

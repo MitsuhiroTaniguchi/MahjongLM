@@ -116,3 +116,29 @@ def test_convert_preserves_consecutive_dora_reveals_after_gangzimo() -> None:
         {"kaigang": {"baopai": "p7"}},
         {"kaigang": {"baopai": "p4"}},
     ]
+
+
+def test_convert_resets_pending_gang_between_rounds() -> None:
+    game = _convert_inline(
+        '<mjloggm ver="2.3"><GO type="1" lobby="0"/>'
+        '<UN n0="A" n1="B" n2="C" n3="D" dan="10,10,10,10" '
+        'rate="1500,1500,1500,1500" sx="M,M,M,M"/>'
+        '<TAIKYOKU oya="0"/>'
+        '<INIT seed="0,0,0,0,0,16" ten="250,250,250,250" '
+        'oya="0" hai0="0,1,2,3,4,5,6,7,8,9,10,11,12" '
+        'hai1="13,14,15,16,17,18,19,20,21,22,23,24,25" '
+        'hai2="26,27,28,29,30,31,32,33,34,35,36,37,38" '
+        'hai3="39,40,41,42,43,44,45,46,47,48,49,50,51"/>'
+        '<N who="0" m="11776"/>'
+        '<RYUUKYOKU type="yao9" ba="0,0" sc="250,0,250,0,250,0,250,0"/>'
+        '<INIT seed="1,0,0,0,0,20" ten="250,250,250,250" '
+        'oya="0" hai0="0,1,2,3,4,5,6,7,8,9,10,11,12" '
+        'hai1="13,14,15,16,17,18,19,20,21,22,23,24,25" '
+        'hai2="26,27,28,29,30,31,32,33,34,35,36,37,38" '
+        'hai3="39,40,41,42,43,44,45,46,47,48,49,50,51"/>'
+        '<T52/>'
+        '<RYUUKYOKU type="yao9" ba="0,0" sc="250,0,250,0,250,0,250,0"/>'
+        '</mjloggm>'
+    )
+
+    assert game["log"][1][1] == {"zimo": {"l": 0, "p": "p0"}}

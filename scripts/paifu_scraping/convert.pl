@@ -272,6 +272,9 @@ for (join('', <>) =~ /<.*?>/g) {
         @fulou = map { [] } (0 .. $player_count - 1);
         @nuki  = map { [] } (0 .. $player_count - 1);
         @baopai = ();
+        undef $gang;
+        undef $zimo;
+        undef $lizhi;
         $oya = $attr{oya};
         $log = [ qipai(%attr) ];
         push(@{$paipu->{log}}, $log);

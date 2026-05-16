@@ -53,9 +53,9 @@ def _ordered_wall_tokens(
         wall[cursor] = tile
         cursor += 1
     for index, tile in enumerate(dora or []):
-        wall[wall_len - 10 + 2 * index] = tile
+        wall[wall_len - 6 - 2 * index] = tile
     for index, tile in enumerate(ura or []):
-        wall[wall_len - 9 + 2 * index] = tile
+        wall[wall_len - 5 - 2 * index] = tile
 
     remaining = Counter(_canonical_wall_tokens())
     for tile in wall:
@@ -89,10 +89,24 @@ def _tokens_to_hand(tokens: list[str]) -> str:
     return "".join(tokens)
 
 
+def _qipai_payload(hands: list[str], baopai: str) -> dict:
+    from tenhou_tokenizer.engine import _parse_tiles
+
+    return {
+        "shoupai": hands,
+        "baopai": baopai,
+        "_ordered_shoupai_tokens": [
+            _parse_tiles(hand, stop_at_comma=True, context="test_ordered_qipai")
+            for hand in hands
+        ],
+    }
+
+
 def test_wall_assertion_rejects_invalid_red_five_multiset() -> None:
     wall = _canonical_wall_tokens()
     wall[wall.index("m0")] = "m5"
-    game = {"log": [[{"qipai": {"shoupai": ["m123456789p1234"] * 4, "baopai": "m1"}}]]}
+    hands = ["m123456789p1234"] * 4
+    game = {"log": [[{"qipai": _qipai_payload(hands, "m1")}]]}
 
     with pytest.raises(TokenizeError, match="wall tile multiset is invalid"):
         assert_wall_consistent_with_game(game, [wall])
@@ -104,7 +118,7 @@ def test_wall_assertion_checks_dora_and_ura_indicators() -> None:
     game = {
         "log": [
             [
-                {"qipai": {"shoupai": hands, "baopai": "z7"}},
+                {"qipai": _qipai_payload(hands, "z7")},
                 {"hule": {"fubaopai": ["z7"]}},
             ]
         ]
@@ -115,7 +129,7 @@ def test_wall_assertion_checks_dora_and_ura_indicators() -> None:
     impossible_indicators = {
         "log": [
             [
-                {"qipai": {"shoupai": hands, "baopai": "z7"}},
+                {"qipai": _qipai_payload(hands, "z7")},
                 {"hule": {"fubaopai": ["z7", "z7", "z7", "z7"]}},
             ]
         ]
@@ -135,7 +149,7 @@ def test_wall_assertion_counts_shared_double_ron_ura_indicators_once() -> None:
     game = {
         "log": [
             [
-                {"qipai": {"shoupai": hands, "baopai": "z7"}},
+                {"qipai": _qipai_payload(hands, "z7")},
                 {"zimo": {"l": 0, "p": "p2"}},
                 {"zimo": {"l": 0, "p": "p2"}},
                 {"hule": {"l": 1, "fubaopai": ["p2"]}},
@@ -151,7 +165,7 @@ def test_wall_assertion_rejects_wrong_order_even_when_multiset_matches() -> None
     hands = ["m123406789p1234", *["m123456789p1234"] * 3]
     wall = _ordered_wall_tokens(hands, dora=["z7"])
     wall[0], wall[1] = wall[1], wall[0]
-    game = {"log": [[{"qipai": {"shoupai": hands, "baopai": "z7"}}]]}
+    game = {"log": [[{"qipai": _qipai_payload(hands, "z7")}]]}
 
     with pytest.raises(TokenizeError, match="wall order mismatch"):
         assert_wall_consistent_with_game(game, [wall])
@@ -178,7 +192,17 @@ def test_sanma_wall_uses_108_tiles_and_checks_rinshan_order_from_seed() -> None:
         "title": "三鳳南喰赤",
         "log": [
             [
-                {"qipai": {"shoupai": hands, "baopai": _sanma_raw_id_to_token(75)}},
+                {
+                    "qipai": {
+                        "shoupai": hands,
+                        "baopai": _sanma_raw_id_to_token(75),
+                        "_ordered_shoupai_tokens": [
+                            [_sanma_raw_id_to_token(int(tile_id)) for tile_id in attr(f"hai{seat}").split(",")]
+                            for seat in range(3)
+                        ],
+                        "_wall_oya": int(attr("oya")),
+                    }
+                },
                 {"zimo": {"l": 0, "p": _sanma_raw_id_to_token(66)}},
                 {"penuki": {"l": 0, "p": "z4"}},
                 {"zimo": {"l": 0, "p": _sanma_raw_id_to_token(1)}},

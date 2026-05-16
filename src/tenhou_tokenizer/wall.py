@@ -145,6 +145,24 @@ def sanma_tile_id_to_token(tile_id: int) -> str:
     return f"z{base - 19}"
 
 
+def raw_tenhou_tile_id_to_token(tile_id: int, *, seat_count: int) -> str:
+    if seat_count == 3:
+        if 0 <= tile_id <= 3:
+            compact = tile_id
+        elif 32 <= tile_id <= 35:
+            compact = 4 + (tile_id - 32)
+        elif 36 <= tile_id <= 71:
+            compact = 8 + (tile_id - 36)
+        elif 72 <= tile_id <= 107:
+            compact = 44 + (tile_id - 72)
+        elif 108 <= tile_id <= 135:
+            compact = 80 + (tile_id - 108)
+        else:
+            raise TokenizeError(f"Tenhou sanma raw tile id is not used: {tile_id}")
+        return sanma_tile_id_to_token(compact)
+    return tile_id_to_token(tile_id, seat_count=4)
+
+
 def generate_tenhou_wall_ids(seed_b64: str, round_count: int, *, seat_count: int = 4) -> list[list[int]]:
     seed = base64.b64decode(seed_b64)
     if len(seed) < 624 * 4:
@@ -266,15 +284,29 @@ class _WallOrderChecker:
         hands = qipai.get("shoupai")
         if not isinstance(hands, list) or len(hands) != self.seat_count:
             raise TokenizeError(f"qipai shoupai seat count mismatch: round={self.round_index}")
-        hand_tiles = [_parse_hand_tiles(hand, context="omniscient_wall_qipai") for hand in hands]
+        ordered_hands = qipai.get("_ordered_shoupai_tokens")
+        if isinstance(ordered_hands, list) and len(ordered_hands) == self.seat_count:
+            hand_tiles = [
+                [tile for tile in hand if isinstance(tile, str)]
+                for hand in ordered_hands
+            ]
+        else:
+            raise TokenizeError(
+                f"ordered qipai tiles are required for strict wall assertion: round={self.round_index}"
+            )
         if any(len(tiles) < 13 for tiles in hand_tiles):
             raise TokenizeError(f"qipai hand is too short for wall order assertion: round={self.round_index}")
+        oya = qipai.get("_wall_oya", 0)
+        if not isinstance(oya, int) or oya < 0 or oya >= self.seat_count:
+            raise TokenizeError(f"qipai dealer seat is invalid for wall assertion: round={self.round_index}")
         hand_offsets = [0] * self.seat_count
         for _chunk in range(3):
-            for seat in range(self.seat_count):
+            for offset in range(self.seat_count):
+                seat = (oya + offset) % self.seat_count
                 self._expect_live(hand_tiles[seat][hand_offsets[seat] : hand_offsets[seat] + 4])
                 hand_offsets[seat] += 4
-        for seat in range(self.seat_count):
+        for offset in range(self.seat_count):
+            seat = (oya + offset) % self.seat_count
             self._expect_live(hand_tiles[seat][hand_offsets[seat] : hand_offsets[seat] + 1])
             hand_offsets[seat] += 1
         baopai = qipai.get("baopai")
@@ -305,16 +337,15 @@ class _WallOrderChecker:
     def check_ura(self, fubaopai_counters: list[Counter[str]]) -> None:
         if not fubaopai_counters:
             return
+        expected = Counter(self._ura_tiles())
         merged: Counter[str] = Counter()
         for counter in fubaopai_counters:
             for tile, count in counter.items():
                 merged[tile] = max(merged[tile], count)
-        expected = self._ura_tiles()
-        actual = list(merged.elements())
-        if Counter(actual) != Counter(expected[: len(actual)]):
+        if merged != expected:
             raise TokenizeError(
                 f"ura indicator contradicts reconstructed wall: round={self.round_index} "
-                f"expected={expected[: len(actual)]} actual={actual}"
+                f"expected={dict(expected)} actual={dict(merged)}"
             )
 
     def _expect_draw(self, tile: str) -> None:
@@ -344,19 +375,31 @@ class _WallOrderChecker:
         self.rinshan_cursor += 1
 
     def _expect_dora(self, tile: str, *, dora_index: int) -> None:
-        index = len(self.wall_tokens) - 10 + 2 * dora_index
+        index = self._dora_index(dora_index)
         expected = self.wall_tokens[index]
         if expected != tile:
             raise TokenizeError(
                 f"dora indicator contradicts reconstructed wall: round={self.round_index} "
-                f"dora_index={dora_index} expected={expected} actual={tile}"
+                f"dora_index={dora_index} wall_index={index} expected={expected} actual={tile}"
             )
 
     def _ura_tiles(self) -> list[str]:
-        return [self.wall_tokens[len(self.wall_tokens) - 9 + 2 * index] for index in range(self.dora_count + 1)]
+        return [self.wall_tokens[self._ura_index(index)] for index in range(self.dora_count + 1)]
+
+    def _dora_index(self, index: int) -> int:
+        if index >= 5:
+            raise TokenizeError(f"too many dora indicators for wall assertion: round={self.round_index}")
+        first_indicator_offset = 10 if self.seat_count == 3 else 6
+        return len(self.wall_tokens) - first_indicator_offset - 2 * index
+
+    def _ura_index(self, index: int) -> int:
+        if index >= 5:
+            raise TokenizeError(f"too many ura indicators for wall assertion: round={self.round_index}")
+        first_indicator_offset = 9 if self.seat_count == 3 else 5
+        return len(self.wall_tokens) - first_indicator_offset - 2 * index
 
     def _rinshan_index(self, index: int) -> int:
-        order = (-2, -1, -4, -3)
+        order = (-2, -1, -4, -3, -6, -5, -8, -7) if self.seat_count == 3 else (-2, -1, -4, -3)
         if index >= len(order):
             raise TokenizeError(f"too many replacement draws for wall assertion: round={self.round_index}")
         return len(self.wall_tokens) + order[index]
