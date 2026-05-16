@@ -9,8 +9,21 @@ from typing import Iterable
 from .engine import TokenizeError, _parse_tiles, token_tile
 
 
-def _expected_wall_counter() -> Counter[str]:
+def _expected_wall_counter(seat_count: int = 4) -> Counter[str]:
     counts: Counter[str] = Counter()
+    if seat_count == 3:
+        counts["m1"] = 4
+        counts["m9"] = 4
+        for suit in ("p", "s"):
+            for number in range(1, 10):
+                if number == 5:
+                    counts[f"{suit}0"] = 1
+                    counts[f"{suit}5"] = 3
+                else:
+                    counts[f"{suit}{number}"] = 4
+        for number in range(1, 8):
+            counts[f"z{number}"] = 4
+        return counts
     for suit in ("m", "p", "s"):
         for number in range(1, 10):
             if number == 5:
@@ -97,7 +110,9 @@ class MT19937ar:
         return y & 0xFFFFFFFF
 
 
-def tile_id_to_token(tile_id: int) -> str:
+def tile_id_to_token(tile_id: int, *, seat_count: int = 4) -> str:
+    if seat_count == 3:
+        return sanma_tile_id_to_token(tile_id)
     if tile_id < 0 or tile_id >= 136:
         raise TokenizeError(f"Tenhou tile id out of range: {tile_id}")
     suit = ("m", "p", "s", "z")[tile_id // 36]
@@ -108,10 +123,33 @@ def tile_id_to_token(tile_id: int) -> str:
     return f"{suit}{number}"
 
 
-def generate_tenhou_wall_ids(seed_b64: str, round_count: int) -> list[list[int]]:
+def sanma_tile_id_to_token(tile_id: int) -> str:
+    if tile_id < 0 or tile_id >= 108:
+        raise TokenizeError(f"Tenhou sanma tile id out of range: {tile_id}")
+    base = tile_id // 4
+    copy = tile_id % 4
+    if base == 0:
+        return "m1"
+    if base == 1:
+        return "m9"
+    if 2 <= base <= 10:
+        number = base - 1
+        if number == 5 and copy == 0:
+            return "p0"
+        return f"p{number}"
+    if 11 <= base <= 19:
+        number = base - 10
+        if number == 5 and copy == 0:
+            return "s0"
+        return f"s{number}"
+    return f"z{base - 19}"
+
+
+def generate_tenhou_wall_ids(seed_b64: str, round_count: int, *, seat_count: int = 4) -> list[list[int]]:
     seed = base64.b64decode(seed_b64)
     if len(seed) < 624 * 4:
         raise TokenizeError(f"Tenhou shuffle seed is too short: {len(seed)} bytes")
+    wall_size = 108 if seat_count == 3 else 136
     mt = MT19937ar()
     mt.init_by_array(struct.unpack("<624I", seed[: 624 * 4]))
 
@@ -123,16 +161,21 @@ def generate_tenhou_wall_ids(seed_b64: str, round_count: int) -> list[list[int]]
             packed = struct.pack("<32I", *src[32 * i : 32 * (i + 1)])
             rnd.extend(struct.unpack("<16I", hashlib.sha512(packed).digest()))
 
-        wall = list(range(136))
-        for i in range(136):
-            j = rnd[i] % (136 - i) + i
+        wall = list(range(wall_size))
+        for i in range(wall_size):
+            j = rnd[i] % (wall_size - i) + i
             wall[i], wall[j] = wall[j], wall[i]
-        walls.append(wall)
+        # Tenhou draws from the tail of the generated array. Store wall blocks in
+        # actual consumption order so omniscient prompts can be checked directly.
+        walls.append(list(reversed(wall)))
     return walls
 
 
-def generate_tenhou_wall_tokens(seed_b64: str, round_count: int) -> list[list[str]]:
-    return [[tile_id_to_token(tile_id) for tile_id in wall] for wall in generate_tenhou_wall_ids(seed_b64, round_count)]
+def generate_tenhou_wall_tokens(seed_b64: str, round_count: int, *, seat_count: int = 4) -> list[list[str]]:
+    return [
+        [tile_id_to_token(tile_id, seat_count=seat_count) for tile_id in wall]
+        for wall in generate_tenhou_wall_ids(seed_b64, round_count, seat_count=seat_count)
+    ]
 
 
 def _round_observed_tile_tokens(round_data: list[dict]) -> list[str]:
@@ -187,6 +230,138 @@ def _round_observed_tile_tokens(round_data: list[dict]) -> list[str]:
     return observed
 
 
+def _round_seat_count(round_data: list[dict], fallback: int) -> int:
+    for event in round_data:
+        if not isinstance(event, dict):
+            continue
+        qipai = event.get("qipai")
+        if not isinstance(qipai, dict):
+            continue
+        shoupai = qipai.get("shoupai")
+        if isinstance(shoupai, list) and len(shoupai) in {3, 4}:
+            return len(shoupai)
+        defen = qipai.get("defen")
+        if isinstance(defen, list) and len(defen) in {3, 4}:
+            return len(defen)
+    return fallback
+
+
+def _parse_hand_tiles(hand: object, *, context: str) -> list[str]:
+    if not isinstance(hand, str):
+        return []
+    return _parse_tiles(hand, stop_at_comma=True, context=context)
+
+
+class _WallOrderChecker:
+    def __init__(self, wall_tokens: list[str], seat_count: int, round_index: int) -> None:
+        self.wall_tokens = wall_tokens
+        self.seat_count = seat_count
+        self.round_index = round_index
+        self.live_cursor = 0
+        self.rinshan_cursor = 0
+        self.dora_count = 0
+        self.pending_replacement_draw = False
+
+    def check_qipai(self, qipai: dict) -> None:
+        hands = qipai.get("shoupai")
+        if not isinstance(hands, list) or len(hands) != self.seat_count:
+            raise TokenizeError(f"qipai shoupai seat count mismatch: round={self.round_index}")
+        hand_tiles = [_parse_hand_tiles(hand, context="omniscient_wall_qipai") for hand in hands]
+        if any(len(tiles) < 13 for tiles in hand_tiles):
+            raise TokenizeError(f"qipai hand is too short for wall order assertion: round={self.round_index}")
+        hand_offsets = [0] * self.seat_count
+        for _chunk in range(3):
+            for seat in range(self.seat_count):
+                self._expect_live(hand_tiles[seat][hand_offsets[seat] : hand_offsets[seat] + 4])
+                hand_offsets[seat] += 4
+        for seat in range(self.seat_count):
+            self._expect_live(hand_tiles[seat][hand_offsets[seat] : hand_offsets[seat] + 1])
+            hand_offsets[seat] += 1
+        baopai = qipai.get("baopai")
+        if isinstance(baopai, str):
+            self._expect_dora(token_tile(baopai.replace("*", "").replace("_", "")), dora_index=0)
+
+    def check_event(self, key: str, value: dict) -> None:
+        if key == "zimo":
+            tile = value.get("p")
+            if isinstance(tile, str):
+                self._expect_draw(token_tile(tile.replace("*", "").replace("_", "")))
+            return
+        if key == "gangzimo":
+            tile = value.get("p")
+            if isinstance(tile, str):
+                self._expect_rinshan(token_tile(tile.replace("*", "").replace("_", "")))
+            return
+        if key == "penuki":
+            self.pending_replacement_draw = True
+            return
+        if key == "kaigang":
+            baopai = value.get("baopai")
+            if isinstance(baopai, str):
+                self.dora_count += 1
+                self._expect_dora(token_tile(baopai.replace("*", "").replace("_", "")), dora_index=self.dora_count)
+            return
+
+    def check_ura(self, fubaopai_counters: list[Counter[str]]) -> None:
+        if not fubaopai_counters:
+            return
+        merged: Counter[str] = Counter()
+        for counter in fubaopai_counters:
+            for tile, count in counter.items():
+                merged[tile] = max(merged[tile], count)
+        expected = self._ura_tiles()
+        actual = list(merged.elements())
+        if Counter(actual) != Counter(expected[: len(actual)]):
+            raise TokenizeError(
+                f"ura indicator contradicts reconstructed wall: round={self.round_index} "
+                f"expected={expected[: len(actual)]} actual={actual}"
+            )
+
+    def _expect_draw(self, tile: str) -> None:
+        if self.pending_replacement_draw:
+            self.pending_replacement_draw = False
+            self._expect_rinshan(tile)
+        else:
+            self._expect_live([tile])
+
+    def _expect_live(self, tiles: list[str]) -> None:
+        expected = self.wall_tokens[self.live_cursor : self.live_cursor + len(tiles)]
+        if expected != tiles:
+            raise TokenizeError(
+                f"wall order mismatch: round={self.round_index} live_index={self.live_cursor} "
+                f"expected={expected} actual={tiles}"
+            )
+        self.live_cursor += len(tiles)
+
+    def _expect_rinshan(self, tile: str) -> None:
+        index = self._rinshan_index(self.rinshan_cursor)
+        expected = self.wall_tokens[index]
+        if expected != tile:
+            raise TokenizeError(
+                f"rinshan tile contradicts reconstructed wall: round={self.round_index} "
+                f"rinshan_index={self.rinshan_cursor} expected={expected} actual={tile}"
+            )
+        self.rinshan_cursor += 1
+
+    def _expect_dora(self, tile: str, *, dora_index: int) -> None:
+        index = len(self.wall_tokens) - 10 + 2 * dora_index
+        expected = self.wall_tokens[index]
+        if expected != tile:
+            raise TokenizeError(
+                f"dora indicator contradicts reconstructed wall: round={self.round_index} "
+                f"dora_index={dora_index} expected={expected} actual={tile}"
+            )
+
+    def _ura_tiles(self) -> list[str]:
+        return [self.wall_tokens[len(self.wall_tokens) - 9 + 2 * index] for index in range(self.dora_count + 1)]
+
+    def _rinshan_index(self, index: int) -> int:
+        order = (-2, -1, -4, -3)
+        if index >= len(order):
+            raise TokenizeError(f"too many replacement draws for wall assertion: round={self.round_index}")
+        return len(self.wall_tokens) + order[index]
+
+
 def assert_wall_consistent_with_game(game: dict, wall_tokens_by_round: list[list[str]]) -> None:
     log = game.get("log")
     if not isinstance(log, list):
@@ -195,12 +370,17 @@ def assert_wall_consistent_with_game(game: dict, wall_tokens_by_round: list[list
         raise TokenizeError(
             f"wall round count mismatch: log={len(log)} wall={len(wall_tokens_by_round)}"
         )
+    fallback_seat_count = 3 if "三" in str(game.get("title", "")) else 4
     for round_index, (round_data, wall_tokens) in enumerate(zip(log, wall_tokens_by_round)):
         if not isinstance(round_data, list):
             raise TokenizeError("round data must be a list for wall assertion")
-        if len(wall_tokens) != 136:
-            raise TokenizeError(f"wall must contain 136 tiles: round={round_index} len={len(wall_tokens)}")
-        if Counter(wall_tokens) != _expected_wall_counter():
+        seat_count = _round_seat_count(round_data, fallback_seat_count)
+        expected_len = 108 if seat_count == 3 else 136
+        if len(wall_tokens) != expected_len:
+            raise TokenizeError(
+                f"wall must contain {expected_len} tiles: round={round_index} len={len(wall_tokens)}"
+            )
+        if Counter(wall_tokens) != _expected_wall_counter(seat_count):
             raise TokenizeError(f"wall tile multiset is invalid: round={round_index}")
         remaining = Counter(wall_tokens)
         for tile in _round_observed_tile_tokens(round_data):
@@ -209,3 +389,27 @@ def assert_wall_consistent_with_game(game: dict, wall_tokens_by_round: list[list
                 raise TokenizeError(
                     f"observed tile contradicts reconstructed wall: round={round_index} tile={tile}"
                 )
+        checker = _WallOrderChecker(wall_tokens, seat_count, round_index)
+        pending_hule_fubaopai: list[Counter[str]] = []
+        for event in round_data:
+            if not isinstance(event, dict) or not event:
+                continue
+            key, value = next(iter(event.items()))
+            if not isinstance(value, dict):
+                continue
+            if key != "hule":
+                checker.check_ura(pending_hule_fubaopai)
+                pending_hule_fubaopai = []
+            if key == "qipai":
+                checker.check_qipai(value)
+            elif key == "hule":
+                fubaopai = value.get("fubaopai")
+                if isinstance(fubaopai, list):
+                    counter: Counter[str] = Counter()
+                    for tile in fubaopai:
+                        if isinstance(tile, str):
+                            counter[token_tile(tile.replace("*", "").replace("_", ""))] += 1
+                    pending_hule_fubaopai.append(counter)
+            else:
+                checker.check_event(key, value)
+        checker.check_ura(pending_hule_fubaopai)

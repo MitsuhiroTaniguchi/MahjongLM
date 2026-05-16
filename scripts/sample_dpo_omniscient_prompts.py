@@ -79,7 +79,8 @@ def extract_first_wall_prompt(tokens: list[str]) -> list[str]:
         wall_idx = out.index("wall")
     except ValueError as exc:
         raise ValueError("omniscient row does not contain a wall token") from exc
-    end = wall_idx + 1 + 136
+    wall_len = 108 if "rule_player_3" in out[:wall_idx] else 136
+    end = wall_idx + 1 + wall_len
     if len(out) < end:
         raise ValueError("omniscient wall block is truncated")
     return out[:end]

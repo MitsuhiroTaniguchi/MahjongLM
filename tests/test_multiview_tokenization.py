@@ -167,9 +167,10 @@ def test_omniscient_view_adds_wall_blocks_without_changing_existing_views() -> N
     assert omniscient.tokens[view_index + 1] == "game_start"
     round_start_index = omniscient.tokens.index("round_start")
     assert omniscient.tokens[round_start_index + 1] == "wall"
-    first_wall = omniscient.tokens[round_start_index + 2 : round_start_index + 138]
-    assert len(first_wall) == 136
-    assert first_wall.count("m0") == 1
+    first_wall = omniscient.tokens[round_start_index + 2 : round_start_index + 110]
+    assert len(first_wall) == 108
+    assert "m0" not in first_wall
+    assert not any(token in first_wall for token in {"m2", "m3", "m4", "m5", "m6", "m7", "m8"})
     assert first_wall.count("p0") == 1
     assert first_wall.count("s0") == 1
 

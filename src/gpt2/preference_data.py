@@ -17,7 +17,6 @@ from tenhou_tokenizer.viewspec import (
 
 FINAL_RANK_RE = re.compile(r"^final_rank_(?P<seat>[0-3])_(?P<place>[1-4])$")
 RULE_PLAYER_RE = re.compile(r"^rule_player_(?P<count>[34])$")
-WALL_TILE_COUNT = 136
 
 
 @dataclass(frozen=True)
@@ -110,7 +109,9 @@ def omniscient_to_imperfect_tokens(tokens: Sequence[str], viewer_seat: int) -> t
             idx += 1
             continue
         if token == "wall":
-            idx += 1 + WALL_TILE_COUNT
+            idx += 1
+            while idx < len(tokens) and tokens[idx] in TILE_TOKENS:
+                idx += 1
             continue
         if token.startswith("haipai_"):
             seat = int(token.split("_")[1])

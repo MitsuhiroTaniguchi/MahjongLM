@@ -244,7 +244,10 @@ def tokenize_game_views(game: dict) -> list[TokenizedGameView]:
     shuffle_seed = game.get("_shuffle_seed")
     omniscient_view: TokenizedGameView | None = None
     if isinstance(shuffle_seed, str) and shuffle_seed:
-        wall_tokens_by_round = generate_tenhou_wall_tokens(shuffle_seed, len(game.get("log", [])))
+        seat_count = len(game.get("player", [])) if isinstance(game.get("player"), list) else 4
+        if seat_count not in {3, 4}:
+            seat_count = 3 if "三" in str(game.get("title", "")) else 4
+        wall_tokens_by_round = generate_tenhou_wall_tokens(shuffle_seed, len(game.get("log", [])), seat_count=seat_count)
         assert_wall_consistent_with_game(game, wall_tokens_by_round)
         omniscient_view = TokenizedGameView(
             view_type=VIEW_OMNISCIENT,

@@ -138,7 +138,8 @@ def _consume_tile_payload(tokens: Sequence[str], start: int, *, minimum: int, ex
 def _consume_round_prelude(tokens: Sequence[str], start: int, *, seat_count: int) -> int:
     idx = start
     if idx < len(tokens) and tokens[idx] == "wall":
-        idx = _consume_tile_payload(tokens, idx + 1, minimum=136, exact=136)
+        wall_len = 108 if seat_count == 3 else 136
+        idx = _consume_tile_payload(tokens, idx + 1, minimum=wall_len, exact=wall_len)
     assert idx < len(tokens) and tokens[idx].startswith("bakaze_")
     idx += 1
     assert idx < len(tokens) and tokens[idx].startswith("kyoku_")
