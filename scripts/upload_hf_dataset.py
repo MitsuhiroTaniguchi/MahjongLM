@@ -59,10 +59,13 @@ Each row is one tokenized view of one game:
 The `omniscient` view inserts:
 
 ```text
-round_start wall <136 wall tile tokens> ...
+round_start wall <wall tile tokens> ...
 ```
 
-The wall contains all 136 physical tiles, including red fives (`m0`, `p0`, `s0`), in Tenhou shuffle order. Omniscient rows are emitted only when the Tenhou shuffle seed is available and the reconstructed wall is consistent with the observed initial hands, draws, dora indicators, ura-dora indicators, and result data.
+For four-player games, the wall block contains 136 physical tiles including red fives (`m0`, `p0`, `s0`).
+For three-player games, the wall block contains the 108 tiles used by Tenhou sanma: `m1`, `m9`, all pinzu, all souzu, and honors, with red fives for pinzu and souzu.
+Wall tokens are stored in actual consumption order, so the beginning of the block corresponds to the initial deal and subsequent live-wall draws.
+Omniscient rows are emitted only when the Tenhou shuffle seed is available and the reconstructed wall order is consistent with the observed initial hands, live-wall draws, replacement draws, dora indicators, ura-dora indicators, and result data.
 
 ## Splits
 
@@ -73,10 +76,10 @@ Train/validation splits are created deterministically by the training pipeline a
 
 Sequences are stored without `<bos>` and `<eos>` in `input_ids`; MahjongLM training code adds those boundary tokens at training time.
 
-A game begins with view and rule tokens, then `game_start`, then one or more hand blocks:
+A game begins with rule and view tokens, then `game_start`, then one or more hand blocks:
 
 ```text
-view_* rule_* ... game_start round_start ... round_end ... game_end
+rule_* view_* game_start round_start ... round_end ... game_end
 ```
 
 Important conventions:
@@ -162,6 +165,42 @@ game logs:
 
 ※天鳳と競合する製品への開発・応用を目的として牌譜を使用していただくことはできません。
 ※天鳳の牌譜は、天鳳での対戦を公正に楽しんでいただく目的で公開されています。天鳳での対戦を必要としないサービスへの応用は無償有償ともに行えません。一般の麻雀への応用を目的に牌譜を使用する場合は support@c-egg.com までお問い合わせください。
+※不特定多数が天鳳の牌譜をダウンロードするサービスは作成できません。
+※企業として利用する場合には協賛イベントの開催をお願いします。
+
+Reference:
+
+- https://tenhou.net/sc/raw/?old=
+- https://tenhou.net/man/
+
+No warranty is provided. The dataset is distributed on an "as is" basis.
+"""
+
+LICENSE_TEXT = """MahjongLM Dataset License Notice
+=================================
+
+Identifier: source-data-terms-apply
+
+This repository contains a processed derivative of Tenhou game log data.
+The raw source logs are published by Tenhou / C-EGG Inc. and are subject to
+Tenhou's source-data terms and use restrictions.
+
+Use of this dataset is subject to the terms, restrictions, and any downstream
+requirements imposed by the original data source. This repository does not
+grant broader rights than those permitted by the source data terms.
+
+By using, copying, redistributing, modifying, or training on this dataset, you
+are responsible for ensuring that your use complies with the original source
+terms and with any applicable laws, regulations, or platform policies.
+
+Tenhou source-data restrictions
+-------------------------------
+
+The following restrictions are quoted from Tenhou's published notes for using
+game logs:
+
+※天鳳と競合する製品への開発・応用を目的として牌譜を使用していただくことはできません。
+※天鳳の牌譜は、天鳳での対戦を正常に楽しんでいただく目的で公開されています。天鳳での対戦を必要としないサービスへの応用は無償有償ともに行えません。一般の麻雀への応用を目的に牌譜を使用する場合は support@c-egg.com までお問い合わせください。
 ※不特定多数が天鳳の牌譜をダウンロードするサービスは作成できません。
 ※企業として利用する場合には協賛イベントの開催をお願いします。
 
