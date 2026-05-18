@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -350,19 +351,35 @@ def upload_folder(folder: Path, repo_id: str, *, commit_message: str, log_file: 
 
     api = HfApi()
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+    expected_files = sorted(path.relative_to(folder).as_posix() for path in folder.rglob("*") if path.is_file())
+    if not expected_files:
+        raise RuntimeError(f"refusing to upload empty model folder: {folder}")
     with log_file.open("a", encoding="utf-8") as handle:
         handle.write(f"=== create repo {repo_id} ===\n")
     api.create_repo(repo_id=repo_id, repo_type="model", exist_ok=True, private=False, token=token)
     with log_file.open("a", encoding="utf-8") as handle:
         handle.write(f"=== upload folder {folder} -> {repo_id} ===\n")
-    api.upload_folder(
-        repo_id=repo_id,
-        repo_type="model",
-        folder_path=str(folder),
-        commit_message=commit_message,
-        token=token,
-    )
+    try:
+        api.upload_folder(
+            repo_id=repo_id,
+            repo_type="model",
+            folder_path=str(folder),
+            commit_message=commit_message,
+            token=token,
+        )
+    except BaseException:
+        with log_file.open("a", encoding="utf-8") as handle:
+            handle.write("=== upload failed ===\n")
+            handle.write(traceback.format_exc())
+        raise
+    remote_files = set(api.list_repo_files(repo_id, repo_type="model", token=token))
+    missing = [path for path in expected_files if path not in remote_files]
+    if missing:
+        preview = "\n".join(missing[:50])
+        suffix = "" if len(missing) <= 50 else f"\n... and {len(missing) - 50} more"
+        raise RuntimeError(f"model upload finished but {repo_id} is missing files:\n{preview}{suffix}")
     with log_file.open("a", encoding="utf-8") as handle:
+        handle.write(f"=== verified {len(expected_files)} files in {repo_id} ===\n")
         handle.write(f"=== add collection item {repo_id} ===\n")
     api.add_collection_item(HF_COLLECTION, item_id=repo_id, item_type="model", exists_ok=True, token=token)
 

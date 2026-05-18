@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import traceback
 from pathlib import Path
@@ -46,8 +47,6 @@ Each row is one tokenized view of one game:
 - `viewer_seat`
 - `length`
 - `input_ids`
-
-`group_id` is used internally during dataset construction and training.
 
 ## Views
 
@@ -214,6 +213,43 @@ No warranty is provided. The dataset is distributed on an "as is" basis.
 """
 
 
+LICENSE_TEXT = """MahjongLM Dataset License Notice
+=================================
+
+Identifier: source-data-terms-apply
+
+This repository contains a processed derivative of Tenhou game log data.
+The raw source logs are published by Tenhou / C-EGG Inc. and are subject to
+Tenhou's source-data terms and use restrictions.
+
+Use of this dataset is subject to the terms, restrictions, and any downstream
+requirements imposed by the original data source. This repository does not
+grant broader rights than those permitted by the source data terms.
+
+By using, copying, redistributing, modifying, or training on this dataset, you
+are responsible for ensuring that your use complies with the original source
+terms and with any applicable laws, regulations, or platform policies.
+
+Tenhou source-data restrictions
+-------------------------------
+
+The following restrictions are quoted from Tenhou's published notes for using
+game logs:
+
+※天鳳と競合する製品への開発・応用を目的として牌譜を使用していただくことはできません。
+※天鳳の牌譜は、天鳳での対戦を正常に楽しんでいただく目的で公開されています。天鳳での対戦を必要としないサービスへの応用は無償有償ともに行えません。一般の麻雀への応用を目的に牌譜を使用する場合は support@c-egg.com までお問い合わせください。
+※不特定多数が天鳳の牌譜をダウンロードするサービスは作成できません。
+※企業として利用する場合には協賛イベントの開催をお願いいたします。
+
+Reference:
+
+- https://tenhou.net/sc/raw/?old=
+- https://tenhou.net/man/
+
+No warranty is provided. The dataset is distributed on an "as is" basis.
+"""
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -271,6 +307,38 @@ def validate_dataset_root(source_dir: Path) -> None:
         raise RuntimeError("missing yearly dataset directories:\n" + "\n".join(missing))
 
 
+def expected_upload_files(upload_dir: Path) -> list[str]:
+    files: list[str] = []
+    for year_dir in sorted(
+        path for path in upload_dir.iterdir() if path.is_dir() and path.name.isdigit() and (path / "dataset_info.json").is_file()
+    ):
+        for file_path in sorted(path for path in year_dir.iterdir() if path.is_file()):
+            files.append(f"{year_dir.name}/{file_path.name}")
+    tokenizer_dir = upload_dir / "tokenizer"
+    if tokenizer_dir.exists():
+        for file_path in sorted(path for path in tokenizer_dir.iterdir() if path.is_file()):
+            files.append(f"tokenizer/{file_path.name}")
+    for filename in ("README.md", "LICENSE"):
+        if (upload_dir / filename).is_file():
+            files.append(filename)
+    if not files:
+        raise RuntimeError(f"no files selected for upload under {upload_dir}")
+    return files
+
+
+def verify_remote_files(api: HfApi, repo_id: str, expected_files: list[str]) -> None:
+    remote_files = set(api.list_repo_files(repo_id, repo_type="dataset"))
+    missing = [path for path in expected_files if path not in remote_files]
+    if missing:
+        preview = "\n".join(missing[:50])
+        suffix = "" if len(missing) <= 50 else f"\n... and {len(missing) - 50} more"
+        raise RuntimeError(
+            "dataset upload finished but remote repo is missing expected files:\n"
+            f"{preview}{suffix}"
+        )
+    print(f"Verified {len(expected_files)} remote dataset files.", flush=True)
+
+
 def clear_large_upload_cache(upload_dir: Path) -> None:
     # HfApi.upload_large_folder stores resumable state under the folder being
     # uploaded. If the remote repo is cleaned but this cache says files were
@@ -280,6 +348,38 @@ def clear_large_upload_cache(upload_dir: Path) -> None:
     if cache_dir.exists():
         print(f"Clearing stale upload cache {cache_dir} ...", flush=True)
         shutil.rmtree(cache_dir)
+
+
+def upload_large_folder_checked(
+    api: HfApi,
+    repo_id: str,
+    upload_dir: Path,
+    *,
+    num_workers: int,
+    disable_xet: bool,
+) -> None:
+    expected_files = expected_upload_files(upload_dir)
+    if disable_xet:
+        # hf_xet is a native helper. On this Windows setup, the only observed
+        # no-traceback dataset publish exits happened while large-folder upload
+        # had Xet enabled. Force the pure HTTP/LFS path for reproducibility.
+        os.environ["HF_HUB_DISABLE_XET"] = "1"
+    clear_large_upload_cache(upload_dir)
+    print(
+        f"Uploading dataset folder {upload_dir} with upload_large_folder "
+        f"(files={len(expected_files)}, num_workers={num_workers}, disable_xet={disable_xet}) ...",
+        flush=True,
+    )
+    api.upload_large_folder(
+        repo_id=repo_id,
+        repo_type="dataset",
+        folder_path=str(upload_dir),
+        ignore_patterns=[".DS_Store", "**/.DS_Store", ".cache/**", "**/.cache/**"],
+        num_workers=num_workers,
+        print_report=True,
+        print_report_every=60,
+    )
+    verify_remote_files(api, repo_id, expected_files)
 
 
 def clean_remote_repo(api: HfApi, repo_id: str, token: str) -> None:
@@ -382,25 +482,24 @@ def main() -> None:
     parser.add_argument("--tokenizer-dir", type=Path, default=Path("tokenizer"))
     parser.add_argument("--export-dir", type=Path, default=_default_export_dir())
     parser.add_argument(
-        "--strip-group-id",
+        "--keep-group-id",
         action="store_true",
-        help=(
-            "Rewrite yearly datasets to a separate export dir and remove group_id. "
-            "This is slow and disk-heavy; by default the already-built dataset folders are uploaded directly."
-        ),
+        help="Publish the internal group_id column. By default public exports remove it.",
     )
     parser.add_argument(
-        "--use-large-folder",
+        "--use-yearly-upload",
         action="store_true",
-        help="Use huggingface_hub upload_large_folder instead of safer year-by-year commits.",
+        help="Fallback: use ordinary upload_folder year by year instead of upload_large_folder.",
     )
+    parser.add_argument("--large-upload-workers", type=int, default=2)
+    parser.add_argument("--enable-xet", action="store_true", help="Allow hf_xet during upload_large_folder.")
     args = parser.parse_args()
 
     repo_root = _repo_root()
     source_dir = args.source_dir.resolve()
     tokenizer_dir = args.tokenizer_dir.resolve()
     upload_dir = source_dir
-    if args.strip_group_id:
+    if not args.keep_group_id:
         export_dir = args.export_dir.resolve()
         if _is_within_repo(export_dir, repo_root):
             raise RuntimeError(
@@ -435,18 +534,18 @@ def main() -> None:
     api = HfApi(token=token)
     api.create_repo(repo_id=args.repo_id, repo_type="dataset", exist_ok=True)
 
-    if args.use_large_folder:
-        clear_large_upload_cache(upload_dir)
-        clean_remote_repo(api, args.repo_id, token)
-        print(f"Uploading dataset folder {upload_dir} ...", flush=True)
-        api.upload_large_folder(
-            repo_id=args.repo_id,
-            repo_type="dataset",
-            folder_path=str(upload_dir),
-            ignore_patterns=[".DS_Store", "**/.DS_Store", ".cache/**", "**/.cache/**"],
-        )
-    else:
+    clean_remote_repo(api, args.repo_id, token)
+    if args.use_yearly_upload:
         upload_dataset_sequential(api, args.repo_id, upload_dir, token)
+        verify_remote_files(api, args.repo_id, expected_upload_files(upload_dir))
+    else:
+        upload_large_folder_checked(
+            api,
+            args.repo_id,
+            upload_dir,
+            num_workers=args.large_upload_workers,
+            disable_xet=not args.enable_xet,
+        )
 
 
 if __name__ == "__main__":

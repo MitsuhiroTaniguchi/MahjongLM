@@ -207,11 +207,40 @@ def run_training(cmd: list[str], *, run_root: Path, log_file: Path) -> None:
         raise subprocess.CalledProcessError(return_code, cmd)
 
 
-def run_model(spec: ModelSpec, run_root: Path) -> Path:
+def start_publish_watcher(spec: ModelSpec, output_dir: Path, run_root: Path, publish_root: Path) -> None:
+    log_file = run_root / f"publish_{spec.key}_watcher_launcher.log"
+    command = [
+        str(PYTHON),
+        str(ROOT / "scripts" / "publish_on_complete.py"),
+        "--key",
+        spec.key,
+        "--output-dir",
+        str(output_dir),
+        "--run-root",
+        str(publish_root),
+        "--interval-seconds",
+        "300",
+    ]
+    with log_file.open("a", encoding="utf-8") as log:
+        log.write("+ " + " ".join(command) + "\n")
+        log.flush()
+    subprocess.Popen(
+        command,
+        cwd=ROOT,
+        env={**os.environ, "PYTHONUTF8": "1"},
+        stdout=(run_root / f"publish_{spec.key}_watcher.out.log").open("a", encoding="utf-8"),
+        stderr=subprocess.STDOUT,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+
+
+def run_model(spec: ModelSpec, run_root: Path, *, publish_root: Path | None = None) -> Path:
     run_name = f"q{spec.key}-omniscient-allyears-0p2ep-{now_slug()}"
     output_dir = ROOT / "outputs" / run_name
     stop_file = output_dir / "STOP"
     output_dir.mkdir(parents=True, exist_ok=True)
+    if publish_root is not None:
+        start_publish_watcher(spec, output_dir, run_root, publish_root)
     print(f"=== training {spec.key}: {run_name} ===", flush=True)
     run_training(build_train_command(spec, output_dir, run_name, stop_file), run_root=run_root, log_file=run_root / f"{spec.key}.log")
     return output_dir
@@ -277,7 +306,7 @@ def main() -> None:
                     print(f"=== skipping completed {spec.key}: {existing} ===", flush=True)
                     completed_outputs.append((spec.key, existing))
                     continue
-            output_dir = run_model(spec, args.run_root)
+            output_dir = run_model(spec, args.run_root, publish_root=args.publish_root if args.publish else None)
             completed_outputs.append((spec.key, output_dir))
     publish_errors: list[tuple[str, Path, str]] = []
     if publish_model is not None:
