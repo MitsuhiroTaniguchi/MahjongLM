@@ -323,6 +323,57 @@ def clean_remote_repo(api: HfApi, repo_id: str, token: str) -> None:
         )
 
 
+def upload_dataset_sequential(api: HfApi, repo_id: str, upload_dir: Path, token: str) -> None:
+    year_dirs = sorted(
+        path for path in upload_dir.iterdir() if path.is_dir() and path.name.isdigit() and (path / "dataset_info.json").is_file()
+    )
+    if not year_dirs:
+        raise RuntimeError(f"no yearly datasets found under {upload_dir}")
+
+    for year_dir in year_dirs:
+        print(f"Uploading {year_dir.name}/ ...", flush=True)
+        api.upload_folder(
+            repo_id=repo_id,
+            repo_type="dataset",
+            folder_path=str(year_dir),
+            path_in_repo=year_dir.name,
+            token=token,
+            delete_patterns=f"{year_dir.name}/**",
+            ignore_patterns=[".DS_Store", "**/.DS_Store", ".cache/**", "**/.cache/**"],
+            commit_message=f"Update {year_dir.name} dataset",
+        )
+        print(f"Uploaded {year_dir.name}/", flush=True)
+
+    tokenizer_dir = upload_dir / "tokenizer"
+    if tokenizer_dir.exists():
+        print("Uploading tokenizer/ ...", flush=True)
+        api.upload_folder(
+            repo_id=repo_id,
+            repo_type="dataset",
+            folder_path=str(tokenizer_dir),
+            path_in_repo="tokenizer",
+            token=token,
+            delete_patterns="tokenizer/**",
+            ignore_patterns=[".DS_Store", "**/.DS_Store"],
+            commit_message="Update tokenizer assets",
+        )
+        print("Uploaded tokenizer/", flush=True)
+
+    for filename in ("README.md", "LICENSE"):
+        path = upload_dir / filename
+        if path.exists():
+            print(f"Uploading {filename} ...", flush=True)
+            api.upload_file(
+                repo_id=repo_id,
+                repo_type="dataset",
+                path_or_fileobj=str(path),
+                path_in_repo=filename,
+                token=token,
+                commit_message=f"Update {filename}",
+            )
+            print(f"Uploaded {filename}", flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Prepare and upload the public MahjongLM dataset to Hugging Face.")
     parser.add_argument("--repo-id", required=True, help="Dataset repo id, e.g. mitsutani/mahjonglm-dataset")
@@ -337,6 +388,11 @@ def main() -> None:
             "Rewrite yearly datasets to a separate export dir and remove group_id. "
             "This is slow and disk-heavy; by default the already-built dataset folders are uploaded directly."
         ),
+    )
+    parser.add_argument(
+        "--use-large-folder",
+        action="store_true",
+        help="Use huggingface_hub upload_large_folder instead of safer year-by-year commits.",
     )
     args = parser.parse_args()
 
@@ -379,16 +435,18 @@ def main() -> None:
     api = HfApi(token=token)
     api.create_repo(repo_id=args.repo_id, repo_type="dataset", exist_ok=True)
 
-    clear_large_upload_cache(upload_dir)
-    clean_remote_repo(api, args.repo_id, token)
-
-    print(f"Uploading dataset folder {upload_dir} ...", flush=True)
-    api.upload_large_folder(
-        repo_id=args.repo_id,
-        repo_type="dataset",
-        folder_path=str(upload_dir),
-        ignore_patterns=[".DS_Store", "**/.DS_Store", ".cache/**", "**/.cache/**"],
-    )
+    if args.use_large_folder:
+        clear_large_upload_cache(upload_dir)
+        clean_remote_repo(api, args.repo_id, token)
+        print(f"Uploading dataset folder {upload_dir} ...", flush=True)
+        api.upload_large_folder(
+            repo_id=args.repo_id,
+            repo_type="dataset",
+            folder_path=str(upload_dir),
+            ignore_patterns=[".DS_Store", "**/.DS_Store", ".cache/**", "**/.cache/**"],
+        )
+    else:
+        upload_dataset_sequential(api, args.repo_id, upload_dir, token)
 
 
 if __name__ == "__main__":
