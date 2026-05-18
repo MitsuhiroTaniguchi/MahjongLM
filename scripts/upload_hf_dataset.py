@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import traceback
 from pathlib import Path
 
 from datasets import load_from_disk
@@ -46,7 +47,7 @@ Each row is one tokenized view of one game:
 - `length`
 - `input_ids`
 
-`group_id` is used internally during dataset construction and training, but is omitted from the public export.
+`group_id` is used internally during dataset construction and training.
 
 ## Views
 
@@ -229,6 +230,13 @@ def _is_within_repo(path: Path, repo_root: Path) -> bool:
         return False
 
 
+def write_repo_metadata(target_dir: Path, tokenizer_dir: Path) -> None:
+    tokenizer_export_dir = target_dir / "tokenizer"
+    shutil.copytree(tokenizer_dir, tokenizer_export_dir, dirs_exist_ok=True)
+    (target_dir / "README.md").write_text(README_TEXT, encoding="utf-8")
+    (target_dir / "LICENSE").write_text(LICENSE_TEXT, encoding="utf-8")
+
+
 def export_clean_dataset(source_dir: Path, export_dir: Path, tokenizer_dir: Path) -> None:
     if export_dir.exists():
         shutil.rmtree(export_dir)
@@ -249,10 +257,18 @@ def export_clean_dataset(source_dir: Path, export_dir: Path, tokenizer_dir: Path
         dataset.save_to_disk(str(export_dir / year_dir.name), max_shard_size="512MB")
         print(f"Exported {year_dir.name}: {dataset.num_rows} rows", flush=True)
 
-    tokenizer_export_dir = export_dir / "tokenizer"
-    shutil.copytree(tokenizer_dir, tokenizer_export_dir, dirs_exist_ok=True)
-    (export_dir / "README.md").write_text(README_TEXT, encoding="utf-8")
-    (export_dir / "LICENSE").write_text(LICENSE_TEXT, encoding="utf-8")
+    write_repo_metadata(export_dir, tokenizer_dir)
+
+
+def validate_dataset_root(source_dir: Path) -> None:
+    year_dirs = sorted(
+        path for path in source_dir.iterdir() if path.is_dir() and (path / "dataset_info.json").is_file()
+    )
+    if not year_dirs:
+        raise RuntimeError(f"no yearly datasets found under {source_dir}")
+    missing = [str(source_dir / str(year)) for year in range(2011, 2025) if not (source_dir / str(year) / "dataset_info.json").is_file()]
+    if missing:
+        raise RuntimeError("missing yearly dataset directories:\n" + "\n".join(missing))
 
 
 def clean_remote_repo(api: HfApi, repo_id: str, token: str) -> None:
@@ -303,17 +319,46 @@ def main() -> None:
     parser.add_argument("--source-dir", type=Path, default=Path("data/processed"))
     parser.add_argument("--tokenizer-dir", type=Path, default=Path("tokenizer"))
     parser.add_argument("--export-dir", type=Path, default=_default_export_dir())
+    parser.add_argument(
+        "--strip-group-id",
+        action="store_true",
+        help=(
+            "Rewrite yearly datasets to a separate export dir and remove group_id. "
+            "This is slow and disk-heavy; by default the already-built dataset folders are uploaded directly."
+        ),
+    )
     args = parser.parse_args()
 
     repo_root = _repo_root()
     source_dir = args.source_dir.resolve()
     tokenizer_dir = args.tokenizer_dir.resolve()
-    export_dir = args.export_dir.resolve()
+    upload_dir = source_dir
+    if args.strip_group_id:
+        export_dir = args.export_dir.resolve()
+        if _is_within_repo(export_dir, repo_root):
+            raise RuntimeError(
+                f"refusing to export inside the git repo: {export_dir}\n"
+                f"choose a directory outside {repo_root}"
+            )
+        try:
+            export_clean_dataset(source_dir, export_dir, tokenizer_dir)
+        except BaseException:
+            print("Dataset clean export failed. This step rewrites every yearly Arrow shard.", flush=True)
+            print(traceback.format_exc(), flush=True)
+            raise
+        upload_dir = export_dir
+    elif _is_within_repo(source_dir, repo_root):
+        # Direct upload avoids rewriting ~100GB of Arrow data. Metadata files are
+        # intentionally written into the generated dataset root, not tracked git files.
+        validate_dataset_root(source_dir)
+        write_repo_metadata(source_dir, tokenizer_dir)
+    else:
+        validate_dataset_root(source_dir)
+        write_repo_metadata(source_dir, tokenizer_dir)
 
-    if _is_within_repo(export_dir, repo_root):
+    if _is_within_repo(upload_dir, repo_root) and upload_dir == repo_root:
         raise RuntimeError(
-            f"refusing to export inside the git repo: {export_dir}\n"
-            f"choose a directory outside {repo_root}"
+            f"refusing to upload repository root as dataset: {upload_dir}"
         )
 
     token = args.token or get_token()
@@ -323,15 +368,14 @@ def main() -> None:
     api = HfApi(token=token)
     api.create_repo(repo_id=args.repo_id, repo_type="dataset", exist_ok=True)
 
-    export_clean_dataset(source_dir, export_dir, tokenizer_dir)
     clean_remote_repo(api, args.repo_id, token)
 
-    print("Uploading cleaned dataset export ...", flush=True)
+    print(f"Uploading dataset folder {upload_dir} ...", flush=True)
     api.upload_large_folder(
         repo_id=args.repo_id,
         repo_type="dataset",
-        folder_path=str(export_dir),
-        ignore_patterns=[".DS_Store", "**/.DS_Store"],
+        folder_path=str(upload_dir),
+        ignore_patterns=[".DS_Store", "**/.DS_Store", ".cache/**", "**/.cache/**"],
     )
 
 
