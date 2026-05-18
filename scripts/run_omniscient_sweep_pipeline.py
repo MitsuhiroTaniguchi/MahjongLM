@@ -4,6 +4,7 @@ import argparse
 import datetime as dt
 import os
 import subprocess
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -181,41 +182,29 @@ def build_train_command(spec: ModelSpec, output_dir: Path, run_name: str, stop_f
 
 def run_training(cmd: list[str], *, run_root: Path, log_file: Path) -> None:
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    ps_path = run_root / "launch_train.ps1"
-    exe = cmd[0]
-    args = cmd[1:]
-    args_block = ", ".join(ps_quote(arg) for arg in args)
-    ps_path.write_text(
-        "\n".join(
-            [
-                "$ErrorActionPreference = 'Stop'",
-                f"Set-Location -LiteralPath {ps_quote(str(ROOT))}",
-                "$env:WANDB__SERVICE_WAIT = '300'",
-                "$env:WANDB_MODE = 'online'",
-                f"$exe = {ps_quote(exe)}",
-                f"$arguments = @({args_block})",
-                "& $exe @arguments",
-                "exit $LASTEXITCODE",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
+    env = {**os.environ, "WANDB__SERVICE_WAIT": "300", "WANDB_MODE": "online", "PYTHONUTF8": "1"}
     with log_file.open("a", encoding="utf-8") as log:
         log.write("+ " + " ".join(cmd) + "\n")
         log.flush()
-    subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(ps_path),
-        ],
-        cwd=ROOT,
-        check=True,
-    )
+        process = subprocess.Popen(
+            cmd,
+            cwd=ROOT,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1,
+        )
+        assert process.stdout is not None
+        for line in process.stdout:
+            print(line, end="", flush=True)
+            log.write(line)
+            log.flush()
+        return_code = process.wait()
+        log.write(f"\n[exit_code] {return_code}\n")
+        log.flush()
+    if return_code != 0:
+        raise subprocess.CalledProcessError(return_code, cmd)
 
 
 def run_model(spec: ModelSpec, run_root: Path) -> Path:
@@ -238,9 +227,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--run-root", type=Path, default=ROOT / "outputs" / f"omniscient_sweep_{now_slug()}")
     parser.add_argument(
+        "--skip-existing-final",
+        action="store_true",
+        help="Skip a model if a matching run in outputs/ already has final_model/model.safetensors.",
+    )
+    parser.add_argument(
         "--publish",
         action="store_true",
-        help="Publish each model raw checkpoint and Q4_K_M GGUF immediately after it finishes.",
+        help="Publish trained raw checkpoints and Q4_K_M GGUF after all selected training runs finish.",
     )
     parser.add_argument("--publish-root", type=Path, default=PUBLISH_ROOT)
     return parser.parse_args()
@@ -266,12 +260,41 @@ def main() -> None:
 
         publish_model = _publish_model
     selected = set(args.models)
+    completed_outputs: list[tuple[str, Path]] = []
     for spec in MODEL_SPECS:
         if spec.key in selected:
+            if args.skip_existing_final:
+                candidates = sorted(
+                    (ROOT / "outputs").glob(f"q{spec.key}-omniscient-allyears-0p2ep-*"),
+                    key=lambda path: path.stat().st_mtime,
+                    reverse=True,
+                )
+                existing = next(
+                    (path for path in candidates if (path / "final_model" / "model.safetensors").is_file()),
+                    None,
+                )
+                if existing is not None:
+                    print(f"=== skipping completed {spec.key}: {existing} ===", flush=True)
+                    completed_outputs.append((spec.key, existing))
+                    continue
             output_dir = run_model(spec, args.run_root)
-            if publish_model is not None:
-                print(f"=== publishing {spec.key}: {output_dir} ===", flush=True)
-                publish_model(spec.key, output_dir)
+            completed_outputs.append((spec.key, output_dir))
+    publish_errors: list[tuple[str, Path, str]] = []
+    if publish_model is not None:
+        for key, output_dir in completed_outputs:
+            print(f"=== publishing {key}: {output_dir} ===", flush=True)
+            try:
+                publish_model(key, output_dir)
+            except Exception:
+                error = traceback.format_exc()
+                publish_errors.append((key, output_dir, error))
+                print(f"=== publish failed for {key}: {output_dir} ===", flush=True)
+                print(error, flush=True)
+        if publish_errors:
+            summary = "\n\n".join(
+                f"{key}: {output_dir}\n{error}" for key, output_dir, error in publish_errors
+            )
+            raise RuntimeError("one or more publish steps failed after training completed:\n" + summary)
     print("=== complete ===", flush=True)
 
 
