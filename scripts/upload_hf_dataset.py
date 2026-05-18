@@ -271,6 +271,17 @@ def validate_dataset_root(source_dir: Path) -> None:
         raise RuntimeError("missing yearly dataset directories:\n" + "\n".join(missing))
 
 
+def clear_large_upload_cache(upload_dir: Path) -> None:
+    # HfApi.upload_large_folder stores resumable state under the folder being
+    # uploaded. If the remote repo is cleaned but this cache says files were
+    # already uploaded, the commit can omit large dataset shards. Always clear it
+    # before a full replacement publish.
+    cache_dir = upload_dir / ".cache" / "huggingface" / "upload"
+    if cache_dir.exists():
+        print(f"Clearing stale upload cache {cache_dir} ...", flush=True)
+        shutil.rmtree(cache_dir)
+
+
 def clean_remote_repo(api: HfApi, repo_id: str, token: str) -> None:
     existing_files = set(api.list_repo_files(repo_id, repo_type="dataset"))
     year_dirs = sorted({path.split("/")[0] for path in existing_files if "/" in path and path.split("/")[0].isdigit()})
@@ -368,6 +379,7 @@ def main() -> None:
     api = HfApi(token=token)
     api.create_repo(repo_id=args.repo_id, repo_type="dataset", exist_ok=True)
 
+    clear_large_upload_cache(upload_dir)
     clean_remote_repo(api, args.repo_id, token)
 
     print(f"Uploading dataset folder {upload_dir} ...", flush=True)
