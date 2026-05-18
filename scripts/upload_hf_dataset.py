@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import time
 import traceback
 from pathlib import Path
 
@@ -324,6 +325,7 @@ def clean_remote_repo(api: HfApi, repo_id: str, token: str) -> None:
 
 
 def upload_dataset_sequential(api: HfApi, repo_id: str, upload_dir: Path, token: str) -> None:
+    existing_files = set(api.list_repo_files(repo_id, repo_type="dataset"))
     year_dirs = sorted(
         path for path in upload_dir.iterdir() if path.is_dir() and path.name.isdigit() and (path / "dataset_info.json").is_file()
     )
@@ -331,47 +333,81 @@ def upload_dataset_sequential(api: HfApi, repo_id: str, upload_dir: Path, token:
         raise RuntimeError(f"no yearly datasets found under {upload_dir}")
 
     for year_dir in year_dirs:
-        print(f"Uploading {year_dir.name}/ ...", flush=True)
-        api.upload_folder(
-            repo_id=repo_id,
-            repo_type="dataset",
-            folder_path=str(year_dir),
-            path_in_repo=year_dir.name,
-            token=token,
-            delete_patterns=f"{year_dir.name}/**",
-            ignore_patterns=[".DS_Store", "**/.DS_Store", ".cache/**", "**/.cache/**"],
-            commit_message=f"Update {year_dir.name} dataset",
-        )
+        if any(path.startswith(f"{year_dir.name}/") for path in existing_files):
+            print(f"Deleting remote folder {year_dir.name}/ ...", flush=True)
+            api.delete_folder(
+                path_in_repo=year_dir.name,
+                repo_id=repo_id,
+                repo_type="dataset",
+                token=token,
+                commit_message=f"Remove old {year_dir.name} dataset",
+            )
+            existing_files = {path for path in existing_files if not path.startswith(f"{year_dir.name}/")}
+        print(f"Uploading {year_dir.name}/ file-by-file ...", flush=True)
+        files = sorted(year_dir.glob("*.arrow")) + [year_dir / "dataset_info.json", year_dir / "state.json"]
+        for file_path in files:
+            if not file_path.is_file():
+                continue
+            path_in_repo = f"{year_dir.name}/{file_path.name}"
+            print(f"Uploading {path_in_repo} ({file_path.stat().st_size} bytes) ...", flush=True)
+            upload_file_with_retry(api, repo_id, token, file_path, path_in_repo)
+            print(f"Uploaded {path_in_repo}", flush=True)
         print(f"Uploaded {year_dir.name}/", flush=True)
 
     tokenizer_dir = upload_dir / "tokenizer"
     if tokenizer_dir.exists():
-        print("Uploading tokenizer/ ...", flush=True)
-        api.upload_folder(
-            repo_id=repo_id,
-            repo_type="dataset",
-            folder_path=str(tokenizer_dir),
-            path_in_repo="tokenizer",
-            token=token,
-            delete_patterns="tokenizer/**",
-            ignore_patterns=[".DS_Store", "**/.DS_Store"],
-            commit_message="Update tokenizer assets",
-        )
+        if any(path.startswith("tokenizer/") for path in existing_files):
+            print("Deleting remote folder tokenizer/ ...", flush=True)
+            api.delete_folder(
+                path_in_repo="tokenizer",
+                repo_id=repo_id,
+                repo_type="dataset",
+                token=token,
+                commit_message="Remove old tokenizer assets",
+            )
+        print("Uploading tokenizer/ file-by-file ...", flush=True)
+        for file_path in sorted(path for path in tokenizer_dir.iterdir() if path.is_file()):
+            path_in_repo = f"tokenizer/{file_path.name}"
+            print(f"Uploading {path_in_repo} ...", flush=True)
+            upload_file_with_retry(api, repo_id, token, file_path, path_in_repo)
+            print(f"Uploaded {path_in_repo}", flush=True)
         print("Uploaded tokenizer/", flush=True)
 
     for filename in ("README.md", "LICENSE"):
         path = upload_dir / filename
         if path.exists():
             print(f"Uploading {filename} ...", flush=True)
+            upload_file_with_retry(api, repo_id, token, path, filename, commit_message=f"Update {filename}")
+            print(f"Uploaded {filename}", flush=True)
+
+
+def upload_file_with_retry(
+    api: HfApi,
+    repo_id: str,
+    token: str,
+    file_path: Path,
+    path_in_repo: str,
+    *,
+    commit_message: str | None = None,
+    max_attempts: int = 3,
+) -> None:
+    for attempt in range(1, max_attempts + 1):
+        try:
             api.upload_file(
                 repo_id=repo_id,
                 repo_type="dataset",
-                path_or_fileobj=str(path),
-                path_in_repo=filename,
+                path_or_fileobj=str(file_path),
+                path_in_repo=path_in_repo,
                 token=token,
-                commit_message=f"Update {filename}",
+                commit_message=commit_message or f"Upload {path_in_repo}",
             )
-            print(f"Uploaded {filename}", flush=True)
+            return
+        except BaseException:
+            print(f"Upload failed for {path_in_repo} on attempt {attempt}/{max_attempts}", flush=True)
+            print(traceback.format_exc(), flush=True)
+            if attempt == max_attempts:
+                raise
+            time.sleep(30 * attempt)
 
 
 def main() -> None:
