@@ -25,7 +25,7 @@ def load_jsonl_metrics(path: Path) -> list[dict[str, Any]]:
     return records
 
 
-def merge_records(sources: list[tuple[Path, int | None, int | None]]) -> OrderedDict[int, dict[str, Any]]:
+def merge_records(sources: list[tuple[Path, int | None, int | None]], drop_keys: set[str]) -> OrderedDict[int, dict[str, Any]]:
     merged: OrderedDict[int, dict[str, Any]] = OrderedDict()
     for path, start_step, end_step in sources:
         for payload in load_jsonl_metrics(path):
@@ -34,9 +34,9 @@ def merge_records(sources: list[tuple[Path, int | None, int | None]]) -> Ordered
                 continue
             if end_step is not None and step > end_step:
                 continue
-            record = merged.setdefault(step, {"step": step})
+            record = merged.setdefault(step, {"trainer/global_step": step})
             for key, value in payload.items():
-                if key != "step":
+                if key != "step" and key != "trainer/global_step" and key not in drop_keys:
                     record[key] = value
     return OrderedDict(sorted(merged.items()))
 
@@ -67,10 +67,17 @@ def main() -> None:
     parser.add_argument("--source", action="append", required=True, help="Metric log path, optionally path:start:end")
     parser.add_argument("--tag", action="append", default=[])
     parser.add_argument("--notes", default="")
+    parser.add_argument("--drop-key", action="append", default=[])
+    parser.add_argument(
+        "--wandb-step-offset",
+        type=int,
+        default=None,
+        help="Use monotonically increasing internal W&B steps starting after this offset while keeping trainer/global_step unchanged.",
+    )
     args = parser.parse_args()
 
     sources = [parse_source(value) for value in args.source]
-    merged = merge_records(sources)
+    merged = merge_records(sources, set(args.drop_key))
     if not merged:
         raise RuntimeError("no metric records found")
 
@@ -96,15 +103,16 @@ def main() -> None:
         resume="allow",
     )
     assert run is not None
-    wandb.define_metric("step")
-    wandb.define_metric("*", step_metric="step")
+    wandb.define_metric("trainer/global_step")
+    wandb.define_metric("*", step_metric="trainer/global_step")
 
-    for step, record in merged.items():
-        wandb.log(record, step=step)
+    for index, (step, record) in enumerate(merged.items(), start=1):
+        wandb_step = args.wandb_step_offset + index if args.wandb_step_offset is not None else step
+        wandb.log(record, step=wandb_step)
 
     final_record = next(reversed(merged.values()))
     for key, value in final_record.items():
-        if key != "step":
+        if key != "trainer/global_step":
             run.summary[key] = value
     run.summary["trainer/global_step"] = max(merged)
     run.summary["merged/source_record_count"] = sum(len(load_jsonl_metrics(path)) for path, _, _ in sources)
