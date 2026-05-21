@@ -1604,7 +1604,7 @@ class TenhouTokenizer:
                 kyoku=kyoku,
                 honba=honba,
                 riichi_sticks=riichi_sticks,
-                dora_tile=_strip_tile_suffix(baopai).replace("0", "5"),
+                dora_tile=token_tile(_strip_tile_suffix(baopai)),
                 scores=scores,
                 shoupai=shoupai,
             )
@@ -2285,7 +2285,7 @@ class TenhouTokenizer:
         if self.awaiting_kaigang <= 0:
             raise TokenizeError("kaigang is not expected")
         k = self._require_dict(k, field="kaigang")
-        tile = token_tile(_strip_tile_suffix(self._require_str(k["baopai"], field="kaigang.baopai"))).replace("0", "5")
+        tile = token_tile(_strip_tile_suffix(self._require_str(k["baopai"], field="kaigang.baopai")))
         self.pending_dora_tiles.append(tile)
         self.awaiting_kaigang -= 1
 

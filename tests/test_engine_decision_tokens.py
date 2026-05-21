@@ -92,6 +92,52 @@ def test_kaigang_does_not_force_self_pass_before_tsumo(monkeypatch: pytest.Monke
     assert "TENBO_ZERO" in tokens
 
 
+def test_red_five_dora_indicators_are_preserved() -> None:
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(qipai_payload())
+    m1_idx = tokenizer.tokens.index("dora")
+    assert tokenizer.tokens[m1_idx : m1_idx + 2] == ["dora", "m1"]
+
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai({**qipai_payload(), "baopai": "m0"})
+    m0_idx = tokenizer.tokens.index("dora")
+    assert tokenizer.tokens[m0_idx : m0_idx + 2] == ["dora", "m0"]
+    assert tokenizer.tokens[m0_idx + 1] != "m5"
+
+
+def test_red_five_kan_dora_indicators_are_preserved(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(TenhouTokenizer, "_compute_kakan_reaction_options", lambda *_args, **_kwargs: None)
+
+    tokenizer = TenhouTokenizer()
+    tokenizer._on_qipai(
+        qipai_payload(
+            hands=[
+                "m123456789p1234",
+                "m888p123s123z1112",
+                "m123456789p1234",
+                "m123456789p1234",
+            ]
+        )
+    )
+    player = tokenizer.players[1]
+    player.concealed = parse_hand_counts("m888p123s123z1112")
+    player.open_melds = 1
+    player.open_pons[tile_to_index("m8")] = 1
+    player.melds = [("pon", tile_to_index("m8"))]
+    tokenizer._invalidate_meld_cache(1)
+    tokenizer.pending_self = SelfDecision(actor=1, options={"kakan"})
+    tokenizer.expected_discard_actor = 1
+
+    tokenizer._on_gang({"l": 1, "m": "m888=8"})
+    tokenizer._on_kaigang({"baopai": "p0"})
+    tokenizer._emit_pending_dora_reveals()
+
+    p0_idx = next(
+        i for i, token in enumerate(tokenizer.tokens[:-1]) if token == "dora" and tokenizer.tokens[i + 1] == "p0"
+    )
+    assert tokenizer.tokens[p0_idx : p0_idx + 2] == ["dora", "p0"]
+
+
 def test_riichi_take_does_not_emit_riichi_event_token(monkeypatch: pytest.MonkeyPatch) -> None:
     tokenizer = TenhouTokenizer()
     tokenizer._on_qipai(qipai_payload())
