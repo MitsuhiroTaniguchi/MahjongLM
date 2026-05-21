@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+import argparse
+import json
+from collections import OrderedDict
+from pathlib import Path
+from typing import Any
+
+import wandb
+
+
+def load_jsonl_metrics(path: Path) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if "step" in payload:
+                records.append(payload)
+    return records
+
+
+def merge_records(sources: list[tuple[Path, int | None, int | None]]) -> OrderedDict[int, dict[str, Any]]:
+    merged: OrderedDict[int, dict[str, Any]] = OrderedDict()
+    for path, start_step, end_step in sources:
+        for payload in load_jsonl_metrics(path):
+            step = int(payload["step"])
+            if start_step is not None and step < start_step:
+                continue
+            if end_step is not None and step > end_step:
+                continue
+            record = merged.setdefault(step, {"step": step})
+            for key, value in payload.items():
+                if key != "step":
+                    record[key] = value
+    return OrderedDict(sorted(merged.items()))
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def parse_source(value: str) -> tuple[Path, int | None, int | None]:
+    # Format: path[:start:end]. Empty bounds are accepted.
+    parts = value.rsplit(":", 2)
+    if len(parts) == 3 and (parts[1].isdigit() or parts[1] == "") and (parts[2].isdigit() or parts[2] == ""):
+        start = int(parts[1]) if parts[1] else None
+        end = int(parts[2]) if parts[2] else None
+        return Path(parts[0]), start, end
+    return Path(value), None, None
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Re-upload a consolidated W&B history from local JSON metric logs.")
+    parser.add_argument("--project", required=True)
+    parser.add_argument("--entity", default=None)
+    parser.add_argument("--name", required=True)
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--source", action="append", required=True, help="Metric log path, optionally path:start:end")
+    parser.add_argument("--tag", action="append", default=[])
+    parser.add_argument("--notes", default="")
+    args = parser.parse_args()
+
+    sources = [parse_source(value) for value in args.source]
+    merged = merge_records(sources)
+    if not merged:
+        raise RuntimeError("no metric records found")
+
+    training_config = load_json(args.output_dir / "training_config.json")
+    model_config = load_json(args.output_dir / "model_config.json")
+    config = {
+        "training_config": training_config,
+        "model_config": model_config,
+        "source_output_dir": str(args.output_dir),
+        "merged_history_sources": [
+            {"path": str(path), "start_step": start, "end_step": end} for path, start, end in sources
+        ],
+    }
+
+    run = wandb.init(
+        entity=args.entity,
+        project=args.project,
+        id=args.run_id,
+        name=args.name,
+        config=config,
+        tags=args.tag,
+        notes=args.notes,
+        resume="allow",
+    )
+    assert run is not None
+    wandb.define_metric("step")
+    wandb.define_metric("*", step_metric="step")
+
+    for step, record in merged.items():
+        wandb.log(record, step=step)
+
+    final_record = next(reversed(merged.values()))
+    for key, value in final_record.items():
+        if key != "step":
+            run.summary[key] = value
+    run.summary["trainer/global_step"] = max(merged)
+    run.summary["merged/source_record_count"] = sum(len(load_jsonl_metrics(path)) for path, _, _ in sources)
+    run.summary["merged/step_count"] = len(merged)
+    run.summary["merged/min_step"] = min(merged)
+    run.summary["merged/max_step"] = max(merged)
+    wandb.finish()
+
+    print(f"uploaded {len(merged)} steps to {args.entity + '/' if args.entity else ''}{args.project}/{args.run_id}")
+
+
+if __name__ == "__main__":
+    main()
