@@ -1427,6 +1427,61 @@ def test_multiple_hule_emits_shared_ura_dora_before_hule_details(
     assert tokens.count("yaku_ura_dora") == 2
 
 
+def test_multiple_hule_preserves_red_and_normal_five_ura_dora(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        TenhouTokenizer,
+        "_compute_reaction_options",
+        lambda _self, discarder, tile_idx: engine.ReactionDecision(
+            discarder=discarder,
+            discard_tile=tile_idx,
+            options_by_player={1: {"ron"}, 2: {"ron"}},
+            trigger="discard",
+        ),
+    )
+    riichi_name = next(
+        name for name, token in engine.HUPAI_TOKEN_BY_NAME.items() if token == "yaku_riichi"
+    )
+    ura_dora_name = next(
+        name for name, token in engine.HUPAI_TOKEN_BY_NAME.items() if token == "yaku_ura_dora"
+    )
+    win_common = {
+        "baojia": 0,
+        "fubaopai": ["m5", "m0"],
+        "hupai": [{"name": riichi_name, "fanshu": 1}, {"name": ura_dora_name, "fanshu": 2}],
+    }
+    game = minimal_game(
+        [
+            qipai_event(),
+            {"zimo": {"l": 0, "p": "m1"}},
+            {"dapai": {"l": 0, "p": "m1"}},
+            {
+                "hule": {
+                    **win_common,
+                    "l": 1,
+                    "shoupai": "m123p123s123z123m1",
+                    "fenpei": [-2000, 4000, -1000, -1000],
+                }
+            },
+            {
+                "hule": {
+                    **win_common,
+                    "l": 2,
+                    "shoupai": "m234p234s234z123m1",
+                    "fenpei": [-2000, -1000, 4000, -1000],
+                }
+            },
+        ]
+    )
+
+    tokens = TenhouTokenizer().tokenize_game(game)
+
+    ura_idx = tokens.index("ura_dora")
+    assert tokens[ura_idx : ura_idx + 3] == ["ura_dora", "m5", "m0"]
+    assert tokens.count("ura_dora") == 1
+
+
 def test_multiple_hule_emits_declined_ron_pass_before_first_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
