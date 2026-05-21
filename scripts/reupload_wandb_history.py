@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -25,9 +26,16 @@ def load_jsonl_metrics(path: Path) -> list[dict[str, Any]]:
     return records
 
 
-def merge_records(sources: list[tuple[Path, int | None, int | None]], drop_keys: set[str]) -> OrderedDict[int, dict[str, Any]]:
+def merge_records(
+    sources: list[tuple[Path, int | None, int | None]],
+    drop_keys: set[str],
+    cumulative_keys: set[str],
+    include_keys: set[str],
+) -> OrderedDict[int, dict[str, Any]]:
     merged: OrderedDict[int, dict[str, Any]] = OrderedDict()
+    cumulative_offsets = {key: 0.0 for key in cumulative_keys}
     for path, start_step, end_step in sources:
+        source_last_values: dict[str, float] = {}
         for payload in load_jsonl_metrics(path):
             step = int(payload["step"])
             if start_step is not None and step < start_step:
@@ -36,9 +44,17 @@ def merge_records(sources: list[tuple[Path, int | None, int | None]], drop_keys:
                 continue
             record = merged.setdefault(step, {"trainer/global_step": step})
             for key, value in payload.items():
-                if key != "step" and key != "trainer/global_step" and key not in drop_keys:
-                    record[key] = value
-    return OrderedDict(sorted(merged.items()))
+                if key == "step" or key == "trainer/global_step" or key in drop_keys:
+                    continue
+                if include_keys and key not in include_keys:
+                    continue
+                if key in cumulative_offsets and isinstance(value, int | float):
+                    value = value + cumulative_offsets[key]
+                    source_last_values[key] = float(value)
+                record[key] = value
+        for key, value in source_last_values.items():
+            cumulative_offsets[key] = value
+    return OrderedDict((step, record) for step, record in sorted(merged.items()) if len(record) > 1)
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -69,15 +85,33 @@ def main() -> None:
     parser.add_argument("--notes", default="")
     parser.add_argument("--drop-key", action="append", default=[])
     parser.add_argument(
+        "--include-key",
+        action="append",
+        default=[],
+        help="Only upload these metric keys, plus trainer/global_step. By default all non-dropped keys are uploaded.",
+    )
+    parser.add_argument(
+        "--cumulative-key",
+        action="append",
+        default=[],
+        help="Metric key whose per-source elapsed value should be stitched by cumulatively offsetting later sources.",
+    )
+    parser.add_argument(
         "--wandb-step-offset",
         type=int,
         default=None,
         help="Use monotonically increasing internal W&B steps starting after this offset while keeping trainer/global_step unchanged.",
     )
+    parser.add_argument(
+        "--system-sample-seconds",
+        type=float,
+        default=0.0,
+        help="Keep the run open after metric upload so W&B can record at least one system metrics sample.",
+    )
     args = parser.parse_args()
 
     sources = [parse_source(value) for value in args.source]
-    merged = merge_records(sources, set(args.drop_key))
+    merged = merge_records(sources, set(args.drop_key), set(args.cumulative_key), set(args.include_key))
     if not merged:
         raise RuntimeError("no metric records found")
 
@@ -119,6 +153,8 @@ def main() -> None:
     run.summary["merged/step_count"] = len(merged)
     run.summary["merged/min_step"] = min(merged)
     run.summary["merged/max_step"] = max(merged)
+    if args.system_sample_seconds > 0:
+        time.sleep(args.system_sample_seconds)
     wandb.finish()
 
     print(f"uploaded {len(merged)} steps to {args.entity + '/' if args.entity else ''}{args.project}/{args.run_id}")
