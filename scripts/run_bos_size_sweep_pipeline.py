@@ -41,30 +41,6 @@ class ModelSpec:
 
 MODEL_SPECS = (
     ModelSpec(
-        key="1m",
-        label="MahjongLM 1M",
-        raw_repo="mitsutani/mahjonglm-1m",
-        gguf_repo="mitsutani/mahjonglm-1m-q4-k-m-gguf",
-        model_args=(
-            "--qwen-arch",
-            "custom",
-            "--qwen-hidden-size",
-            "128",
-            "--qwen-intermediate-size",
-            "384",
-            "--qwen-num-hidden-layers",
-            "5",
-            "--qwen-num-attention-heads",
-            "4",
-            "--qwen-num-key-value-heads",
-            "1",
-            "--qwen-head-dim",
-            "32",
-            "--qwen-max-position-embeddings",
-            "8192",
-        ),
-    ),
-    ModelSpec(
         key="10m",
         label="MahjongLM 10M",
         raw_repo="mitsutani/mahjonglm-10m",
@@ -483,7 +459,7 @@ def run_model(spec: ModelSpec, run_root: Path) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run BOS-fixed 1M/10M/100M sweep and upload raw + Q4_K_M GGUF.")
+    parser = argparse.ArgumentParser(description="Run BOS-fixed 10M/100M sweep and upload raw + Q4_K_M GGUF.")
     parser.add_argument("--models", nargs="+", choices=[spec.key for spec in MODEL_SPECS], default=[spec.key for spec in MODEL_SPECS])
     parser.add_argument("--run-root", type=Path, default=ROOT / "outputs" / f"bos_size_sweep_pipeline_{now_slug()}")
     parser.add_argument(

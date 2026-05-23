@@ -38,12 +38,6 @@ class ModelSpec:
 
 
 MODEL_SPECS = {
-    "1m": ModelSpec(
-        key="1m",
-        label="MahjongLM 1M",
-        raw_repo="mitsutani/mahjonglm-1m",
-        gguf_repo="mitsutani/mahjonglm-1m-q4-k-m-gguf",
-    ),
     "10m": ModelSpec(
         key="10m",
         label="MahjongLM 10M",
@@ -403,7 +397,7 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         metavar="KEY=OUTPUT_DIR",
-        help="Publish an existing model output directory. KEY is one of 1m, 10m, 100m.",
+        help="Publish an existing model output directory. KEY is one of 10m, 100m.",
     )
     return parser.parse_args()
 

@@ -26,27 +26,6 @@ class ModelSpec:
 
 MODEL_SPECS = (
     ModelSpec(
-        key="1m",
-        model_args=(
-            "--qwen-arch",
-            "custom",
-            "--qwen-hidden-size",
-            "128",
-            "--qwen-intermediate-size",
-            "384",
-            "--qwen-num-hidden-layers",
-            "5",
-            "--qwen-num-attention-heads",
-            "4",
-            "--qwen-num-key-value-heads",
-            "1",
-            "--qwen-head-dim",
-            "32",
-            "--qwen-max-position-embeddings",
-            "16384",
-        ),
-    ),
-    ModelSpec(
         key="10m",
         model_args=(
             "--qwen-arch",
@@ -247,7 +226,7 @@ def run_model(spec: ModelSpec, run_root: Path, *, publish_root: Path | None = No
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run complete/imperfect/omniscient 1M/10M/100M training sweep.")
+    parser = argparse.ArgumentParser(description="Run complete/imperfect/omniscient 10M/100M training sweep.")
     parser.add_argument(
         "--models",
         nargs="+",

@@ -21,7 +21,7 @@ def append_log(path: Path, message: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Publish a model once final_model appears.")
-    parser.add_argument("--key", required=True, choices=["1m", "10m", "100m"])
+    parser.add_argument("--key", required=True, choices=["10m", "100m"])
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--run-root", type=Path, required=True)
     parser.add_argument("--interval-seconds", type=int, default=300)
