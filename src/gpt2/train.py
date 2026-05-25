@@ -452,6 +452,17 @@ def _wandb_summary_update_if_available(wandb_run, payload: dict) -> None:
         wandb_run.summary[key] = value
 
 
+def _wandb_run_id_if_available(wandb_run) -> str | None:
+    if wandb_run is None:
+        return None
+    active_run = getattr(wandb_run, "run", None)
+    run_id = getattr(active_run, "id", None)
+    if run_id is not None:
+        return str(run_id)
+    run_id = getattr(wandb_run, "id", None)
+    return None if run_id is None else str(run_id)
+
+
 def _save_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -2020,7 +2031,7 @@ def train(
                             config=training_config,
                             model_config=model_config,
                             runtime_state=current_runtime_state,
-                            wandb_run_id=getattr(wandb, "id", None),
+                            wandb_run_id=_wandb_run_id_if_available(wandb),
                         )
                     if early_stopped:
                         break
@@ -2104,7 +2115,7 @@ def train(
                         config=training_config,
                         model_config=model_config,
                         runtime_state=current_runtime_state,
-                        wandb_run_id=getattr(wandb, "id", None),
+                        wandb_run_id=_wandb_run_id_if_available(wandb),
                     )
                 if early_stopped:
                     break
