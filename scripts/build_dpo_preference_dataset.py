@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Build MahjongLM DPO preference data from batched same-seed generations. "
-            "Rows follow TRL/Unsloth's prompt/chosen/rejected text format."
+            "Rows are stored as TRL/Unsloth tokenized prompt/chosen/rejected ID columns."
         )
     )
     parser.add_argument("--generations-jsonl", type=Path, required=True)
@@ -45,19 +45,25 @@ def main() -> None:
     args = parse_args()
     tokenizer = MahjongTokenizerFast.from_pretrained(args.tokenizer_dir)
     if tokenizer.bos_token != "<bos>" or tokenizer.eos_token != "<eos>":
-        raise ValueError("Mahjong tokenizer must expose <bos>/<eos> for DPO text rows")
+        raise ValueError("Mahjong tokenizer must expose <bos>/<eos> for DPO rows")
 
     rng = random.Random(args.seed)
     records: list[dict[str, object]] = []
     batch_count = 0
     discarded_same_rank = 0
-    for batch in read_generation_batches(args.generations_jsonl):
+    discarded_no_decision_mask = 0
+    for batch in read_generation_batches(args.generations_jsonl, tokenizer=tokenizer):
         batch_count += 1
         pairs = build_preference_pairs(batch, rng=rng)
         if not pairs:
             discarded_same_rank += 1
             continue
-        records.extend(pair.as_record() for pair in pairs)
+        for pair in pairs:
+            record = pair.as_tokenized_record(tokenizer)
+            if not sum(record["chosen_loss_mask"]) or not sum(record["rejected_loss_mask"]):
+                discarded_no_decision_mask += 1
+                continue
+            records.append(record)
         if args.max_train_rows and len(records) >= args.max_train_rows:
             records = records[: args.max_train_rows]
             break
@@ -81,9 +87,20 @@ def main() -> None:
         eval_count=len(eval_records),
         batch_count=batch_count,
         discarded_same_rank=discarded_same_rank,
+        discarded_no_decision_mask=discarded_no_decision_mask,
     )
     (args.output_dir / "README.md").write_text(card, encoding="utf-8")
-    print(json.dumps({"rows": len(records), "train": len(train_records), "validation": len(eval_records)}, indent=2))
+    print(
+        json.dumps(
+            {
+                "rows": len(records),
+                "train": len(train_records),
+                "validation": len(eval_records),
+                "discarded_no_decision_mask": discarded_no_decision_mask,
+            },
+            indent=2,
+        )
+    )
 
     if args.repo_id and not args.skip_upload:
         token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
@@ -109,6 +126,7 @@ def build_dataset_card(
     eval_count: int,
     batch_count: int,
     discarded_same_rank: int,
+    discarded_no_decision_mask: int,
 ) -> str:
     return f"""---
 language:
@@ -127,9 +145,10 @@ Each row is generated from multiple same-seed `view_omniscient` rollouts. If all
 
 ## Columns
 
-- `prompt`: The shared prompt. For full-game preference DPO this is `<bos>`.
-- `chosen`: The better-ranked `view_imperfect_*` token sequence after `<bos>`, ending with `<eos>`.
-- `rejected`: The worse-ranked `view_imperfect_*` token sequence after `<bos>`, ending with `<eos>`.
+- `prompt_input_ids`: The shared condition IDs, from `<bos>` through `game_start`, including rule tokens and the viewer's `view_imperfect_*` token.
+- `chosen_input_ids`: The better-ranked `view_imperfect_*` completion ID sequence after `game_start`, ending with `<eos>`.
+- `rejected_input_ids`: The worse-ranked `view_imperfect_*` completion ID sequence after `game_start`, ending with `<eos>`.
+- `chosen_loss_mask`, `rejected_loss_mask`: Token-level DPO masks. Only the viewer's discard and take/pass decision tokens are trained; observation, hidden-state, result, and other-player tokens are masked out.
 - `viewer_seat`: The imperfect-information player seat used for the pair.
 - `chosen_rank`, `rejected_rank`: Final placement labels where smaller is better.
 - `seed_id`, `rule_key`, `chosen_generation_index`, `rejected_generation_index`: Provenance fields.
@@ -141,6 +160,7 @@ Each row is generated from multiple same-seed `view_omniscient` rollouts. If all
 - validation rows: {eval_count}
 - generation batches scanned: {batch_count}
 - same-rank batches discarded: {discarded_same_rank}
+- no-decision-mask pairs discarded: {discarded_no_decision_mask}
 """
 
 
