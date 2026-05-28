@@ -805,6 +805,20 @@ def test_riichi_penuki_requires_drawn_north_in_fallback() -> None:
     assert "opt_self_0_penuki" not in tokenizer.tokens
 
 
+def test_non_riichi_penuki_allows_north_from_hand_in_fallback() -> None:
+    tokenizer = _setup_sanma_riichi_with_north_in_hand()
+    tokenizer.players[0].is_riichi = False
+    drawn = tokenizer._add_concealed_token(tokenizer.players[0], "m2")
+
+    options = tokenizer._compute_self_options(0, drawn_tile=drawn)
+    option_tiles = tokenizer._self_option_tiles(0, drawn_tile=drawn)
+    tokenizer._emit_self_options(0, options, option_tiles)
+
+    assert "penuki" in options
+    assert option_tiles["penuki"] == ["z4"]
+    assert "opt_self_0_penuki" in tokenizer.tokens
+
+
 def test_riichi_penuki_allows_drawn_north_in_fallback() -> None:
     tokenizer = _setup_sanma_riichi_with_north_in_hand()
     drawn = tokenizer._add_concealed_token(tokenizer.players[0], "z4")
