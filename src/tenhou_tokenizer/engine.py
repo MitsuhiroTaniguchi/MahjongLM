@@ -1739,6 +1739,8 @@ class TenhouTokenizer:
 
         if self.live_draws_left <= 0:
             options.difference_update({"ankan", "kakan", "penuki"})
+        if drawn_tile != tile_to_index("z4"):
+            options.discard("penuki")
 
         return options
 
@@ -2692,7 +2694,7 @@ class TenhouTokenizer:
     def _self_option_tiles(self, actor: int, drawn_tile: int) -> Dict[str, List[str]]:
         option_tiles: Dict[str, List[str]] = {}
         option_tiles["tsumo"] = [index_to_tile(drawn_tile)]
-        if self.seat_count == 3 and self.players[actor].concealed[tile_to_index("z4")] > 0:
+        if self.seat_count == 3 and drawn_tile == tile_to_index("z4"):
             option_tiles["penuki"] = ["z4"]
         ankan_tiles = self._ankan_candidate_tiles(actor, drawn_tile=drawn_tile)
         if ankan_tiles:

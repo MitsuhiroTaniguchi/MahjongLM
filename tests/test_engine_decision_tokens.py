@@ -774,6 +774,63 @@ def test_last_penuki_replacement_discard_sets_houtei_context(monkeypatch: pytest
     assert all(flags == (True, False, False) for flags in seen)
 
 
+def _setup_sanma_riichi_with_north_in_hand() -> TenhouTokenizer:
+    tokenizer = TenhouTokenizer()
+    tokenizer.seat_count = 3
+    tokenizer._on_qipai(
+        qipai_payload(
+            seat_count=3,
+            hands=[
+                "m119p19s19z123445",
+                "m119p19s19z123456",
+                "m119p19s19z123456",
+            ],
+        )
+    )
+    tokenizer.players[0].is_riichi = True
+    tokenizer.players[0].is_first_turn = False
+    return tokenizer
+
+
+def test_riichi_penuki_requires_drawn_north_in_fallback() -> None:
+    tokenizer = _setup_sanma_riichi_with_north_in_hand()
+    drawn = tokenizer._add_concealed_token(tokenizer.players[0], "m2")
+
+    options = tokenizer._compute_self_options(0, drawn_tile=drawn)
+    option_tiles = tokenizer._self_option_tiles(0, drawn_tile=drawn)
+    tokenizer._emit_self_options(0, options, option_tiles)
+
+    assert "penuki" not in options
+    assert "penuki" not in option_tiles
+    assert "opt_self_0_penuki" not in tokenizer.tokens
+
+
+def test_riichi_penuki_allows_drawn_north_in_fallback() -> None:
+    tokenizer = _setup_sanma_riichi_with_north_in_hand()
+    drawn = tokenizer._add_concealed_token(tokenizer.players[0], "z4")
+
+    options = tokenizer._compute_self_options(0, drawn_tile=drawn)
+    option_tiles = tokenizer._self_option_tiles(0, drawn_tile=drawn)
+
+    assert "penuki" in options
+    assert option_tiles["penuki"] == ["z4"]
+
+
+def test_riichi_penuki_requires_drawn_north_with_simulation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(engine, "PM_STATELESS_SIMULATION_API_AVAILABLE", True)
+    monkeypatch.setattr(engine, "PM_THREE_PLAYER_API_AVAILABLE", True)
+    tokenizer = _setup_sanma_riichi_with_north_in_hand()
+    drawn = tokenizer._add_concealed_token(tokenizer.players[0], "m2")
+
+    options = tokenizer._compute_self_options(0, drawn_tile=drawn)
+    option_tiles = tokenizer._self_option_tiles(0, drawn_tile=drawn)
+    tokenizer._emit_self_options(0, options, option_tiles)
+
+    assert "penuki" not in options
+    assert "penuki" not in option_tiles
+    assert "opt_self_0_penuki" not in tokenizer.tokens
+
+
 def test_sanchahou_takes_all_offered_ron(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(TenhouTokenizer, "_compute_self_options", lambda *_args, **_kwargs: set())
 
@@ -1136,7 +1193,7 @@ def test_kyushukyuhai_is_not_offered_after_penuki() -> None:
     game = minimal_game(
         [
             qipai_event(hands=hands, seat_count=3),
-            {"zimo": {"l": 0, "p": "m9"}},
+            {"zimo": {"l": 0, "p": "z4"}},
             {"penuki": {"l": 0, "p": "z4"}},
             {"zimo": {"l": 0, "p": "z5"}},
             {"dapai": {"l": 0, "p": "z5_"}},
@@ -1145,7 +1202,7 @@ def test_kyushukyuhai_is_not_offered_after_penuki() -> None:
 
     tokens = TenhouTokenizer().tokenize_game(game)
 
-    first_draw_idx = tokens.index("draw_0_m9")
+    first_draw_idx = tokens.index("draw_0_z4")
     replacement_draw_idx = tokens.index("draw_0_z5")
     first_draw_block = tokens[first_draw_idx:replacement_draw_idx]
     replacement_draw_block = tokens[replacement_draw_idx:]
@@ -1167,7 +1224,7 @@ def test_kyushukyuhai_is_not_offered_after_other_player_penuki() -> None:
             qipai_event(hands=hands, seat_count=3),
             {"zimo": {"l": 0, "p": "m1"}},
             {"dapai": {"l": 0, "p": "m1_"}},
-            {"zimo": {"l": 1, "p": "p4"}},
+            {"zimo": {"l": 1, "p": "z4"}},
             {"penuki": {"l": 1, "p": "z4"}},
             {"zimo": {"l": 1, "p": "m2"}},
             {"dapai": {"l": 1, "p": "m2_"}},

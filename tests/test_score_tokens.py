@@ -701,7 +701,7 @@ def test_three_player_self_options_respect_simulated_penuki_mask() -> None:
 
     engine.pm = _FakePm()
     try:
-        options = tokenizer._compute_self_options(actor=0, drawn_tile=tile_to_index("m1"), is_gangzimo=False)
+        options = tokenizer._compute_self_options(actor=0, drawn_tile=tile_to_index("z4"), is_gangzimo=False)
     finally:
         engine.pm = original_pm
         engine.PM_SIMULATION_API_AVAILABLE = original_simulation
@@ -718,13 +718,16 @@ def test_three_player_fallback_self_options_offer_penuki() -> None:
     tokenizer.players[0].concealed[tile_to_index("z4")] = 1
     tokenizer.live_draws_left = 10
 
+    original_stateless_simulation = engine.PM_STATELESS_SIMULATION_API_AVAILABLE
     original_simulation = engine.PM_SIMULATION_API_AVAILABLE
     original_three_player = engine.PM_THREE_PLAYER_API_AVAILABLE
+    engine.PM_STATELESS_SIMULATION_API_AVAILABLE = False
     engine.PM_SIMULATION_API_AVAILABLE = False
     engine.PM_THREE_PLAYER_API_AVAILABLE = False
     try:
-        options = tokenizer._compute_self_options(actor=0, drawn_tile=tile_to_index("m1"), is_gangzimo=False)
+        options = tokenizer._compute_self_options(actor=0, drawn_tile=tile_to_index("z4"), is_gangzimo=False)
     finally:
+        engine.PM_STATELESS_SIMULATION_API_AVAILABLE = original_stateless_simulation
         engine.PM_SIMULATION_API_AVAILABLE = original_simulation
         engine.PM_THREE_PLAYER_API_AVAILABLE = original_three_player
 
