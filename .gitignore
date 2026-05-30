@@ -11,6 +11,7 @@ dist/
 outputs/
 checkpoints/
 wandb/
+.claude/
 
 # Data is kept locally but not committed.
 data/raw/

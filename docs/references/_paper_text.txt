@@ -1,0 +1,1779 @@
+===PAGE 1 ===
+Success Conditioning as Policy Improvement:
+The Optimization Problem Solved by Imitating Success
+Daniel Russo
+Columbia University
+January 27, 2026
+Abstract.
+A widely used technique for improving policies is
+success conditioning, in which one collects trajectories,
+identifies those that achieve a desired outcome, and up-
+dates the policy to imitate the actions taken along suc-
+cessful trajectories. This principle appears under many
+names—rejection sampling with SFT, goal-conditioned
+RL, Decision Transformers—yet what optimization prob-
+lem it solves, if any, has remained unclear. We prove
+that success conditioning exactly solves a trust-region
+optimization problem, maximizing policy improvement
+subject to a χ2 divergence constraint whose radius is
+determined automatically by the data. This yields an
+identity: relative policy improvement, the magnitude of
+policy change, and a quantity we call action-influence—
+measuring how random variation in action choices affects
+success rates—are exactly equal at every state. Success
+conditioning thus emerges as a conservative improvement
+operator. Exact success conditioning cannot degrade per-
+formance or induce dangerous distribution shift, but when
+it fails, it does so observably, by hardly changing the pol-
+icy at all. We apply our theory to the common practice
+of return thresholding, showing this can amplify improve-
+ment, but at the cost of potential misalignment with the
+true objective.
+1. Introduction
+We study success conditioning: a heuristic for improv-
+ing policies in which one collects trajectories, identifies
+those that achieve a desired outcome, and updates the
+policy to imitate the actions taken along successful trajec-
+tories. This principle aims to improve performance while
+sidestepping explicit policy optimization, and appears
+across domains.
+In language model alignment, rejection sampling fol-
+lowed by supervised fine-tuning on high-reward comple-
+tions is now a core component of post-training pipelines
+(Touvron et al., 2023; Grattafiori et al., 2024). In rea-
+soning, methods like STaR fine-tune on self-generated
+rationales that yield correct answers (Zelikman et al.,
+2022), while large-scale systems such as DeepSeek-R1
+apply the same strategy to stabilize reinforcement learn-
+ing (Guo et al., 2025). In tool use, models are trained
+on calls that improve downstream predictions (Schick
+et al., 2023), and in embodied learning, success detectors
+filter autonomously collected trajectories (Ghasemipour
+et al., 2025). In a distinct literature within reinforcement
+learning, the same idea appears under a different guise:
+return-conditioned models such as Decision Transformers
+generate actions conditional on achieving high returns
+(Schmidhuber, 2019; Chen et al., 2021).
+Despite differing implementations, these methods share
+a common structure:learn to act as you would have, given
+that you eventually succeed. Intuitively, this might im-
+prove upon the behavior policy by retaining what worked
+and discarding what did not. Yet it is unclear how to
+understand success conditioning in a principled manner,
+as it does not estimate value functions, compute policy
+gradients, or otherwise perform explicit policy optimiza-
+tion. The abstract of the original Decision Transformer
+paper (Chen et al., 2021) emphasizes this contrast, stating
+informally: “Unlike prior approaches to RL that fit value
+functions or compute policy gradients, Decision Trans-
+former simply outputs the optimal actions by leveraging
+a causally masked Transformer.”
+Subsequent work examined this interpretation and
+showed that, when viewed as a route to optimal policy re-
+covery, success conditioning has fundamental limitations,
+particularly in stochastic environments (Brandfonbrener
+et al., 2022; Paster et al., 2022; Yang et al., 2023). Ex-
+ample 3.1 presents a simple two-armed bandit in which
+a single step of success conditioning yields negligible
+improvement.
+At the same time, success conditioning continues to
+see widespread use across reinforcement learning and
+post-training pipelines. This raises a natural question:if
+success conditioning does not recover optimal policies,
+what is it optimizing for?
+1
+arXiv:2601.18175v1  [cs.AI]  26 Jan 2026
+===PAGE 2 ===
+1.1. Our contribution
+We show that success conditioning can be precisely in-
+terpreted as aconservative policy improvement operator:
+one that finds the largest gain achievable without ventur-
+ing too far outside observed behavior. The most notable
+failures of success conditioning have a distinctive char-
+acter that aligns exactly with this interpretation. Proper
+success conditioning (defined by π+ in Section 2) does
+not fail unpredictably at deployment time by moving to
+under-performing actions or inducing harmful distribution
+shift. Instead, when it fails, it does so by barely changing
+the policy at all—a form of over-conservatism. The boxes
+below summarize our primary novel contributions:
+The Trust-Region Equivalence
+Success conditioning is the exact solution to a trust-
+region policy optimization problem with unique
+geometry— χ2 divergence rather than KL—and a
+radius determined automatically by a quantity we
+call action-influence, which measures the variabil-
+ity in success rates induced by the behavior policy’s
+action selection.
+The Action-Influence Identity
+The following are equal at every state:
+1. Relative improvement from success condition-
+ing, as measured by expected relative advantage
+2. Policy change from the behavior policy, as mea-
+sured byχ 2 divergence
+3. Action-influence under the behavior policy
+These quantities are not merely related but exactly
+equal, implying that the extent of policy change—
+and equivalently, the variability induced by action
+selection under the behavior policy—provides a
+direct diagnostic of the magnitude of improvement.
+These results place success conditioning in the same
+family as TRPO and PPO Schulman et al. (2015, 2017)—
+trust-region methods that maximize a local approximation
+to performance while remaining close to the current policy.
+However, success conditioning differs from these methods
+in three fundamental ways.
+First, success conditioning is typically not formulated
+or implemented as a trust-region optimization procedure:
+it is defined via Bayesian conditioning and implemented
+by training sequence models on filtered trajectories. Sec-
+ond, the implicit trust region induced by success condi-
+tioning has a radius that is determined automatically by
+variation in the offline data, rather than by a user-chosen
+hyperparameter. Third, the geometry of the trust region
+is substantially more conservative. The χ2 divergence
+severely restricts exploration outside the support of the
+behavior policy, in contrast to the KL-based trust regions
+used in TRPO and PPO (see Section 4.5).
+Outline of the paper.Section 2 formalizes success con-
+ditioning in the setting of episodic Markov decision pro-
+cesses and defines the success-conditioned policy π+.
+Section 4 contains our main theory, showing that success
+conditioning exactly solves a trust-region policy optimiza-
+tion problem and establishing the action-influence identity.
+Section 5 discusses the implications of this perspective for
+learning π+ from data and for the reliability of supervised
+fine-tuning on successful trajectories. Section 6 success
+conditioning in problems where rewards are dense. It
+interprets the common practice of return conditioning
+as optimizing a proxy reward that may amplify action-
+influence but risks misalignment with the true objective.
+Section 7 situates our results within the broader literature.
+2. Markov decision process formulation
+We formulate the problem using the language of Markov
+Decision Processes. Later, we will see how examples like
+language model generation can fit this model.
+A trajectory in an episodic Markov decision process is
+a sequence τ= (S 1, A1, . . . , ST−1 , AT−1 , ST ) consist-
+ing of discrete states St ∈ S and actions At ∈ A . The
+episode ends at the first time T at which St ∈ T , where
+T ⊂ S is a set of terminal states. Conditioning on success
+is inherently conditioning on a binary event. As such, we
+formalize success events by partitioning T into success-
+ful and failed terminal states, and define a binary reward
+R(τ)∈ {0,1} indicating whether the trajectory ended
+in success. See Section 6 for a precise reduction from
+general bounded rewards and a discussion of proxy suc-
+cess criteria, including return thresholding for continuous
+rewards.
+Observed trajectories are generated by a Markovian
+behavior policy π0. We have that S1 is drawn from a
+fixed initial distribution µ and, at any time t, the next
+action is drawn conditioned on the current state as At ∼
+π0(· |S t) and transitions follow a fixed kernel St+1 ∼
+P(· |S t, At).
+Success conditioning.From observed trajectories and
+rewards, we define the success-conditioned policy
+π+(a|s) =P π0 (At =a|S t =s, R(τ) = 1).
+2
+===PAGE 3 ===
+This policy mimics the distribution of actions taken along
+trajectories that ended in success. To avoid repeated qual-
+ifiers regarding division by zero, we assume that success
+is possible from any non-terminal state under π0, though
+it may occur with arbitrarily small probability.
+Note that the success-conditioned policy can be viewed
+as the minimizer of the next-action-prediction loss on suc-
+cessful trajectories,
+π+ ∈arg min
+ˆπ
+(
+ℓ(ˆπ) :=E
+"
+−
+TX
+t=1
+log ˆπ(At|St)
+#
+,
+)
+where(S 1, A1, . . . , ST )∼P π0(τ|R(τ) = 1)
+and approximated by training a sequence model on a
+dataset of successful trajectories. We mainly focus on
+exact success conditioning, touching on approximation
+errors in Prop. 5.1.
+Example 2.1(Language Model Fine-Tuning).In lan-
+guage generation, a state St is the sequence of tokens
+generated so far, an action At ∈ V is the next token
+selected from vocabulary V and the transition is deter-
+ministic: tokens are appended as St+1 = (St, At). The
+behavior policy π0 is the base model’s next-token distribu-
+tion. Success R(τ) = 1 indicates the completed sequence
+met some criterion—for instance, a correct answer or
+a positive human rating. Supervised fine-tuning on suc-
+cessful completions trains a model to approximate π+: it
+imitates the token-level choices made along trajectories
+that ended in success.
+Remark 2.2.The state St may encode the full history of
+observations up to time t. This is necessary when the tran-
+sition kernel depends on history, but also when π0 is not
+itself a single Markov policy—for instance, if trajectories
+are collected from a mixture of policies. Architectures like
+transformers make it feasible to operate with history as
+state.
+2.1. Some notation
+We follow the convention throughout thatsdenotes a
+non-terminal state. Hence, the event St =s already
+implies that T > t and the episode has not yet termi-
+nated.
+We define a few key terms:
+• Success probability:ρ(π) :=P π(R(τ) = 1)
+• Value function:V π(s) =P π(R(τ) = 1|S t =s)
+• Q-value:Q π(s, a) =P π(R(τ) = 1|S t =s, A t =a)
+• Advantage function:A π(s, a) =Q π(s, a)−V π(s)
+•Special notation:A π(s, π′) :=E a∼π′(s,·) [Aπ(s, a)].
+• Occupancy measure:d π(s) =E π
+hPT−1
+t=1 1(St =s)
+i
+• Success conditioned occupancy
+d+
+π (s) =E π
+hPT−1
+t=1 1(St =s)|R(τ) = 1
+i
+.
+3. Action-influence and the failure mode of success
+conditioning
+3.1. The failure mode of success conditioning
+Example 3.1.Consider a two-armed bandit . There is
+no state and the process terminates after a single period.
+Arm 1 succeeds with probability 0.495 and arm 2 with
+probability 0.505. The behavior policy pulls each arm
+with equal probability, achieving an overall success rate
+of 0.5.
+The success-conditioned policy is easy to compute.
+By Bayes’ rule, it assigns probability π+(a) =P(R=
+1∧A 1 =a)/P(R= 1) to each arm: 0.495 to arm 1 and
+0.505 to arm 2. This improves the success rate from 0.5
+to 0.50005—a gain of 0.00005.
+From sufficient data, it would be easy to learn the
+optimal policy, which pulls arm 2 always and has success
+rate 0.505. Success conditioning closes only 1% of the
+gap to optimal.
+What went wrong? Success conditioning asks: con-
+ditioned on success, which arm was pulled? Since both
+arms succeed at nearly the same rate, the posterior barely
+differs from the prior.Due to low variation in success
+rates across actions, the success-conditioned policy re-
+mains nearly identical to the behavior policy, offering
+minimal improvement. Unlike RL methods that fail due
+to updating the policy dangerously—resulting in uncon-
+trolled distribution shift— success conditioning seems to
+fail observably by hardly updating the policy at all.
+3.2. Influence of the action-draw
+The example above hints that the extent of improvement
+offered by success conditioning is governed by some no-
+tion of variability in action-success. The right measure of
+this turns out be the measure below.
+Definition 3.2.The influence of the action-draw
+at a state is defined by the square of thecoefficient
+of variationof theQ π0(s,·)over the action draw:
+Iπ0(s) :=
+Stdeva∼π0(·|s) [Qπ0(s, a)]
+Ea∼π0(·|s) [Qπ0(s, a)]
+2
+We abbreviate it as the action-influence at states.
+It measures statistical variation in success proba-
+bilities induced by the stochastic action draw under
+the behavior policy.
+3
+===PAGE 4 ===
+Remark 3.3.It is also possible to show the alternate
+form,
+Iπ0(s) =E a∼π0(·|s)
+" Aπ0(s, a)
+Vπ0(s)
+2#
+.
+Notice that action-influence is zero if the behavior
+policy is deterministic or if no two actions result in sub-
+stantially different success probabilities. It is large only
+when the stochasticity in the behavior policy meaning-
+fully affects final outcomes. In Example 3.1, Iπ0 =
+0.5×
+  −0.005
+0.5
+2
++ 0.5×
+  0.005
+0.5
+2
+= 0.0001, precisely
+capturing the limited signal provided by a success indica-
+tor.
+4. Success conditioning as trust region optimization
+4.1. Background on policy improvement theory
+Given a behavior policy π0 how do we find a new policy
+π with improved success probability, i.e. ρ(π)> ρ(π 0).
+Classical dynamic programming theory suggests to find
+asingle period deviationfrom π0, by seeking a positive
+one-step advantage (Aπ0(s, π)>0) at all states. A pol-
+icy gradient perspective suggests instead to improve π0
+throughsmall, but persistent policy deviations.
+These two views turn out to be intimately linked. The
+performance difference lemma (Kakade and Langford,
+2002) enables us to expand ρ(π) around the behavior
+policyπ 0 as:
+ρ(π) =ρ(π 0) +L π0(π) + Remπ0(π)
+where the first-order term
+Lπ0(π) :=
+X
+s
+dπ0(s) [Aπ0(s, π)]
+measures whether the new policy takes actions with posi-
+tive advantage at states visited by π0. This term is linear
+inπ. The remainder term in this Taylor expansion
+Remπ0(π) =
+X
+s
+(dπ(s)−d π0(s))A π0(s, π)
+captures distribution shift — changes in the aggregate
+advantage under the occupancyd π relative tod π0.
+4.2. A Generic Template for Trust Region Methods
+Trust region methods maximize the local approximation
+to policy performance Lπ0(π) while constraining how
+far the new policy can deviate from the old, so that local
+approximation remains accurate. They usually take the
+form:
+max
+π
+Lπ0(π)s.t.
+X
+s
+w(s)D(π(·|s) ;π 0(·|s))≤Γ.(1)
+Instantiating this template typically requires three key ob-
+jects: (1)the state importance-weights w(·), (ii)the diver-
+gence measure D which defines the sensitivity to possible
+deviations from the behavior policies action probabilities
+and (iii)the radius Γ, which must delicately balance im-
+provement potential and safety. A rich line of theoretical
+work studies the convergence of local policy improve-
+ment methods (Kakade and Langford, 2002; Agarwal
+et al., 2021; Bhandari and Russo, 2024; Cen et al., 2022).
+4.3. The optimization problem solved by success con-
+ditioning
+The next theorem shows that success conditioning is the
+exactsolution to a the following trust region problem:
+max
+π
+Lπ0(π)
+s.t.
+X
+s
+d+
+π0(s)χ2(π(·|s)∥π0(·|s))≤
+X
+s
+d+
+π0(s)Iπ0(s)
+In words, success conditioning exactly maximizes the
+first-order policy optimization Lπ0(π) subject to the con-
+straint that the policy moves no more in χ2 divergence
+than the aggregate action-influence under the behavior
+policy. Here d+
+π0 denotes the state-occupancy undersuc-
+cessfultrajectories generated by the behavior policy (See
+Sec. 2.1).
+Proposition 4.1.The success-conditioned policy
+π+ is an optimal solution to the trust region prob-
+lem(1)with
+1. State importance weights equal to the success-
+conditioned occupancy measure: w(s) =
+d+
+π0(s).
+2. Chi-squared divergence:D=χ 2(·||·).
+3. RadiusΓ = P
+s d+
+π0(s)Iπ0(s).
+The χ2 divergence is defined below and compared
+carefully to KL divergence measures in Section 4.5. Roughly,
+we will show this is a conservative measure, which heav-
+ilypenalizes exploring actionsthat are extremely rare
+under π0, but istolerant of dropping actionsthe behavior
+policy explored.
+Definition 4.2.For pmfsPandQover an alphabetX,
+χ2(P||Q) =
+X
+x∈X
+ P(x)
+Q(x) −1
+2
+Q(x) = Varx∼Q
+ P(x)
+Q(x)
+
+.
+4
+===PAGE 5 ===
+4.4. An identity quantifying the magnitude of policy
+improvement
+The next lemma provides further insight into the optimizer
+π+. At the optimum, the constraint is binding, so that the
+magnitude of policy change in χ2 divergence is exactly
+equal to aggregate action-influence. Moreover, both quan-
+tities are equal to the normalized objective value attained,
+Lπ0(π+)/ρ(π0) — which quantifies the first-order pol-
+icy improvement relative to the success rate of the base
+policy.
+Proposition 4.3(Weighted Action-Influence-Identity).
+Under the success-conditioned policyπ +,
+Lπ0(π+)/ρ(π0)| {z }
+First-order improvement
+=
+X
+s
+d+
+π0(s)χ2(π+(·|s)∥π0(·|s))
+| {z }
+Magnitude of policy change
+=
+X
+s
+d+
+π0(s)Iπ0(s)
+| {z }
+Action-influence
+This remarkable property indicates that success con-
+ditioning is always conservative — it never moves more
+than it can improve — and its failure mode arises when
+action-influence is very small, in which case it stays at
+the behavior policy and does little of consequence, just as
+in Example 3.1.
+Among these three equal quantities,the magnitude
+of policy change is particularly useful as a diagnostic.
+Policy improvement is the object of interest but is only
+revealed after deployment. Action-influence determines
+the achievable magnitude of improvement but depends
+on value functions that success conditioning avoids esti-
+mating. By contrast, the χ2 divergence between π+ and
+π0 is directly observable during training. Proposition 4.3
+links these quantities exactly, making policy movement
+an advance diagnostic of both improvement and action-
+influence.
+Beyond the first-order objective.Proposition 4.3 is
+corollary of the following more refined equality that holds
+at every state individually.
+Proposition 4.4.For any states,
+[Aπ0(s, π+)]
+Vπ0(s)| {z }
+Relative advantage
+=χ 2 (π+(s,·)||π 0(s,·)| {z }
+Magnitude of policy change
+=I π0(s)| {z }
+Action-influence
+.
+This more refined result lets us show that success
+conditioning improves the true success probabilities(ρ(π)
+and/or Vπ(s)) and not just the first-order approximation.
+A formula for the exact improvement ρ(π+)−ρ(π) can
+be given using the performance difference lemma (see
+Appendix B).
+Corollary 4.5(Policy improvement). ρ(π+)≥
+ρ(π0)and, at any states,
+Vπ+(s)−V π0(s)
+Vπ0(s) ≥ I π0(s)≥0.
+4.5. Comparison with other trust region optimization
+problems
+While success conditioning appears unrelated to explicit
+policy optimization—requiring only supervised learning
+on filtered trajectories—we have shown that the Bayesian
+update defining π+ is equivalently the solution to a trust-
+region optimization problem. This trust-region formu-
+lation differs in subtle but important ways from those
+commonly studied in the literature, which we now dis-
+cuss.
+The broad view that emerges is that success condition-
+ing is acautiousmethod. This is reflected in the geometry
+of its trust region: the χ2 constraint heavily penalizes
+assigning significant probability to actions that were rare
+under the behavior policy. It is also reflected in the auto-
+matically determined trust-region radius, which prevents
+degradation in policy performance but may severely limit
+improvement when action-influence is small. We now
+compare this optimization problem to the KL-constrained
+formulations that dominate the literature.
+4.5.1. Comparison with reverse KL (TRPO).
+Trust Region Policy Optimization (TRPO) Schulman et al.
+(2015) and its widely used approximation, Proximal Pol-
+icy Optimization (PPO) Schulman et al. (2017) are among
+the most widely used RL algorithms. TRPO aims to solve
+TRPO:max
+π
+Lπ0(π)
+s.t.
+X
+s
+dπ0(s)D KL
+ 
+π0(· |s)∥π(· |s)
+
+≤Γ.
+This ‘reverse’ KL constraint penalizes the new policy for
+droppingactions taken by the old policy, enforcing cover-
+age; any feasible policy must remain stochastic whenever
+the behavior policy was. By contrast, the trust-region
+problem corresponding to success conditioning replaces
+the reverse KL divergence with a χ2 constraint weighted
+by the success-conditioned occupancy measure. This
+change reverses the geometric bias of the trust region:
+instead of penalizing the removal of previously taken ac-
+5
+===PAGE 6 ===
+tions, the χ2 constraint penalizes assigning probability to
+actions that were rarely taken under the behavior policy.
+Consequently, a policy satisfying aχ2 constraint may con-
+centrate its probability mass on a single action, provided
+that action was well supported under the behavior policy
+(Figure 1).
+4.5.2. Comparison with forward KL (MDPO).
+Alternatives to TRPO based on forward KL or entropy-
+regularized objectives have also been studied, including
+regularized Markov decision processes Geist et al. (2019)
+and mirror-descent policy optimization (MDPO)Tomar
+et al. (2022). MDPO solves
+MDPO:max
+π
+Lπ0(π)
+s.t.
+X
+s
+dπ0(s)D KL
+ 
+π(· |s)∥π 0(· |s)
+
+≤Γ.
+This ‘forward’ KL constraint is qualitatively closer to
+the χ2 constraint: both penalize deviations outside the
+support of the behavior policy. However, theχ2 constraint
+is substantially more restrictive. Lemma 4.3 makes this
+precise: under a fixed forward KL budget, the maximum
+probability assignable to a rare action of the behavior
+policy with probability δ scales as 1/log(1/δ) , whereas
+under a χ2 constraint it scales as
+√
+δ. For rare actions,√
+δ≪1/log(1/δ) , so the χ2 trust region keeps the policy
+much closer to observed behavior.
+Lemma 4.6(Tolerance for exploring rare actions).Fix
+an integer k≥2 . Consider a single state with action set
+{a⋆, a1, . . . , ak}and behavior policy
+π0(a⋆) =δ, π 0(ai) = 1−δ
+k (i= 1, . . . , k),
+where δ∈(0,1) is the probability of the rare action a⋆.
+For any candidate policyπ, writep:=π(a ⋆).
+Fix a constant divergence budget ε >0 independent
+ofδ. Then,
+sup
+n
+π(a⋆) :χ 2(π∥π0)≤ε
+o
+= Θ(
+√
+δ),
+whereas,
+sup
+n
+π(a⋆) :D KL(π∥π0)≤ε
+o
+= Θ
+ 1
+log(1/δ)
+
+.
+The implied constants depend onεbut not onk.
+5. Success conditioning from data
+We have shown that the success-conditioned policy π+
+solves a trust-region optimization problem with guaran-
+0.0 0.2 0.4 0.6 0.8 1.0
+(a1)
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0(a2)
+Concentration
+prohibited
+0
+a1
+a2
+KL Trust Region (TRPO/PPO)
+"Forgetting is expensive"
+0.05
+0.15
+0.30
+0.50
+0.0 0.2 0.4 0.6 0.8 1.0
+(a1)
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Concentration
+permitted
+0
+a1
+a2
+2 Trust Region (Success Conditioning)
+"Exploring is expensive"
+0.1
+0.4
+1.0
+2.0
+Figure 1:Trust region geometry for a three-action problem
+with π0 = (0.49,0.49,0.02) . The simplex constraint re-
+stricts policies to the region below the diagonal.Top:KL
+prohibits concentration.Bottom: χ2 permits concentration
+but penalizes shifting mass toward actions that are rare under
+π0.
+teed improvement. Since π+ is equivalently the mini-
+mizer of the next-action prediction loss on successful tra-
+jectories (Section 2), a natural question is whether fitting
+this objective well offline translates to good deployment
+performance.
+The answer takes a familiar form: deployment error
+is bounded by offline loss times adistribution shiftterm.
+The distribution shift is captured by the ratio
+M:= sup
+s
+d+
+π0(s)
+dπ+(s) .
+which has a clear semantic meaning: it compares occu-
+pancy under the learned policy to occupancy success-
+conditioned trajectories fromπ 0. (See Sec 2.1)
+Proposition 5.1.Suppose an estimated policy ˆπachieves
+6
+===PAGE 7 ===
+excess cross-entropy loss∆ =ℓ(ˆπ)−ℓ(π+) relative to the
+success-conditioned policy. Then its success probability
+satisfies|ρ(ˆπ)−ρ(π +)| ≤
+p
+M·∆/2.
+Such bounds are ubiquitous in offline RL, where
+distribution-shift terms are often difficult to interpret or
+control. Here, M= 1 whenever state transitions are
+deterministic—including autoregressive sequence genera-
+tion. By definition, success-conditioned trajectories have
+the same conditional action distribution as executing π+,
+and under deterministic dynamics this implies the same
+induced state occupancy. In such settings, the supervised
+objective aligns directly with deployment performance,
+with no distribution-shift penalty.
+6. Dense rewards, return thresholding, and influence
+amplification
+Many reinforcement learning problems involve dense re-
+wards, but conditioning on success inherently requires
+specifying a binary success criterion. A common response
+is return thresholding: defining a trajectory as successful
+if the cumulative reward exceeds a specified threshold.
+Prior work has observed that conditioning on overly high
+thresholds can degrade average performance by “counting
+on luck,” emphasizing stochastic outcomes rather than
+reliable action choices Paster et al. (2022); Yang et al.
+(2023).
+This section provides a precise perspective on this
+phenomenon. Section 6.1 defines a theoretically faithful
+reduction from dense rewards to binary ones, allowing
+our policy improvement guarantees to extend directly
+to this setting. Relative to this faithful binary reward,
+return thresholding can be viewed as a proxy success
+criterion—one that may differ from the objective used in
+evaluation. We extend our policy improvement analysis
+to such proxy rewards, showing that they can amplify
+action-influence and hence improvement up to a point, but
+risk degrading performance when misalignment becomes
+severe.
+6.1. Faithful binary rewards
+We define a theoretically faithful reduction from dense
+rewards to binary ones, allowing our policy improvement
+guarantees to extend directly. Suppose the terminal return
+Y=Y(τ) takes values in [0,1] (or is normalized to
+this range). For analysis, we can equivalently view each
+trajectory as associated with a binary success variable
+R(τ)∈ {0,1} drawn once from Bernoulli(Y(τ)) , so that
+P(R(τ) = 1|τ) =Y(τ) . Once drawn, this label is fixed
+and treated as the trajectory’s outcome.
+This unbiased labeling preserves the original objective
+in expectation: since E[R(τ)] =E[Y(τ)] , maximizing
+success probability P(R(τ) = 1) under any policy is
+equivalent to maximizing expected returnE[Y(τ)] . More-
+over, once labels are assigned, the setting matches our
+earlier framework exactly— R is a deterministic function
+of the labeled trajectory, and all preceding results apply
+without modification. Success conditioning with respect
+to these binary labels therefore yields policy updates that
+improve the original expected-return objective.
+6.2. Proxy rewards and their effects
+In practice, success is often defined using alternative,
+hand-crafted criteria rather than a faithful reduction of the
+underlying reward. We refer to such choices asproxy re-
+wards. A common example is return thresholding, where
+˜R(τ) =1{Y(τ)> θ} (see Sec. 6.3). The next result pro-
+vides an exact characterization of the benefits and risks of
+conditioning on proxy rewards. .
+Let ˜R be a proxy-reward. We use tildes to denote the
+corresponding objects, with ˜Qπ0 denoting the Q-function
+under the behavior policy, ˜Iπ0(s) denoting the action-
+influence at state s (the squared coefficient of variation of
+˜Qπ0) and ˜π+(s, a) =P π0
+
+At =a|S t =s, ˜R(τ) = 1
+
+denoting the corresponding success conditioned-policy.
+Proposition 6.1.For any non-terminal states,
+Aπ0(s,˜π+)
+Aπ0(s, π+) =
+s
+˜Iπ0(s)
+Iπ0(s) ·Corr
+a∼π0
+
+Aπ0(s, a) ˜Aπ0(s, a)
+
+| {z }
+alignment
+.
+Compared to faithful conditioning, proxy condition-
+ing helps if the relative increase in action-influence (coef-
+ficient of variation of the Q function) is strong enough to
+overcome any loss in alignment.
+6.3. Insight into return thresholding
+We use this framework to interpret return thresholding,
+where success is defined as ˜R=1(Y > θ) . This ap-
+proach is tightly linked to top-k% trajectory filtering and
+reminiscent of Decision Transformers (Chen et al., 2021),
+which condition on return equaling a specified value. In
+all these approaches, improvement on the true objective
+depends on both how discriminating the proxy is (its co-
+efficient of variation) and how well it aligns with the true
+reward (their correlation)—exactly the tradeoff Prop 6.1
+quantifies.
+We illustrate this analysis using a stylized bandit ex-
+ample. There are 100 arms. Pulling arm i yields reward
+Yi ∼Beta(a i, bi). Ninety-nine “moderate” arms have
+symmetric Beta distributions with mean 0.5 but varying
+7
+===PAGE 8 ===
+shapes (ai =b i ∼Uniform(0.3,0.7) ), yielding U-shaped
+distributions with mass at both extremes. One “special”
+arm has Beta(18,2) , giving mean 0.9 with mass concen-
+trated near this value. The behavior policy is uniform.
+0.0 0.2 0.4 0.6 0.8 1.0
+Threshold  used in Proxy Reward
+0.2
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+CV and Alignment
+CV (proxy)
+Alignment
+Improvement (proxy)
+Improvement (faithful)
+0.005
+0.000
+0.005
+0.010
+0.015
+Improvement
+Proxy conditioning can outperform faithful conditioning
+Figure 2:Alignment and improvement as a function of the
+success threshold used in the proxy reward.
+This stylized example distills both the benefits and
+risks of return thresholding. As shown in Figure 2, there
+is a range of moderate-to-high thresholds where using the
+proxy reward increases performance on the true objective—
+substantially outperforming faithful conditioning. The
+proxy succeeds because it discriminates more sharply:
+the special arm reliably exceeds the threshold while the
+moderate arms mostly do not. Beyond a point, how-
+ever, the method starts selecting for arms whose expected
+performance is poor but whose outcome distribution is
+volatile, causing occasional large outcomes that cross the
+threshold. When this happens, alignment degrades and
+improvement turns negative.
+7. Related literature
+7.1. Return conditioning in RL
+A growing body of work studiesreturn- or success con-
+ditionedpolicies, in which actions are generated con-
+ditional on a desired outcome—such as a target return
+or task completion—rather than via explicit policy op-
+timization. Early examples include Upside-Down Rein-
+forcement Learning (Schmidhuber, 2019; Srivastava et al.,
+2019). This perspective was popularized by Decision
+Transformers Chen et al. (2021) and related sequence-
+modeling approaches to offline RL Janner et al. (2021),
+and later extended to alternative generative models Ajay
+et al. (2023) and to more general notions of success and
+goals, as in Reinforcement via Supervised Learning (RvS)
+(Emmons et al., 2022).
+Empirically, return-conditioned methods initially showed
+strong performance despite relying only on supervised
+learning, but subsequent work identified important limi-
+tations: optimal policy recovery requires strong assump-
+tions (Brandfonbrener et al., 2022), and conditioning
+on very high returns may “count on luck,” emphasizing
+stochastic outcomes over reliable choices (Paster et al.,
+2022; Yang et al., 2023). We show these failures arise
+from misalignment between the success criterion and the
+evaluation objective (Sec. 6); when aligned, success con-
+ditioning is a conservative improvement operator whose
+failure mode is over-conservatism when action-influence
+is small. This characterization is not provided by prior
+analyses; the closest is work of Eysenbach et al. (2022),
+which notes the form of the success-conditioned policy
+and its improvement in single-goal settings, but does not
+characterize it as a policy improvement operator or ana-
+lyze its failure modes.
+7.2. Exponential policy updates and imitation learn-
+ing
+A large fraction of reinforcement learning algorithms up-
+date policies byexponentially reweightingactions accord-
+ing to observed or estimated outcomes (e.g., returns, ad-
+vantages, or Q-values) or preference-based comparisons,
+as in Direct Preference Optimization (Rafailov et al.,
+2023). The resulting Gibbs policies are equivalent to KL-
+or entropy-regularized updates and arise across control-as-
+inference and variational formulations Peters and Schaal
+(2007), information-theoretic optimization Peters et al.
+(2010); Haarnoja et al. (2018), EM-style methods Abdol-
+maleki et al. (2018), and conservative offline RL Peng
+et al. (2020); Wang et al. (2020); Kostrikov et al. (2022).
+Despite their diverse motivations, these methods share a
+common structure: scalar quality weights tilt the behavior
+distribution toward higher-valued actions.
+A similarity with success conditioning is that these
+methods admit animitation-learning interpretation. Poli-
+cies of the form π(a|s)∝exp(βQ(s, a)) arise as solu-
+tions to the weighted maximum-likelihood problem
+max
+π
+E(s,a)∼D[exp(βQ(s, a)) logπ(a|s)].
+This objective has the same form as behavior cloning, but
+with the empirical distributiontiltedtoward higher-valued
+actions Peters and Schaal (2007); Peng et al. (2020);
+Kostrikov et al. (2022). Success conditioning shares this
+supervised-learning form but differs in construction: its
+weights arise from exact conditioning on a terminal suc-
+cess event, involve no tunable temperature parameter β,
+and we show it induces aχ 2 rather than KL geometry.
+7.3. Control as inference
+Control-as-inference formulations introduce auxiliary “op-
+timality” variables and perform Bayesian conditioning in
+an augmented graphical model. We refer to the tutorial
+and review of Levine (2018). In the exact formulation,
+8
+===PAGE 9 ===
+conditioning on optimality yields a posterior over tra-
+jectories proportional to the dynamics probability times
+an exponential of accumulated reward. (Levine, 2018,
+Section 2) This construction is closely related in spirit
+to success conditioning, but corresponds to exponential
+tilting of trajectories rather than conditioning on a hard
+terminal success event.
+To derive practical algorithms in stochastic environ-
+ments, control-as-inference departs more substantially
+from success conditioning (Levine, 2018, Section 3). Through
+variational approximations, the inference problem is con-
+verted into a KL-regularized control problem—effectively
+a regularized MDP—by fixing the dynamics and opti-
+mizing only the policy. The resulting objective is then
+addressed using dynamic programming or iterative pol-
+icy improvement algorithms such as Soft Actor-Critic
+(Haarnoja et al., 2018). In contrast, success conditioning
+does not define a new control problem to be solved by
+iterative policy search; it specifies a single policy update
+directly via Bayes’ rule, conditioning the behavior policy
+on observed success.
+8. Limitations and open directions
+Our analysis characterizes exact success conditioning un-
+der a fixed behavior policy, clarifying the target policy that
+common training procedures aim to approximate. While
+the results consist of exact equalities and do not rely on
+asymptotic arguments or empirical validation, they do
+not—except for Proposition 5.1—address the effects of
+finite data, function approximation, or large-scale opti-
+mization, which we view as a distinct question that is
+likely sensitive to specific algorithmic choices.
+An important open direction is to understand how the
+policy movement metric (Sec. 4.4) behaves in realistic
+training regimes, and when it serves as a useful diagnostic
+of improvement during large-scale success conditioning.
+On the theoretical side, further work could analyze iter-
+ated success conditioning and its convergence properties.
+Our results already imply that each iteration (weakly)
+improves the policy. The challenge is that success con-
+ditioning has no forced exploration, and progress could
+stall if it collapses on a degenerate policy. Future work
+could also look at mechanisms such as action chunking
+that may increase action-influence.
+References
+A. Abdolmaleki, J. T. Springenberg, Y . Tassa, R. Munos,
+N. Heess, and M. Riedmiller. Maximum a posteriori
+policy optimisation. InInternational Conference on
+Learning Representations (ICLR), 2018.
+A. Agarwal, S. M. Kakade, J. D. Lee, and G. Mahajan.
+On the theory of policy gradient methods: Optimal-
+ity, approximation, and distribution shift.Journal of
+Machine Learning Research, 22(98):1–76, 2021.
+A. Ajay, Y . Du, A. Gupta, J. B. Tenenbaum, T. S. Jaakkola,
+and P. Agrawal. Is conditional generative modeling
+all you need for decision making? InInternational
+Conference on Learning Representations (ICLR), 2023.
+D. P. Bertsekas. Dynamic programming and optimal
+control 3rd edition, volume ii. 2011.
+J. Bhandari and D. Russo. Global optimality guarantees
+for policy gradient methods.Operations Research, 72
+(5):1906–1927, 2024. Early version appeared in 2019.
+D. Brandfonbrener, A. Bietti, J. Buckman, R. Laroche,
+and J. Bruna. When does return-conditioned supervised
+learning work for offline reinforcement learning? In
+Advances in Neural Information Processing Systems
+(NeurIPS), volume 35, pages 1542–1553, 2022.
+S. Cen, C. Cheng, Y . Chen, Y . Wei, and Y . Chi. Fast
+global convergence of natural policy gradient methods
+with entropy regularization.Operations Research, 70
+(4):2563–2578, 2022.
+L. Chen, K. Lu, A. Rajeswaran, K. Lee, A. Grover,
+M. Laskin, P. Abbeel, A. Srinivas, and I. Mordatch.
+Decision transformer: Reinforcement learning via se-
+quence modeling. InAdvances in Neural Informa-
+tion Processing Systems (NeurIPS), volume 34, pages
+15084–15097, 2021.
+S. Emmons, B. Eysenbach, I. Kostrikov, and S. Levine.
+RvS: What is essential for offline RL via supervised
+learning? InInternational Conference on Learning
+Representations (ICLR), 2022.
+B. Eysenbach, S. Udatha, R. R. Salakhutdinov, and
+S. Levine. Imitating past successes can be very sub-
+optimal.Advances in Neural Information Processing
+Systems, 35:6047–6059, 2022.
+M. Geist, B. Scherrer, and O. Pietquin. A theory of regu-
+larized Markov decision processes. InProceedings of
+the 36th International Conference on Machine Learn-
+ing (ICML), pages 2103–2113, 2019.
+S. K. S. Ghasemipour, A. Wahid, J. Tompson, P. Sanketi,
+and I. Mordatch. Self-improving embodied foundation
+models.arXiv preprint arXiv:2509.15155, 2025.
+9
+===PAGE 10 ===
+A. Grattafiori, A. Dubey, A. Jauhri, A. Pandey, A. Ka-
+dian, A. Al-Dahle, A. Letman, A. Mathur, A. Schelten,
+A. Vaughan, et al. The llama 3 herd of models.arXiv
+preprint arXiv:2407.21783, 2024.
+D. Guo, D. Yang, H. Zhang, J. Song, P. Wang, Q. Zhu,
+R. Xu, R. Zhang, S. Ma, X. Bi, et al. Deepseek-r1
+incentivizes reasoning in llms through reinforcement
+learning.Nature, 645(8081):633–638, 2025.
+T. Haarnoja, A. Zhou, P. Abbeel, and S. Levine. Soft
+actor-critic: Off-policy maximum entropy deep rein-
+forcement learning with a stochastic actor. InProceed-
+ings of the 35th International Conference on Machine
+Learning (ICML), pages 1861–1870, 2018.
+M. Janner, Q. Li, and S. Levine. Offline reinforcement
+learning as one big sequence modeling problem. In
+Advances in Neural Information Processing Systems
+(NeurIPS), volume 34, pages 1273–1286, 2021.
+S. Kakade and J. Langford. Approximately optimal ap-
+proximate reinforcement learning. InProceedings of
+the 19th International Conference on Machine Learn-
+ing (ICML), pages 267–274, 2002.
+I. Kostrikov, A. Nair, and S. Levine. Offline reinforce-
+ment learning with implicit q-learning. InInternational
+Conference on Learning Representations (ICLR), 2022.
+S. Levine. Reinforcement learning and control as proba-
+bilistic inference: Tutorial and review.arXiv preprint
+arXiv:1805.00909, 2018.
+K. Paster, S. A. McIlraith, and J. Ba. You can’t count
+on luck: Why decision transformers and RvS fail in
+stochastic environments. InAdvances in Neural In-
+formation Processing Systems (NeurIPS), volume 35,
+2022.
+X. B. Peng, A. Kumar, G. Zhang, and S. Levine.
+Advantage-weighted regression: Simple and scalable
+off-policy reinforcement learning. InInternational
+Conference on Learning Representations (ICLR), 2020.
+J. Peters and S. Schaal. Reinforcement learning by reward-
+weighted regression for operational space control. In
+Proceedings of the 24th International Conference on
+Machine Learning (ICML), pages 745–752, 2007.
+J. Peters, K. Mülling, and Y . Altünay. Relative entropy
+policy search. InProceedings of the AAAI Conference
+on Artificial Intelligence, volume 24, pages 1607–1612.
+AAAI Press, 2010.
+R. Rafailov, A. Sharma, E. Mitchell, C. D. Manning,
+S. Ermon, and C. Finn. Direct preference optimization:
+Your language model is secretly a reward model.Ad-
+vances in neural information processing systems, 36:
+53728–53741, 2023.
+T. Schick, J. Dwivedi-Yu, R. Dessí, R. Raileanu,
+M. Lomeli, E. Hambro, L. Zettlemoyer, N. Cancedda,
+and T. Scialom. Toolformer: language models can
+teach themselves to use tools. InProceedings of the
+37th International Conference on Neural Information
+Processing Systems, pages 68539–68551, 2023.
+J. Schmidhuber. Reinforcement learning upside down:
+Don’t predict rewards – just map them to actions.arXiv
+preprint arXiv:1912.02875, 2019.
+J. Schulman, S. Levine, P. Moritz, M. I. Jordan, and
+P. Abbeel. Trust region policy optimization. InProceed-
+ings of the 32nd International Conference on Machine
+Learning (ICML), pages 1889–1897, 2015.
+J. Schulman, F. Wolski, P. Dhariwal, A. Radford, and
+O. Klimov. Proximal policy optimization algorithms.
+arXiv preprint arXiv:1707.06347, 2017.
+R. K. Srivastava, P. Shyam, F. Mutz, W. Ja ´skowski,
+and J. Schmidhuber. Training agents using upside-
+down reinforcement learning.arXiv preprint
+arXiv:1912.02877, 2019.
+M. Tomar, L. Shani, Y . Efroni, and M. Ghavamzadeh.
+Mirror descent policy optimization. InInternational
+Conference on Learning Representations (ICLR), 2022.
+H. Touvron, L. Martin, K. Stone, P. Albert, A. Alma-
+hairi, Y . Babaei, N. Bashlykov, S. Batra, P. Bhargava,
+S. Bhosale, et al. Llama 2: Open foundation and fine-
+tuned chat models.arXiv preprint arXiv:2307.09288,
+2023.
+Z. Wang, A. Novikov, K. Zolna, J. T. Springenberg,
+S. Reed, B. Shahriari, N. Siegel, J. Merel, C. Gul-
+cehre, N. Heess, and N. de Freitas. Critic regularized
+regression. InAdvances in Neural Information Process-
+ing Systems (NeurIPS), volume 33, pages 7768–7778,
+2020.
+M. Yang, D. Schuurmans, P. Abbeel, and O. Nachum.
+Dichotomy of control: Separating what you can control
+from what you cannot. InInternational Conference on
+Learning Representations (ICLR), 2023.
+E. Zelikman et al. Star: Bootstrapping reasoning with rea-
+soning. InAdvances in Neural Information Processing
+Systems (NeurIPS), 2022.
+10
+===PAGE 11 ===
+A. Proofs
+A.1. Expression for the success-conditioned policy
+Here we state a formula for the success-conditioned pol-
+icy.
+Lemma A.1.For any statesand actiona,
+π+(s, a) =π 0(a|s)
+
+1 + Aπ0(s, a)
+Vπ0(s)
+
+Proof. Applying Bayes rule, and the definitions in Setion
+2.1 yields
+π+(s, a)
+=Pπ0 (At =a|S t =s, R(τ) = 1)
+= Pπ0 (At =a∧R(τ) = 1|S t =s)
+Pπ0 (R(τ) = 1|S t =s))
+= Pπ0 (At =a|S t =s)P π0 (R(τ) = 1|S t =s, A t =a)
+Pπ0 (R(τ) = 1|S t =s)
+= π0(a|s)Qπ0(s, a)
+Vπ0(s)
+=π0(a|s)
+
+1 + Aπ0(s, a)
+Vπ0(s)
+
+,
+where the final step uses that Qπ0(s, a) =V π0(s) +
+Aπ0(s, a).
+A.2. Expression for the success-conditioned occupancy
+measure
+Lemma A.2.The success-conditioned occupancy mea-
+sure is related to the unconditioned occupancy measure
+as
+d+
+π (s) =
+ Vπ(s)
+ρ(π)
+
+·d π(s)
+for any policyπand states.
+Proof.
+ρ(π)·d +
+π (s) =ρ(π)E π
+"T−1X
+t=1
+1(St =s)|R(τ) = 1
+#
+=E π
+"T−1X
+t=1
+1(St =s)·1(R(τ) = 1)
+#
+=E π
+"T−1X
+t=1
+Eπ [1(St =s)·1(R(τ) = 1)|S t]
+#
+=E π
+"T−1X
+t=1
+1(St =s)·P(R(τ) = 1|S t)
+#
+=E π
+"T−1X
+t=1
+1(St =s)·V π(St)
+#
+=E π
+"T−1X
+t=1
+1(St =s)·V π(s)
+#
+=V π(s)dπ(s).
+A.3. Proof of Proposition 4.1
+Lemma A.3.Define the normalized state distribution
+h(s) := d+
+π0(s)P
+s′ d+π0(s′) .(2)
+and let(S, A)be sampled according to
+S∼h, A|S∼π 0(·|s).(3)
+Then, the success conditioned optimization problem, is
+equivalent to
+max
+π∈Π
+E
+ π(A|S)
+π0(A|S) −1
+
+× Aπ0(S, A)
+Vπ0(S)
+
+(4)
+s.tE
+ π(A|S)
+π0(A|S) −1
+2
+≤E
+" Aπ0(S, A)
+Vπ0(S)
+2#
+(5)
+whereΠdenotes the set of all stochastic policies.
+Proof. By Lemma A.2, the linearized improvement ob-
+jective can be written as
+Lπ0(π) =ρ(π 0)
+X
+s
+d+
+π0(s)E a∼π(·|s)
+ Aπ0(s, a)
+Vπ0(s)
+
+.
+Using a change of measure and dropping constants that
+11
+===PAGE 12 ===
+depend onπ 0 only, this becomes
+Lπ0(π)∝E
+ π(A|S)
+π0(A|S) · Aπ0(S, A)
+Vπ0(S)
+
+.(6)
+By the definition of the advantage,E[A π0(S, A)|S] = 0 ,
+so we can equivalently write the objective as
+Lπ0(π)∝E
+ π(A|S)
+π0(A|S) −1
+
+· Aπ0(S, A)
+Vπ0(S)
+
+.(7)
+We now rewrite the trust-region constraint. Using the
+standard identity
+χ2(P∥Q) =E x∼Q
+ P(x)
+Q(x) −1
+2
+,(8)
+the constraint
+X
+s
+d+
+π0(s)χ 2(π(· |s)∥π 0(· |s))≤
+X
+s
+d+
+π0(s)I π0(s)
+(9)
+is equivalent (up to the same normalization constant) to
+E
+ π(A|S)
+π0(A|S) −1
+2
+≤E
+" Aπ0(S, A)
+Vπ0(S)
+2#
+.
+To rewrite the expected action-advantage, E[I π0(S)], we
+applied the definition Iπ0(S) =E
+h Aπ0(S,A)
+Vπ0(S) |S
+i
+and
+the law of iterated expectations.
+Proof of Proposition 4.1. Fix π0. Let h and (S, A) be
+sampled as in Lemma A.3:
+For any feasibleπ, Cauchy–Schwarz gives
+E
+ π(A|S)
+π0(A|S) −1
+ Aπ0(S, A)
+Vπ0(S)
+
+≤
+s
+E
+ π(A|S)
+π0(A|S) −1
+2
+×
+s
+E
+ Aπ0(S, A)
+Vπ0(S)
+2
+≤E
+ Aπ0(S, A)
+Vπ0(S)
+2
+.(10)
+By Lemma A.1,
+π+(a|s) =π 0(a|s)
+
+1 + Aπ0(s, a)
+Vπ0(s)
+
+,
+which implies
+π+(A|S)
+π0(A|S) −1 = Aπ0(S, A)
+Vπ0(S) .(11)
+Substituting (11) into (9) shows the rewritten feasibil-
+ity constraint (5) holds with equality. Substituting into
+(4) shows π+ achieves the upper bound in (10). There-
+foreπ + is optimal for (4)–(5), and hence for the original
+trust-region problem in Proposition 4.1.
+A.4. Proof of Proposition 4.4
+Proof. Using the formula for the success-conditioned pol-
+icyπ +(a|s)in Lemma A.1 yields:
+Ea∼π+(·|s) [Aπ0(s, a)]
+=
+X
+a
+π+(a|s)Aπ0(s, a)
+=
+X
+a
+
+π0(a|s)
+
+1 + Aπ0(s, a)
+Vπ0(s)
+
+Aπ0(s, a)
+=
+X
+a
+π0(a|s)Aπ0(s, a) +
+P
+a π0(a|s) (Aπ0(s, a))2
+Vπ0(s) .
+=0 +
+P
+a π0(a|s) (Aπ0(s, a))2
+Vπ0(s) ,
+where the final equality uses that the average advantage
+of actions drawn from π0 over π0 is zero. Dividing by
+Vπ0(s)yields,
+Ea∼π+(·|s) [Aπ0(s, a)]
+Vπ0(s) =
+P
+a π0(a|s) (Aπ0(s, a))2
+(Vπ0(s))2
+=
+X
+a
+π0(a|s)
+ Aπ0(s, a)
+Vπ0(s)
+2
+=I π0(s).
+Now we show
+χ2 (π+(·|s)||π0(·|s)) =I π0(s)(12)
+Using Definition 4.2,
+χ2 (π+(·|s)||π0(·|s)) = Vara∼π0(·|s)
+ π+(a|s)
+π0(a|s)
+
+.
+= Vara∼π0(·|s)
+
+1 + Aπ0(s, a)
+Vπ0(s)
+
+= Vara∼π0(·|s)
+ Aπ0(s, a)
+Vπ0(s)
+
+=E a∼π0(·|s)
+ Aπ0(s, a)
+Vπ0(s)
+2
+.
+The last step uses that for any random variableX, E[X2] =
+Var(X) + (E[X])2. In our case, the random variable (X)
+has mean zero, sinceEa∼π0(·|s) [Aπ0(s, a)] =E a∼π0(·|s) [Qπ0(s, a)]−
+Vπ0(s) = 0
+12
+===PAGE 13 ===
+A.5. Proof of Proposition 4.3
+Proof.We begin by recalling the definition
+Aπ0(s, π+) :=E a∼π+(·|s)[Aπ0(s, a)].
+By Proposition 4.4, we have
+Aπ0(s, π+)
+Vπ0(s) =I π0(s) =χ 2(π+(· |s)∥π 0(· |s)),
+and hence
+Aπ0(s, π+) =V π0(s)I π0(s).
+Multiplying by the (unconditioned) occupancy measure
+dπ0(s)and summing oversyields
+Lπ0(π+) =
+X
+s
+dπ0(s)Vπ0(s)Iπ0(s)
+=ρ(π 0)
+X
+s
+d+
+π0(s)Iπ0(s).
+The first equality is a definition of Lπ0(π+). The second
+is the formula for the success-conditioned occupancy mea-
+sure in Lemma A.2. Dividing each side by the success-
+probability under the behavior policy, ρ(π0), yields the
+result. We’ve focused in the Iπ0 expression, since an
+identical argument establishes the claim for theχ2 expres-
+sion.
+A.6. Proof of Corollary 4.5
+This proof uses standard dynamic programming theory
+and is provided for completeness.
+Proof. Let Tπ be the Bellman operator with respect to a
+policy π. This operator maps a value function V to a new
+value function TπV . For a value function which is itself
+the expected value-to-go from another policy π′, it can be
+written as
+(TπVπ′)(s) =
+X
+a
+π(a|s)Qπ′(s, a) =V π′(s)+Aπ′(s, π).
+Hence, our theory has shown that
+ 
+Tπ+ Vπ0
+
+(s)≥V π0(s)∀s.
+We write this element-wise inequality as
+Tπ+ Vπ0 ⪰V π0 .
+The monotonicty property of the Bellman operator Bert-
+sekas (2011) implies that this inequality is preserved un-
+der application of Tπ, so T (2)
+π+ Vπ0 ⪰T π+ Vπ0. Repeating
+this inductively yields
+Vπ0 ⪯T π+ Vπ0 ⪯ · · · ⪯T (k)
+π+ Vπ0 →V π+ .
+Therefore, we’ve shown
+Vπ+(s)≥T π+ Vπ0(s) =V π0(s) +A π0(s, π+)
+and our result follows. The claim that ρ(π+)≥ρ(π 0) is
+immediate since ρ(π) =P
+s µ(s)Vπ(s) for any policy π.
+(Recallµis the inital state distribtion).
+A.7. Proof of Lemma 4.6
+Proof.Define
+p⋆
+χ2(δ) := sup
+n
+π(a⋆) :χ 2(π∥π0)≤ε
+o
+,
+p⋆
+KL(δ) := sup
+n
+π(a⋆) :D KL(π∥π0)≤ε
+o
+.
+Part 1:χ 2 givesp ⋆
+χ2(δ) = Θ(
+√
+δ).
+Upper bound.For anyπwithπ(a ⋆) =p,
+χ2(π∥π0) =
+X
+a
+(π(a)−π 0(a))2
+π0(a) ≥ (π(a⋆)−π 0(a⋆))2
+π0(a⋆)
+= (p−δ) 2
+δ .
+Thusχ 2(π∥π0)≤εimplies(p−δ) 2 ≤εδ, i.e.
+p≤δ+
+√
+ε δ=O(
+√
+δ) (δ→0).
+Lower bound.Consider the policy that changes only
+the mass ona ⋆ and keeps the remaining mass uniform:
+π(a⋆) =p, π(a i) = 1−p
+k , i= 1, . . . , k.
+Let p=δ+c
+√
+δ for a constant c >0 (and δ small enough
+so that p≤1 ). Then the contribution of a⋆ to χ2(π∥π0)
+is
+(p−δ) 2
+π0(a⋆) = c2δ
+δ =c 2.
+Each common action satisfiesπ 0(ai) = (1−δ)/kand
+π(ai)−π 0(ai) = 1−p
+k − 1−δ
+k =− p−δ
+k =− c
+√
+δ
+k ,
+so the total contribution of thekcommon actions is
+kX
+i=1
+(π(ai)−π 0(ai))2
+π0(ai) =k· (c2δ/k2)
+(1−δ)/k = c2δ
+1−δ =o(1).
+13
+===PAGE 14 ===
+Hence χ2(π∥π0) =c 2 +o(1) as δ→0 . Choosing
+c < √ε makes χ2(π∥π0)≤ε for all sufficiently small δ,
+and thus
+p⋆
+χ2(δ)≥δ+c
+√
+δ= Ω(
+√
+δ).
+Combining upper and lower bounds yields p⋆
+χ2(δ) =
+Θ(
+√
+δ).
+Part 2: forward KL givesp⋆
+KL(δ) = Θ(1/log(1/δ)) .
+Upper bound.We consider the forward KL divergence
+DKL(π∥π0) =
+X
+a
+π(a) log π(a)
+π0(a) .
+Since the objective depends only on the probability mass
+p=π(a ⋆) assigned to the rare action, we may group all
+remaining actions into a single outcome. By the grouping
+(data-processing) property of f-divergences, the problem
+reduces to a two-point (Bernoulli) divergence with
+π= (p,1−p), π 0 = (δ,1−δ).
+Thus
+DKL(π∥π0) =plog p
+δ + (1−p) log 1−p
+1−δ .
+If p were bounded away from zero, then the first term
+plog(p/δ) would diverge as δ→0 , violating the con-
+straint DKL(π∥π0)≤ε . Hence any feasible sequence
+satisfiesp→0asδ→0.
+In this regime, the second term satisfies
+(1−p) log 1−p
+1−δ =o(1),
+while
+plog p
+δ =plog 1
+δ +plogp.
+Since p→0 , we haveplogp=−plog(1/p) =o(plog(1/δ)) .
+Therefore,
+DKL(π∥π0) =plog 1
+δ
+ 
+1 +o(1)
+
+.
+It follows that ifD KL(π∥π0)≤ε, then
+p≤ ε
+log(1/δ)
+ 
+1 +o(1)
+
+,
+and hencep ⋆
+KL(δ) =O(1/log(1/δ)).
+Lower bound.Again consider the two-point distribu-
+tion with p=c/log(1/δ) for a constant c >0 . Substitut-
+ing into the expression above yields
+plog p
+δ =c+o(1),(1−p) log 1−p
+1−δ =o(1),
+and hence
+DKL(π∥π0) =c+o(1).
+Choosing c < ε ensures that the KL constraint is satisfied
+for all sufficiently smallδ, giving
+p⋆
+KL(δ) = Ω(1/log(1/δ)).
+Combining upper and lower bounds yields
+p⋆
+KL(δ) = Θ
+ 1
+log(1/δ)
+
+.
+A.8. Proof of Proposition 5.1
+Proof.Recall
+M −1 := 1/sup
+s
+dπ+(s)
+d+π0(s) = inf
+s
+d+
+π0(s)
+dπ+(s) .
+Recall also that∆ =ℓ(ˆπ)−ℓ(π +). We write,
+ℓ(ˆπ)−ℓ(π+)
+=Eπ0
+"
+−
+T−1X
+t=1
+log ˆπ(At|St) +
+TX
+t=1
+logπ +(At|St)|R(τ) = 1
+#
+=Eπ0
+"T−1X
+t=1
+log
+ π+(At|St)
+ˆπ(At|St)
+
+|R(τ) = 1
+#
+=Eπ0
+"T−1X
+t=1
+Eπ0
+
+log
+ π+(At|St)
+ˆπ(At|St)
+
+|S t, R(τ) = 1
+
+|R(τ) = 1
+#
+(a)
+=E π0
+"T−1X
+t=1
+ X
+a
+π+(a|St) log
+ π+(a|St)
+ˆπ(At|St)
+!
+|R(τ) = 1
+#
+=Eπ0
+"T−1X
+t=1
+DKL (π+(·|St)||ˆπ(·|St))|R(τ) = 1
+#
+(b)
+=
+X
+s
+d+
+π0(s)DKL (π+(·|s)||ˆπ(·|s))
+≥M −1X
+s
+dπ+(s)DKL (π+(·|s)||ˆπ(·|s))
+=M −1Eπ+
+"T−1X
+t=1
+DKL (π+(·|St)||ˆπ(·|St))
+#
+(c)
+=M −1DKL
+ 
+Pπ+(τ)||P ˆπ(τ)
+
+Equality(a) is a key step, and uses that conditioned on
+the state, and on the trajectory ending successfully, by
+14
+===PAGE 15 ===
+definition the action-distribution in that prescribed by π+.
+(See the definition in Sec. 2). Equality (b) is the definiion
+of the occupancy measure given in Sec. 2.1. Finally,
+equality (c) uses the chain rule of KL divergence.
+By Pinsker’s inequality,
+∥Pπ+(τ)−P ˆπ(τ)∥ T V ≤
+r
+1
+2 DKL(Pπ+ ∥Pˆπ) =
+p
+M∆/2.
+Since ρ(π) =P π(R(τ) = 1) is the probability of a
+measurable event under the trajectory distribution,
+|ρ(ˆπ)−ρ(π+)| ≤ ∥P π+(τ)−P ˆπ(τ)∥ T V ≤
+p
+M∆/2.
+A.9. Proof of Proposition 6.1
+Proof. Fix a non-terminal state s. Define the (faithful and
+proxy) advantages
+Aπ0(s, a) :=Q π0(s, a)−V π0(s),
+eAπ0(s, a) := eQπ0(s, a)− eVπ0(s),
+so thatP
+a π0(a|s)Aπ0(s, a) = 0 andP
+a π0(a|s)eAπ0(s, a) =
+0.
+By the analogue of Lemma A.1 applied to the faithful
+reward and the proxy reward respectively, the correspond-
+ing success-conditioned policies satisfy
+π+(a|s) =π 0(a|s)
+
+1 + Aπ0(s, a)
+Vπ0(s)
+
+,
+and
+eπ+(a|s) =π 0(a|s)
+
+1 +
+eAπ0(s, a)
+eVπ0(s)
+
+.
+We first compute the advantage ofeπ+ under the faith-
+ful reward:
+Aπ0(s,eπ+) :=E a∼eπ+(·|s)[Aπ0(s, a)]
+=
+X
+a
+eπ+(a|s)A π0(s, a)
+=
+X
+a
+π0(a|s)
+
+1 +
+eAπ0(s, a)
+eVπ0(s)
+
+Aπ0(s, a)
+= 1
+eVπ0(s)
+X
+a
+π0(a|s) eAπ0(s, a)Aπ0(s, a)
+=
+Cova∼π0(·|s)
+
+Aπ0(s, a),eAπ0(s, a)
+
+eVπ0(s)
+.
+Similarly,
+Aπ0(s, π+) :=E a∼π+(·|s)[Aπ0(s, a)]
+=
+X
+a
+π+(a|s)A π0(s, a)
+=
+X
+a
+π0(a|s)
+
+1 + Aπ0(s, a)
+Vπ0(s)
+
+Aπ0(s, a)
+= 1
+Vπ0(s)
+X
+a
+π0(a|s)A π0(s, a)2
+= Vara∼π0(·|s)(Aπ0(s, a))
+Vπ0(s) .
+We take the ratio and insert standard normalization.
+For shorthand notation, letA∼π 0(·|s).
+Aπ0(s,eπ+)
+Aπ0(s, π+)
+=Cov(Aπ0(s, A),eAπ0(s, A))/eVπ0(s)
+Var(Aπ0(s, A))/Vπ0(s)
+= Cov(Aπ0(s, A),eAπ0(s, A))
+p
+Var(Aπ0(s, A))
+q
+Var(eAπ0(s, A))
+×
+q
+Var(eAπ0(s, A))/eVπ0(s)
+p
+Var(Aπ0(s, A))/Vπ0(s)
+=Cora∼π0(·|s)
+
+Aπ0(s, a),eAπ0(s, a)
+
+·
+s
+eIπ0(s)
+Iπ0(s) ,
+where Iπ0(s) = Var a∼π0(·|s)(Aπ0(s, a))/Vπ0(s)2 and
+eIπ0(s) = Vara∼π0(·|s)(eAπ0(s, a))/eVπ0(s)2.
+B. Exact improvement in ρ under success condition-
+ing.
+Proposition 3.2 gives the triple identity
+Ea∼π+(·|s)[Aπ0(s, a)]
+Vπ0(s) =I π0(s),
+where Iπ0(s) is the action-influence (Definition 3.1). Mul-
+tiplying byV π0(s)yields the statewise identity
+Ea∼π+(·|s)[Aπ0(s, a)] =V π0(s)I π0(s).(13)
+We now plug (13) into the performance difference
+lemma. In its exact form,
+ρ(π) =ρ(π 0) +
+X
+s
+dπ(s)E a∼π(·|s)[Aπ0(s, a)].(14)
+(See the discussion around the performance difference
+lemma in Section 4.1.)
+15
+===PAGE 16 ===
+Applying (14) to π=π + and substituting (13) gives
+the exact improvement formula
+ρ(π+)−ρ(π 0) =
+X
+s
+w(s)I π0(s).(15)
+for w(s) =d π+(s)V π0(s). This showspolicy improve-
+ment is exactly equal to a weighted sum across states of
+the action-influence.
+16

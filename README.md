@@ -151,6 +151,10 @@ PYTHONPATH=src .venv/bin/python -m gpt2.train \
   --wandb-mode disabled
 ```
 
+Outcome-conditioned Unsloth fine-tuning, where `final_rank_*` tokens are
+prepended to `view_imperfect` rows at collate time, is documented in
+[outcome_conditioned_unsloth.md](docs/outcome_conditioned_unsloth.md).
+
 ## Tests
 
 Fast tests:
