@@ -653,6 +653,36 @@ P(立直∣bucket) の大変動は、**状態（聴牌の良さ・手の価値�
 
 → **③は「genuine conditioning（較正・操作可能・support内、c\* で汎化ステアリング corr 0.285）」を達成し、forced rerank を置換**。ただし正直な留保2点: (a) 打牌は in-support 候補が~3個と少なく、連続 target が行動を部分的に同定する **leakage** で dNLL が過大（候補の多い決定点では緩和の見込み）; (b) **真の着順改善は offline 指標では判定不能**（着順 Y~ が過疎ノイズ）→ self-play 必須（オーナー判断で保留中）。argmax rerank は「条件付け」ではないが support 内 c\*-best を保証する点で相補的。
 
+## 7.23 実対戦評価（Majiang エンジン）— CCC は実戦で着順を悪化させる
+
+オフライン指標が結論不能だったため、kobalab 電脳麻将エンジン（`MitsuhiroTaniguchi/Majiang`）で実対戦評価。SEAT0=MahjongLM、SEAT1-3=エンジン内蔵AI、同一 seed の四麻で **base（argmax π0）vs CCC（argmax c\*）を paired 比較**。CCC は base 上の純粋なリランカ（行動処理済み hidden の c\* で in-support 候補を採点、最良を選ぶ。conditioning token 不要）。実装: `Majiang/mahjonglm-ccc-server.py`（HTTP /generate に CCC mode、prefix KV キャッシュ＋候補バッチ単発ステップで高速化、正確性検証 logit差<3e-5）、`scripts/research/run_match_ab.py`（共有GPUサーバー1台＋12並列ワーカー、240局を約21分）。
+
+**結果（held-out, 120局 paired, t検定）**:
+
+| 指標 | base (argmax π0) | CCC (argmax c\*) | paired Δ |
+|---|---|---|---|
+| 平均着順 | **2.417** | 2.933 | +0.517（t=3.86, **悪化**）|
+| 平均ポイント | **+1.73** | −14.96 | −16.69（t=3.90, **悪化**）|
+| 着順 better/worse/same | — | 27 / **62** / 31 | |
+| ポイント >/</= | — | 38 / **82** / 0 | |
+
+→ **CCC の argmax リランクは実対戦で base より有意に弱い（着順 +0.52, t≈3.9）**。オフラインの c\* 着順 alignment（0.12）は実戦改善に**転移しなかった**。
+
+**診断（control 比較, 同一 base・同一 seed, N=120 each）**:
+
+| 方策 | 平均着順 | 平均ポイント | vs base d_rank (t) |
+|---|---|---|---|
+| **base (argmax π0)** | **2.425** | **+1.13** | — |
+| ccc (argmax c\*) | 2.925 | −15.06 | +0.500 (t=3.75) |
+| worst (argmin c\*) | 3.000 | −17.46 | +0.575 (t=4.35) |
+| random (in-support 一様) | 3.025 | −19.20 | +0.600 (t=4.83) |
+
+順序: **base ≪ ccc < worst ≈ random**。2つの明確な結論:
+1. **π0-argmax からのいかなる in-support 逸脱も約 −0.5 着順の損**（random も worst も ccc も全て t>3.7 で悪化）。10M base の argmax は既に良較正で、π0≥0.02 の代替手は平均的に劣る手。
+2. **c\* には実在するが微小な正方向の信号**: ccc（argmax c\*, 2.925）は3逸脱中で最良＝random(3.025)・worst(3.000) より良い。高 c\* > random > 低 c\* で c\* は弱く着順整合。しかし random に対する優位（約0.1着順）は、π0モードを離れる代償（約0.5）を覆すには **約5倍足りない**。
+
+**含意（研究全体の capstone）**: これは Russo の核心「強い behavior policy では in-support の action-influence が構造的に小さい」が**実戦で顕在化**したもの。模倣方策が強いほど support 内の改善余地は微小で、弱い proxy の真の信号は「較正された行動から逸脱する代償」に飲まれる。**オフラインの "成功"（§7.20–7.22 の alignment 0.12・TV 0.6）は実戦の強さを意味しない**——オーナーの「実対戦で評価すべき/offline指標は信用するな」が実証された。CCC を実戦で効かせるには (1) 対戦分布での critic 学習（人間データのみでは OOD）、(2) c\* の信号を桁で強くする、(3) そもそも π0-argmax を超える headroom が小さい前提を受け入れる、のいずれかが要る。現状の rollout-free・人間データ critic では純益は出ない。
+
 ## 8. χ² 幾何が麻雀 AI 設計に与える示唆
 
 - **崩れにくさ**: χ² 信頼領域は「人間が稀にしか打たない奇手」へ確率を移すことを強く罰する。OC 麻雀 AI は**奇抜だが弱い手**に走りにくく、人間上位分布の**支持内で最善手に集中**する保守的改善になる。実戦的にはこれは望ましい性質（過学習的ギャンブルを避ける）。
