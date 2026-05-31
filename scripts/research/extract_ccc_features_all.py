@@ -49,6 +49,7 @@ def main():
     args = ap.parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     tok = MahjongTokenizerFast.from_pretrained("tokenizer")
+    BOS_ID = tok.bos_token_id if tok.bos_token_id is not None else tok.convert_tokens_to_ids("<bos>")
     base = AutoModelForCausalLM.from_pretrained(args.base, dtype=torch.float32,
                                                 output_hidden_states=True).to(device).eval()
 
@@ -73,12 +74,18 @@ def main():
                 for d in rinfo:
                     for j in range(d["start"], d["end"]):
                         pos_bucket[j] = BUCKET_INDEX[d["bucket"]]
-                hs = base(torch.tensor([ids], device=device)).hidden_states[-1][0]
+                # IMPORTANT: pretraining prepends <bos> (and appends <eos>) post-hoc, so the
+                # model's in-distribution input has a leading <bos> -- which the live JS player
+                # also prepends.  Feed [<bos>] + ids so offline hiddens MATCH training & live;
+                # a decision at original index `pos` is then at index pos+1, its state token
+                # (ids[pos-1]) at index pos.
+                ids2 = [BOS_ID] + ids
+                hs = base(torch.tensor([ids2], device=device)).hidden_states[-1][0]
                 for (pos, dt, seat) in dec:
                     if pos == 0:
                         continue
-                    ST.append(hs[pos - 1].float().cpu().numpy().astype(np.float16))
-                    PH.append(hs[pos].float().cpu().numpy().astype(np.float16))
+                    ST.append(hs[pos].float().cpu().numpy().astype(np.float16))       # state = token before action (bos-shifted)
+                    PH.append(hs[pos + 1].float().cpu().numpy().astype(np.float16))   # phi   = action token
                     DT.append(dt)
                     BK.append(pos_bucket.get(pos, BUCKET_INDEX["round_oc_zero"]))
                     GM.append(games)

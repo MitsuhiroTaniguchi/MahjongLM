@@ -110,15 +110,23 @@ def main():
     ap.add_argument("-n", type=int, default=120)
     ap.add_argument("--lanes", type=int, default=12)
     ap.add_argument("--variants", nargs="+", default=["ccc", "worst", "random"])
+    ap.add_argument("--lintilt-betas", nargs="+", type=float, default=None,
+                    help="if set, run conservative lintilt at each beta vs base (argmax pi0)")
     args = ap.parse_args()
     LOGDIR.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     B = run_mode("base", args.n, args.lanes, 8901, "base")
+    print(f"\nbase avg_rank {stats([B[s]['rank'] for s in B])[0]:.3f}  avg_point {stats([B[s]['point'] for s in B])[0]:+.2f}")
+    if args.lintilt_betas:
+        for b in args.lintilt_betas:
+            r = run_mode("lintilt", args.n, args.lanes, 8901, f"lt{b}", beta=b)
+            compare(B, r, f"lintilt(beta={b})")
+        print(f"\n===== done ({time.time()-t0:.0f}s, n={args.n}) =====")
+        return
     res = {}
     for v in args.variants:
         res[v] = run_mode(v, args.n, args.lanes, 8901, v)
     print(f"\n===== match A/B ({time.time()-t0:.0f}s, n={args.n}) =====")
-    print(f"base avg_rank {stats([B[s]['rank'] for s in B])[0]:.3f}  avg_point {stats([B[s]['point'] for s in B])[0]:+.2f}")
     for v in args.variants:
         compare(B, res[v], v)
 

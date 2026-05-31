@@ -38,6 +38,8 @@ def ridge_fit(X, Y, lam=10.0):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--features", default="outputs/research/ccc_features_all.npz")
+    ap.add_argument("--targets", default="outputs/research/ccc_placement_target.npz")
+    ap.add_argument("--objective", choices=["placement", "round"], default="placement")
     ap.add_argument("--base", default="mitsutani/mahjonglm-10m")
     ap.add_argument("--lam", type=float, default=5000.0)
     ap.add_argument("--out", default="outputs/ccc_release")
@@ -50,7 +52,10 @@ def main():
     z = np.load(args.features)
     S = torch.tensor(z["state"].astype(np.float32)).to(device)
     P = torch.tensor(z["phi"].astype(np.float32)).to(device)
-    Y = BUCKET_VALUE.to(device)[torch.tensor(z["bucket"]).to(device)]
+    if args.objective == "placement":   # correct objective: final-placement dan-points
+        Y = torch.tensor(np.load(args.targets)["y_term"].astype(np.float32)).to(device)
+    else:
+        Y = BUCKET_VALUE.to(device)[torch.tensor(z["bucket"]).to(device)]
     N, d = S.shape
     smu, ssd = S.mean(0), S.std(0) + 1e-6
     pmu, psd = P.mean(0), P.std(0) + 1e-6
