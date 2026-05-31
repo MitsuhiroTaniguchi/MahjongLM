@@ -35,13 +35,14 @@ def wait_health(port, timeout=120):
     return False
 
 
-def run_mode(server_mode, n, lanes, base_port, tag, beta=3.0):
+def run_mode(server_mode, n, lanes, base_port, tag, beta=3.0, delta=0.5):
     chunk = math.ceil(n / lanes)
     workers, logs = [], []
     mode = tag
     # ONE shared GPU server (LRU prefix cache serves all lanes); workers parallel on CPU
     senv = dict(os.environ, MAHJONGLM_MODEL="mitsutani/mahjonglm-10m", CCC_HEAD=HEAD,
-                CCC_MODE=server_mode, CCC_BETA=str(beta), CCC_MAX_GAMES=str(lanes + 4))
+                CCC_MODE=server_mode, CCC_BETA=str(beta), CCC_DELTA=str(delta),
+                CCC_MAX_GAMES=str(lanes + 4))
     server = subprocess.Popen([PY, str(MAJIANG / "mahjonglm-ccc-server.py"), str(base_port)],
                               cwd=str(MAJIANG), env=senv,
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -112,6 +113,8 @@ def main():
     ap.add_argument("--variants", nargs="+", default=["ccc", "worst", "random"])
     ap.add_argument("--lintilt-betas", nargs="+", type=float, default=None,
                     help="if set, run conservative lintilt at each beta vs base (argmax pi0)")
+    ap.add_argument("--chi2-deltas", nargs="+", type=float, default=None,
+                    help="if set, run chi^2 trust-region CCC at each delta vs base (argmax pi0)")
     args = ap.parse_args()
     LOGDIR.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
@@ -121,6 +124,12 @@ def main():
         for b in args.lintilt_betas:
             r = run_mode("lintilt", args.n, args.lanes, 8901, f"lt{b}", beta=b)
             compare(B, r, f"lintilt(beta={b})")
+        print(f"\n===== done ({time.time()-t0:.0f}s, n={args.n}) =====")
+        return
+    if args.chi2_deltas:
+        for dlt in args.chi2_deltas:
+            r = run_mode("chi2", args.n, args.lanes, 8901, f"chi2_{dlt}", delta=dlt)
+            compare(B, r, f"chi2(delta={dlt})")
         print(f"\n===== done ({time.time()-t0:.0f}s, n={args.n}) =====")
         return
     res = {}
