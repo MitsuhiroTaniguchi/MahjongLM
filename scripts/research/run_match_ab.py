@@ -35,7 +35,7 @@ def wait_health(port, timeout=120):
     return False
 
 
-def run_mode(server_mode, n, lanes, base_port, tag, beta=3.0, delta=0.5):
+def run_mode(server_mode, n, lanes, base_port, tag, beta=3.0, delta=0.5, server="mahjonglm-ccc-server.py"):
     chunk = math.ceil(n / lanes)
     workers, logs = [], []
     mode = tag
@@ -43,7 +43,7 @@ def run_mode(server_mode, n, lanes, base_port, tag, beta=3.0, delta=0.5):
     senv = dict(os.environ, MAHJONGLM_MODEL="mitsutani/mahjonglm-10m", CCC_HEAD=HEAD,
                 CCC_MODE=server_mode, CCC_BETA=str(beta), CCC_DELTA=str(delta),
                 CCC_MAX_GAMES=str(lanes + 4))
-    server = subprocess.Popen([PY, str(MAJIANG / "mahjonglm-ccc-server.py"), str(base_port)],
+    server = subprocess.Popen([PY, str(MAJIANG / server), str(base_port)],
                               cwd=str(MAJIANG), env=senv,
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if not wait_health(base_port):
@@ -115,9 +115,20 @@ def main():
                     help="if set, run conservative lintilt at each beta vs base (argmax pi0)")
     ap.add_argument("--chi2-deltas", nargs="+", type=float, default=None,
                     help="if set, run chi^2 trust-region CCC at each delta vs base (argmax pi0)")
+    ap.add_argument("--td-deltas", nargs="+", type=float, default=None,
+                    help="if set, run TD-critic chi^2 at each delta vs base (uses TD critic server)")
     args = ap.parse_args()
     LOGDIR.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
+    if args.td_deltas:
+        SRV = "mahjonglm-ccc-td-server.py"
+        B = run_mode("base", args.n, args.lanes, 8901, "base", server=SRV)
+        print(f"\nbase avg_rank {stats([B[s]['rank'] for s in B])[0]:.3f}  avg_point {stats([B[s]['point'] for s in B])[0]:+.2f}")
+        for dlt in args.td_deltas:
+            r = run_mode("chi2", args.n, args.lanes, 8901, f"td_{dlt}", delta=dlt, server=SRV)
+            compare(B, r, f"TD-chi2(delta={dlt})")
+        print(f"\n===== done ({time.time()-t0:.0f}s, n={args.n}) =====")
+        return
     B = run_mode("base", args.n, args.lanes, 8901, "base")
     print(f"\nbase avg_rank {stats([B[s]['rank'] for s in B])[0]:.3f}  avg_point {stats([B[s]['point'] for s in B])[0]:+.2f}")
     if args.lintilt_betas:
